@@ -42,6 +42,21 @@ test("server-renders the LeadRadar search workspace", async () => {
   assert.doesNotMatch(html, /sites-skeleton|codex-preview|react-loading-skeleton/i);
 });
 
+test("search-area map keeps a bounded responsive height", async () => {
+  const css = await readFile(
+    new URL("../components/SearchAreaMap.module.css", import.meta.url),
+    "utf8",
+  );
+  const frameRule = css.match(/\.frame\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(frameRule, /height:\s*280px/);
+  assert.match(frameRule, /min-height:\s*280px/);
+  assert.doesNotMatch(frameRule, /height:\s*100%/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*560px\)[\s\S]*?\.frame\s*\{[\s\S]*?height:\s*230px/,
+  );
+});
+
 test("search API exposes health and deterministic demo results", async () => {
   const worker = await getWorker();
   const healthResponse = await worker.fetch(
