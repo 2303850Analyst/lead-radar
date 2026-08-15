@@ -1,10 +1,34 @@
 import { createDemoResponse } from "@/lib/demo-data";
+import {
+  GeoapifyProvider,
+  geoapifyDetailsLimit,
+  geoapifyPlacesLimit,
+} from "@/lib/providers/geoapify";
+import { SearchProviderError } from "@/lib/providers/types";
 import type { Lead, SearchPayload, SearchResponse } from "@/lib/types";
 import packageMetadata from "@/package.json";
 
 const YANDEX_ENDPOINT = "https://search-maps.yandex.ru/v1/";
 const MAX_QUERY_TERMS = 8;
 const FETCH_TIMEOUT_MS = 15_000;
+
+function selectedProvider(): "demo" | "geoapify" | "yandex" {
+  const configuredName = process.env.SEARCH_PROVIDER?.trim().toLocaleLowerCase("en-US");
+  const geoapifyConfigured = Boolean(process.env.GEOAPIFY_API_KEY?.trim());
+  const yandexConfigured =
+    Boolean(process.env.YANDEX_MAPS_API_KEY?.trim()) &&
+    process.env.YANDEX_LIVE_UI_ENABLED === "true";
+
+  if (configuredName === "geoapify") {
+    return geoapifyConfigured ? "geoapify" : "demo";
+  }
+  if (configuredName === "yandex") {
+    return yandexConfigured ? "yandex" : "demo";
+  }
+  // Preserve the legacy Yandex opt-in only when no provider was selected.
+  if (!configuredName && yandexConfigured) return "yandex";
+  return "demo";
+}
 
 type PayloadResult =
   | { ok: true; payload: SearchPayload }
@@ -404,6 +428,13 @@ async function yandexSearch(
           source: "yandex",
           primaryFound: observation.primaryFound,
         },
+        sources: [
+          {
+            provider: "yandex",
+            externalId: id,
+            observedAt: new Date().toISOString(),
+          },
+        ],
         scores,
         status: "Новый",
         summary: `Карточка получена через официальный API Яндекс.Карт. ${
@@ -430,6 +461,17 @@ async function yandexSearch(
   const foundOnlyExpanded = leads.length - foundByPrimary;
   return {
     mode: "yandex",
+    provider: {
+      id: "yandex",
+      label: "Яндекс Search API",
+      queriedAt: new Date().toISOString(),
+      policy: {
+        persistence: "contract_required",
+        attributionRequired: true,
+        attribution: ["Яндекс"],
+        rawResponsesStored: false,
+      },
+    },
     query: payload,
     summary: {
       cardsFound,
@@ -453,19 +495,36 @@ async function yandexSearch(
 }
 
 export async function GET() {
+  const providerSetting =
+    process.env.SEARCH_PROVIDER?.trim().toLocaleLowerCase("en-US") || "demo";
+  const geoapifyKeyConfigured = Boolean(process.env.GEOAPIFY_API_KEY?.trim());
+  const geoapifyConfigured =
+    providerSetting === "geoapify" && geoapifyKeyConfigured;
   const yandexKeyConfigured = Boolean(process.env.YANDEX_MAPS_API_KEY?.trim());
   const yandexLiveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
   const yandexConfigured = yandexKeyConfigured && yandexLiveUiEnabled;
+  const mode = selectedProvider();
   return Response.json({
     status: "ok",
     service: "LeadRadar Search API",
     version: packageMetadata.version,
-    mode: yandexConfigured ? "yandex" : "demo",
+    mode,
+    searchProvider: providerSetting,
+    geoapifyConfigured,
+    geoapifyKeyConfigured,
     yandexConfigured,
     yandexKeyConfigured,
     yandexLiveUiEnabled,
     capabilities: {
       demoMode: true,
+      geoapifyPlaces: {
+        configured: geoapifyConfigured,
+        placesLimit: geoapifyPlacesLimit(),
+        detailsLimit: geoapifyDetailsLimit(),
+        strictRadius: true,
+        countryFilter: "ru",
+        rawResponsesStored: false,
+      },
       yandexGeosearch: {
         configured: yandexConfigured,
         maxResultsPerQuery: 50,
@@ -484,7 +543,9 @@ export async function GET() {
       },
     },
     notice:
-      yandexKeyConfigured && !yandexLiveUiEnabled
+      providerSetting === "geoapify" && !geoapifyKeyConfigured
+        ? "Выбран Geoapify, но серверный GEOAPIFY_API_KEY не настроен. Используется demo-режим."
+        : yandexKeyConfigured && !yandexLiveUiEnabled
         ? "Ключ обнаружен, но live UI заблокирован до подтверждения лицензионных условий. Используется demo-режим."
         : "Поиск возвращает обнаруженную выборку релевантных организаций, а не полный реестр рынка.",
   });
@@ -501,8 +562,32 @@ export async function POST(request: Request) {
   if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
   const payload = parsed.payload;
 
+  const provider = selectedProvider();
+  if (provider === "geoapify") {
+    const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+    if (!apiKey) return Response.json(createDemoResponse(payload));
+    try {
+      return Response.json(await new GeoapifyProvider(apiKey).search(payload));
+    } catch (error) {
+      const providerError =
+        error instanceof SearchProviderError
+          ? error
+          : new SearchProviderError(
+              "Неизвестная ошибка источника данных",
+              "GEOAPIFY_UNKNOWN_ERROR",
+            );
+      return Response.json(
+        { error: providerError.message, code: providerError.code },
+        {
+          status:
+            providerError.code === "GEOAPIFY_UNSUPPORTED_CATEGORY" ? 422 : 502,
+        },
+      );
+    }
+  }
+
   const liveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
-  const apiKey = liveUiEnabled
+  const apiKey = provider === "yandex" && liveUiEnabled
     ? process.env.YANDEX_MAPS_API_KEY?.trim()
     : undefined;
   if (!apiKey) return Response.json(createDemoResponse(payload));

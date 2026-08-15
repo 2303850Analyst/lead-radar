@@ -17,6 +17,7 @@ import {
   FileText,
   Globe2,
   Layers3,
+  Mail,
   Map as MapIcon,
   MapPin,
   Menu,
@@ -47,8 +48,130 @@ import LeadMap from "./LeadMap";
 
 type Screen = "search" | "results" | "map" | "detail";
 
-const STORAGE_KEY = "leadradar:last-search";
+type ProviderMetadata = {
+  id: string;
+  label: string;
+  queriedAt: string;
+  policy: {
+    persistence: "synthetic" | "allowed_with_attribution" | "contract_required";
+    attributionRequired: boolean;
+    attribution: string[];
+    rawResponsesStored: boolean;
+  };
+};
+
+type SearchResponseWithProvider = SearchResponse & {
+  provider?: ProviderMetadata;
+};
+
+type LeadWithSources = Lead & {
+  sources?: Array<{
+    provider: string;
+    externalId: string;
+    observedAt: string;
+  }>;
+};
+
+const STORAGE_KEY = "leadradar:last-search:v2";
 const TEMPLATE_KEY = "leadradar:template";
+
+function providerMetadata(response: SearchResponse): ProviderMetadata {
+  const metadata = (response as SearchResponseWithProvider).provider;
+  if (metadata) return metadata;
+
+  const mode = String(response.mode);
+  if (mode === "yandex") {
+    return {
+      id: "yandex",
+      label: "Яндекс Search API",
+      queriedAt: response.generatedAt,
+      policy: {
+        persistence: "contract_required",
+        attributionRequired: false,
+        attribution: [],
+        rawResponsesStored: false,
+      },
+    };
+  }
+
+  if (mode === "geoapify") {
+    return {
+      id: "geoapify",
+      label: "Geoapify Places API",
+      queriedAt: response.generatedAt,
+      policy: {
+        persistence: "allowed_with_attribution",
+        attributionRequired: true,
+        attribution: ["Geoapify", "OpenStreetMap contributors"],
+        rawResponsesStored: false,
+      },
+    };
+  }
+
+  return {
+    id: "demo",
+    label: "Демонстрационная выборка",
+    queriedAt: response.generatedAt,
+    policy: {
+      persistence: "synthetic",
+      attributionRequired: false,
+      attribution: [],
+      rawResponsesStored: false,
+    },
+  };
+}
+
+function canPersist(response: SearchResponse) {
+  return providerMetadata(response).policy.persistence !== "contract_required";
+}
+
+function hasProviderRestrictions(response: SearchResponse) {
+  return providerMetadata(response).policy.persistence === "contract_required";
+}
+
+function discoverySourceLabel(lead: Lead, response: SearchResponse) {
+  const source = String(lead.discovery.source);
+  if (source === "geoapify") return "Geoapify Places API";
+  if (source === "yandex") return "Яндекс Search API";
+  if (source === "demo") return "Демонстрационная запись";
+  return providerMetadata(response).label;
+}
+
+function attributionLink(attribution: string) {
+  const normalized = attribution.toLocaleLowerCase("en");
+  if (normalized.includes("geoapify")) {
+    return { href: "https://www.geoapify.com/", label: "Powered by Geoapify" };
+  }
+  if (normalized.includes("openstreetmap")) {
+    return {
+      href: "https://www.openstreetmap.org/copyright",
+      label: "© OpenStreetMap contributors",
+    };
+  }
+  return null;
+}
+
+function ProviderAttribution({ response }: { response: SearchResponse }) {
+  const provider = providerMetadata(response);
+  if (!provider.policy.attributionRequired) return null;
+
+  return (
+    <div className="provider-attribution" aria-label="Атрибуция источника данных">
+      <Database size={14} />
+      <span>Источник: {provider.label}</span>
+      {provider.policy.attribution.map((attribution) => {
+        const link = attributionLink(attribution);
+        return link ? (
+          <a key={attribution} href={link.href} target="_blank" rel="noreferrer">
+            {link.label}
+          </a>
+        ) : (
+          <span key={attribution}>{attribution}</span>
+        );
+      })}
+    </div>
+  );
+}
 
 const DEFAULT_QUERY: SearchPayload = {
   description:
@@ -78,16 +201,27 @@ const STATUSES: LeadStatus[] = [
 function websiteLabel(lead: Lead) {
   if (lead.website.verifiedStatus === "found") {
     return lead.website.sourceStatus === "listed"
-      ? "Указан в Яндексе"
+      ? "Указан источником"
       : "Найден дополнительно";
   }
   if (lead.website.verifiedStatus === "not_found_after_checks") {
     return "Не найден после проверки";
   }
   if (lead.website.verifiedStatus === "unavailable") return "Недоступен";
+  if (lead.website.sourceStatus === "not_checked") {
+    return "Данные не проверены";
+  }
   return lead.website.sourceStatus === "not_listed"
-    ? "Не указан в Яндексе"
-    : "Не проверен";
+    ? "Не указан источником"
+    : "Указан, не проверен";
+}
+
+function websiteSourceLabel(lead: Lead) {
+  if (lead.website.sourceStatus === "listed") return "Указан";
+  if (lead.website.sourceStatus === "not_listed") {
+    return "Не указан в полученных данных";
+  }
+  return "Расширенные данные не запрашивались";
 }
 
 function scoreTone(score: number) {
@@ -106,7 +240,12 @@ function statusTone(status: LeadStatus) {
 
 function csvCell(value: string | number | null) {
   const normalized = value === null ? "" : String(value);
-  return `"${normalized.replaceAll('"', '""')}"`;
+  // Provider data is untrusted. Neutralize spreadsheet formulas before the
+  // CSV is opened in Excel or another desktop spreadsheet application.
+  const safeValue = /^[=+\-@]/.test(normalized.trimStart())
+    ? `'${normalized}`
+    : normalized;
+  return `"${safeValue.replaceAll('"', '""')}"`;
 }
 
 function StatCard({
@@ -279,7 +418,7 @@ export default function LeadRadarApp() {
         const savedTemplate = window.localStorage.getItem(TEMPLATE_KEY);
         if (saved) {
           const savedResponse = JSON.parse(saved) as SearchResponse;
-          if (savedResponse.mode === "demo") {
+          if (canPersist(savedResponse)) {
             setResponse(savedResponse);
           } else {
             window.localStorage.removeItem(STORAGE_KEY);
@@ -298,7 +437,7 @@ export default function LeadRadarApp() {
 
   useEffect(() => {
     if (!response) return;
-    if (response.mode === "demo") {
+    if (canPersist(response)) {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(response));
     } else {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -317,7 +456,8 @@ export default function LeadRadarApp() {
       if (lead.scores.confidence < minConfidence) return false;
       if (statusFilter !== "any" && lead.status !== statusFilter) return false;
       if (websiteFilter === "missing" && lead.website.sourceStatus !== "not_listed") return false;
-      if (websiteFilter === "found" && lead.website.verifiedStatus !== "found") return false;
+      if (websiteFilter === "listed" && lead.website.sourceStatus !== "listed") return false;
+      if (websiteFilter === "unchecked" && lead.website.sourceStatus !== "not_checked") return false;
       return true;
     });
     return [...leads].sort((left, right) => {
@@ -356,7 +496,12 @@ export default function LeadRadarApp() {
       setResponse(data);
       setSelectedLeadId(data.leads[0]?.id ?? null);
       setScreen("results");
-      setNotice(data.mode === "demo" ? "Демо-режим: интерфейс работает без ключа Яндекса." : "Данные получены через Яндекс Search API.");
+      const provider = providerMetadata(data);
+      setNotice(
+        String(data.mode) === "demo"
+          ? "Демо-режим: интерфейс работает без ключа провайдера."
+          : `Данные получены через ${provider.label}.`,
+      );
     } catch (searchError) {
       setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск");
     } finally {
@@ -391,23 +536,38 @@ export default function LeadRadarApp() {
   };
 
   const exportCsv = () => {
-    if (!response || response.mode !== "demo") {
-      setNotice("Экспорт live-данных отключён до подтверждения условий источника.");
+    if (!response || !canPersist(response)) {
+      setNotice("Экспорт отключён: для этого источника сначала нужны договорные права на хранение данных.");
       return;
     }
-    const header = ["Компания", "Категория", "Адрес", "Телефон", "Сайт", "Проблемы", "Потенциал", "Скрытость", "Достоверность", "Статус"];
-    const rows = filteredLeads.map((lead) => [
-      lead.name,
-      lead.category,
-      lead.location.address,
-      lead.phone,
-      websiteLabel(lead),
-      lead.digitalProblems.join("; "),
-      lead.scores.opportunity,
-      lead.scores.hiddenness,
-      lead.scores.confidence,
-      lead.status,
-    ]);
+    const provider = providerMetadata(response);
+    const attribution = provider.policy.attribution
+      .map((item) => {
+        const link = attributionLink(item);
+        return link ? `${link.label} — ${link.href}` : item;
+      })
+      .join("; ");
+    const header = ["Компания", "Категория", "Адрес", "Телефон", "Email", "Сайт", "Статус сайта", "Проблемы", "Потенциал", "Скрытость", "Достоверность", "Статус", "Источник", "ID источника", "Атрибуция данных"];
+    const rows = filteredLeads.map((lead) => {
+      const source = (lead as LeadWithSources).sources?.[0];
+      return [
+        lead.name,
+        lead.category,
+        lead.location.address,
+        lead.phone,
+        lead.email ?? null,
+        lead.website.url,
+        websiteLabel(lead),
+        lead.digitalProblems.join("; "),
+        lead.scores.opportunity,
+        lead.scores.hiddenness,
+        lead.scores.confidence,
+        lead.status,
+        provider.label,
+        source?.externalId ?? lead.id,
+        attribution,
+      ];
+    });
     const csv = [header, ...rows].map((row) => row.map(csvCell).join(";")).join("\n");
     const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -420,7 +580,7 @@ export default function LeadRadarApp() {
 
   const navigate = (next: Screen) => {
     if ((next === "results" || next === "map") && !response) return;
-    if (next === "map" && response?.mode === "yandex") {
+    if (next === "map" && response && hasProviderRestrictions(response)) {
       setNotice("Сторонняя карта для live-данных отключена до подтверждения условий источника.");
       return;
     }
@@ -470,7 +630,7 @@ export default function LeadRadarApp() {
             onPage={setPage}
             onOpenLead={openLead}
             onMap={() => {
-              if (response.mode === "yandex") {
+              if (hasProviderRestrictions(response)) {
                 setNotice("Сторонняя карта для live-данных отключена до подтверждения условий источника.");
                 return;
               }
@@ -503,6 +663,7 @@ export default function LeadRadarApp() {
         )}
         {screen === "detail" && selectedLead && (
           <DetailScreen
+            response={response}
             lead={selectedLead}
             note={notes[selectedLead.id] ?? ""}
             copied={copied}
@@ -511,7 +672,7 @@ export default function LeadRadarApp() {
             onNote={(value) => {
               const next = { ...notes, [selectedLead.id]: value };
               setNotes(next);
-              if (response?.mode === "demo") {
+              if (response && canPersist(response)) {
                 window.localStorage.setItem("leadradar:notes", JSON.stringify(next));
               }
             }}
@@ -572,7 +733,7 @@ function SearchScreen({
           <div className="section-title"><span className="icon-box"><MapPin size={18} /></span><div><h2>Где ищем</h2><p>Центр и радиус будущей выборки</p></div></div>
           <div className="segmented"><button type="button">Город</button><button type="button">Район</button><button type="button" className="active">Радиус</button><button type="button">Область</button></div>
           <div className="field-group"><label htmlFor="location">Центр</label><div className="input-icon"><input id="location" value={query.location} onChange={(event) => setQuery({ ...query, location: event.target.value })} required /><MapPin size={17} /></div></div>
-          <div className="radius-row"><div className="field-group"><label htmlFor="radius">Радиус</label><div className="unit-input"><input id="radius" type="number" min={1} max={100} value={query.radiusKm} onChange={(event) => setQuery({ ...query, radiusKm: Number(event.target.value) })} /><span>км</span></div></div><div className="radius-summary"><strong>{query.radiusKm} км</strong><span>от выбранного центра</span></div></div>
+          <div className="radius-row"><div className="field-group"><label htmlFor="radius">Радиус</label><div className="unit-input"><input id="radius" type="number" min={0.5} max={250} step={0.5} value={query.radiusKm} onChange={(event) => setQuery({ ...query, radiusKm: Number(event.target.value) })} /><span>км</span></div></div><div className="radius-summary"><strong>{query.radiusKm} км</strong><span>от выбранного центра</span></div></div>
           <div className="location-visual" aria-label="Предпросмотр области поиска">
             <div className="street-grid" />
             <div className="search-radius"><span><MapPin size={22} /></span></div>
@@ -580,10 +741,10 @@ function SearchScreen({
             <div className="map-legend"><i /> Зона поиска · {query.radiusKm} км</div>
           </div>
           <div className="service-section">
-            <h3>Что предлагаем</h3><p>Это влияет на коммерческий скоринг, но не отсекает лиды.</p>
+            <h3>Что предлагаем</h3><p>Это влияет на рекомендуемый заход, но не на поиск и скоринг лидов.</p>
             <div className="service-grid">{services.map((service) => <label className="check-card" key={service}><input type="checkbox" checked={query.services.includes(service)} onChange={() => setQuery({ ...query, services: query.services.includes(service) ? query.services.filter((item) => item !== service) : [...query.services, service] })} /><span><Check size={13} /></span>{service}</label>)}</div>
           </div>
-          <div className="source-note"><ShieldCheck size={18} /><span><strong>Безопасный режим источника</strong>Официальный API при наличии ключа; иначе детерминированная демо-выборка.</span></div>
+          <div className="source-note"><ShieldCheck size={18} /><span><strong>Источник организаций</strong>Geoapify Places API при наличии серверного ключа; иначе детерминированная демо-выборка.</span></div>
         </section>
       </form>
     </section>
@@ -634,18 +795,25 @@ function ResultsScreen({
   onExport: () => void;
 }) {
   const s = response.summary;
+  const persistenceAllowed = canPersist(response);
+  const sampleSize = Math.max(1, s.assumedBusinesses);
+  const share = (value: number) =>
+    `${((value / sampleSize) * 100).toLocaleString("ru-RU", {
+      maximumFractionDigits: 1,
+    })}% выборки`;
   return (
     <section className="screen results-screen">
       <header className="screen-header">
         <div><p className="eyebrow">Готовая выборка</p><h1>Результаты поиска</h1><p>«{response.query.primaryQuery}» · {response.query.radiusKm} км от {response.query.location} · {new Date(response.generatedAt).toLocaleString("ru-RU")}</p></div>
-        <div className="header-actions"><button className="button" onClick={onExport}><Download size={16} /> Экспорт CSV</button><button className="button"><Save size={16} /> Сохранено локально</button></div>
+        <div className="header-actions"><button className="button" onClick={onExport} disabled={!persistenceAllowed}><Download size={16} /> Экспорт CSV</button><button className="button" disabled={!persistenceAllowed} title={persistenceAllowed ? "Выборка сохранена в этом браузере" : "Хранение отключено условиями источника"}><Save size={16} /> {persistenceAllowed ? "Сохранено локально" : "Хранение отключено"}</button></div>
       </header>
+      <ProviderAttribution response={response} />
       <div className="stats-grid">
         <StatCard label="Получено карточек" value={s.cardsFound} />
         <StatCard label="Уникальных локаций" value={s.uniqueLocations} />
         <StatCard label="Предполагаемых бизнесов" value={s.assumedBusinesses} />
-        <StatCard label="Найдено основным запросом" value={s.foundByPrimary} delta="40,5% выборки" />
-        <StatCard label="Только расширенным поиском" value={s.foundOnlyExpanded} delta="59,5% выборки" />
+        <StatCard label="Соответствует основному запросу" value={s.foundByPrimary} delta={share(s.foundByPrimary)} />
+        <StatCard label="Только расширенным поиском" value={s.foundOnlyExpanded} delta={share(s.foundOnlyExpanded)} />
         <StatCard label="Кандидатов с цифровыми разрывами" value={s.digitalGapCandidates} delta="для приоритизации" />
         <StatCard label="Нужна ручная проверка" value={s.manualReviewCandidates} delta="низкая достоверность" />
         <div className="sample-warning"><AlertTriangle size={20} /><span><strong>Discovery, а не реестр</strong>{response.notice}</span></div>
@@ -656,10 +824,10 @@ function ResultsScreen({
         <div className="view-switch"><button className="active"><Table2 size={15} /> Таблица</button><button onClick={onMap}><MapIcon size={15} /> Карта</button></div>
         <span className="result-count">Показано {visibleLeads.length} из {filteredLeads.length}</span>
       </div>
-      {showFilters && <div className="inline-filters"><label>Потенциал от <input type="number" min={0} max={100} value={minOpportunity} onChange={(event) => onOpportunity(Number(event.target.value))} /></label><label>Сайт <select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">любой</option><option value="missing">не указан</option><option value="found">найден</option></select></label><label>Статус <select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label></div>}
+      {showFilters && <div className="inline-filters"><label>Потенциал от <input type="number" min={0} max={100} value={minOpportunity} onChange={(event) => onOpportunity(Number(event.target.value))} /></label><label>URL сайта <select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">любой</option><option value="missing">не указан в полученных данных</option><option value="listed">указан источником</option><option value="unchecked">расширенные данные не запрашивались</option></select></label><label>Статус <select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label></div>}
       <div className="table-wrap panel">
         <table>
-          <thead><tr><th>№</th><th>Компания</th><th>Категория</th><th>Адрес</th><th>Телефон</th><th>Сайт после проверки</th><th>Цифровая проблема</th><th>Потенциал</th><th>Скрытость</th><th>Достоверность</th><th>Статус</th></tr></thead>
+          <thead><tr><th>№</th><th>Компания</th><th>Категория</th><th>Адрес</th><th>Телефон</th><th>Сайт в источнике</th><th>Цифровая проблема</th><th>Потенциал</th><th>Скрытость</th><th>Достоверность</th><th>Статус</th></tr></thead>
           <tbody>{visibleLeads.map((lead, index) => <tr key={lead.id} onDoubleClick={() => onOpenLead(lead)}><td className="priority-cell">{(page - 1) * 5 + index + 1}</td><td className="company-cell"><button onClick={() => onOpenLead(lead)}>{lead.name}</button><small>{lead.tags[0]}</small></td><td>{lead.category}</td><td>{lead.location.address}</td><td>{lead.phone ?? "—"}</td><td><span className={`site-state ${lead.website.verifiedStatus === "found" ? "positive" : ""}`}>{websiteLabel(lead)}</span></td><td>{lead.digitalProblems[0] ?? "Не выявлено"}</td><td><Score value={lead.scores.opportunity} compact /></td><td><Score value={lead.scores.hiddenness} compact /></td><td><Score value={lead.scores.confidence} compact /></td><td><select className={`status-select ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(lead.id, event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></td></tr>)}</tbody>
         </table>
         {!visibleLeads.length && <div className="empty-state"><Search size={24} />Нет лидов с такими фильтрами</div>}
@@ -715,8 +883,9 @@ function MapScreen({
   return (
     <section className="screen map-screen">
       <header className="screen-header compact-header"><div><p className="eyebrow">География лидов</p><h1>Результаты на карте</h1><p>«{response.query.primaryQuery}» · радиус {response.query.radiusKm} км · найдено {leads.length} компаний</p></div><button className="button" onClick={onResults}><Table2 size={16} /> К таблице</button></header>
+      <ProviderAttribution response={response} />
       <div className="map-layout panel">
-        <aside className="map-filters"><div className="filter-heading"><SlidersHorizontal size={17} /><strong>Фильтры</strong><button onClick={() => { onOpportunity(0); onHiddenness(0); onConfidence(0); onWebsite("any"); onStatusFilter("any"); }}>Сбросить</button></div><label>Сайт после проверки<select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">Любой</option><option value="missing">Не указан</option><option value="found">Найден</option></select></label><label>Статус<select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">Любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label><RangeFilter label="Потенциал от" value={minOpportunity} onChange={onOpportunity} /><RangeFilter label="Скрытость от" value={minHiddenness} onChange={onHiddenness} /><RangeFilter label="Достоверность от" value={minConfidence} onChange={onConfidence} /><div className="map-key"><span><i className="key-green" />80–100</span><span><i className="key-orange" />60–79</span><span><i className="key-red" />до 59</span></div></aside>
+        <aside className="map-filters"><div className="filter-heading"><SlidersHorizontal size={17} /><strong>Фильтры</strong><button onClick={() => { onOpportunity(0); onHiddenness(0); onConfidence(0); onWebsite("any"); onStatusFilter("any"); }}>Сбросить</button></div><label>URL сайта<select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">Любой</option><option value="missing">Не указан в полученных данных</option><option value="listed">Указан источником</option><option value="unchecked">Расширенные данные не запрашивались</option></select></label><label>Статус<select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">Любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label><RangeFilter label="Потенциал от" value={minOpportunity} onChange={onOpportunity} /><RangeFilter label="Скрытость от" value={minHiddenness} onChange={onHiddenness} /><RangeFilter label="Достоверность от" value={minConfidence} onChange={onConfidence} /><div className="map-key"><span><i className="key-green" />80–100</span><span><i className="key-orange" />60–79</span><span><i className="key-red" />до 59</span></div></aside>
         <div className="map-canvas"><LeadMap leads={leads} selectedLeadId={selectedLeadId} onSelect={(lead) => onSelect(lead.id)} /></div>
         <aside className="map-list"><div className="map-list-head"><div><strong>Компании в области</strong><span>{leads.length} результатов</span></div><select value={sort} onChange={(event) => onSort(event.target.value)}><option value="opportunity">По потенциалу</option><option value="hiddenness">По скрытости</option><option value="confidence">По достоверности</option></select></div><div className="lead-stack">{leads.map((lead, index) => <button key={lead.id} className={lead.id === selectedLeadId ? "selected" : ""} onClick={() => onSelect(lead.id)} onDoubleClick={() => onOpenLead(lead)}><span className="list-index">{index + 1}</span><span className="list-copy"><strong>{lead.name}</strong><small>{lead.location.address}</small><em>{lead.digitalProblems[0]}</em></span><Score value={lead.scores.opportunity} compact /></button>)}</div>{selectedLeadId && <button className="button button-primary map-open" onClick={() => { const lead = leads.find((item) => item.id === selectedLeadId); if (lead) onOpenLead(lead); }}>Открыть карточку <ChevronRight size={16} /></button>}</aside>
       </div>
@@ -725,6 +894,7 @@ function MapScreen({
 }
 
 function DetailScreen({
+  response,
   lead,
   note,
   copied,
@@ -733,6 +903,7 @@ function DetailScreen({
   onNote,
   onCopy,
 }: {
+  response: SearchResponse;
   lead: Lead;
   note: string;
   copied: string;
@@ -741,18 +912,25 @@ function DetailScreen({
   onNote: (value: string) => void;
   onCopy: (value: string, label: string) => void;
 }) {
-  const yandexUrl = `https://yandex.ru/maps/?pt=${lead.location.coordinates[0]},${lead.location.coordinates[1]}&z=16&l=map`;
+  const provider = providerMetadata(response);
+  const [longitude, latitude] = lead.location.coordinates;
+  const isYandex = String(lead.discovery.source) === "yandex" || provider.id === "yandex";
+  const externalMapUrl = isYandex
+    ? `https://yandex.ru/maps/?pt=${longitude},${latitude}&z=16&l=map`
+    : `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=16/${latitude}/${longitude}`;
+  const externalMapLabel = isYandex ? "Открыть в Яндекс Картах" : "Открыть в OpenStreetMap";
   return (
     <section className="screen detail-screen">
       <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Назад к результатам</button>
-      <header className="detail-header"><div><div className="title-row"><h1>{lead.name}</h1><span className={`status-pill ${statusTone(lead.status)}`}>{lead.status}</span></div><div className="tag-row"><span>{lead.category}</span>{lead.tags.map((tag) => <span key={tag}>{tag}</span>)}</div><p><MapPin size={15} /> {lead.location.address}{lead.possibleBranches.length > 0 && <button>{lead.possibleBranches.length} возможных филиала</button>}</p></div><div className="header-actions"><select className={`status-select detail-status ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select>{lead.phone && <a className="button button-primary" href={`tel:${lead.phone.replace(/[^+\d]/g, "")}`}><Phone size={16} /> Связаться</a>}<a className="button" href={yandexUrl} target="_blank" rel="noreferrer"><MapPin size={16} /> Открыть в Яндекс Картах</a></div></header>
+      <header className="detail-header"><div><div className="title-row"><h1>{lead.name}</h1><span className={`status-pill ${statusTone(lead.status)}`}>{lead.status}</span></div><div className="tag-row"><span>{lead.category}</span>{lead.tags.map((tag) => <span key={tag}>{tag}</span>)}</div><p><MapPin size={15} /> {lead.location.address}{lead.possibleBranches.length > 0 && <button>{lead.possibleBranches.length} возможных филиала</button>}</p></div><div className="header-actions"><select className={`status-select detail-status ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select>{lead.phone && <a className="button button-primary" href={`tel:${lead.phone.replace(/[^+\d]/g, "")}`}><Phone size={16} /> Связаться</a>}<a className="button" href={externalMapUrl} target="_blank" rel="noreferrer"><MapPin size={16} /> {externalMapLabel}</a></div></header>
+      <ProviderAttribution response={response} />
       <div className="detail-tabs"><button className="active">Обзор</button><button>Источники</button><button>Проблемы</button><button>Оценки</button><button>История</button></div>
       <div className="detail-grid">
-        <section className="panel detail-card contacts-card"><div className="card-title"><Phone size={17} /><h2>Контакты и ресурсы</h2></div><dl>{lead.phone && <><dt><Phone size={15} />Телефон</dt><dd>{lead.phone}<button onClick={() => onCopy(lead.phone!, "phone")} aria-label="Копировать телефон">{copied === "phone" ? <Check size={14} /> : <Copy size={14} />}</button></dd></>}<dt><Globe2 size={15} />Сайт в Яндексе</dt><dd>{lead.website.sourceStatus === "listed" ? "Указан" : "Не указан"}</dd><dt><ShieldCheck size={15} />Сайт после проверки</dt><dd className={lead.website.verifiedStatus === "found" ? "positive-text" : "warning-text"}>{websiteLabel(lead)}{lead.website.url && <a href={lead.website.url} target="_blank" rel="noreferrer">{lead.website.url.replace(/^https?:\/\//, "")} <ExternalLink size={12} /></a>}</dd><dt><Send size={15} />Telegram</dt><dd>{lead.socials.telegram ? <a href={lead.socials.telegram} target="_blank" rel="noreferrer">Открыть канал <ExternalLink size={12} /></a> : "Не найден"}</dd><dt><Users size={15} />VK</dt><dd>{lead.socials.vk ? <a href={lead.socials.vk} target="_blank" rel="noreferrer">Открыть страницу <ExternalLink size={12} /></a> : "Не найден"}</dd></dl></section>
+        <section className="panel detail-card contacts-card"><div className="card-title"><Phone size={17} /><h2>Контакты и ресурсы</h2></div><dl>{lead.phone && <><dt><Phone size={15} />Телефон</dt><dd>{lead.phone}<button onClick={() => onCopy(lead.phone!, "phone")} aria-label="Копировать телефон">{copied === "phone" ? <Check size={14} /> : <Copy size={14} />}</button></dd></>}{lead.email && <><dt><Mail size={15} />Email</dt><dd><a href={`mailto:${lead.email}`}>{lead.email}</a><button onClick={() => onCopy(lead.email!, "email")} aria-label="Копировать email">{copied === "email" ? <Check size={14} /> : <Copy size={14} />}</button></dd></>}<dt><Globe2 size={15} />Сайт в {provider.label}</dt><dd>{websiteSourceLabel(lead)}</dd><dt><ShieldCheck size={15} />Сайт после проверки</dt><dd className={lead.website.verifiedStatus === "found" ? "positive-text" : "warning-text"}>{websiteLabel(lead)}{lead.website.url && <a href={lead.website.url} target="_blank" rel="noreferrer">{lead.website.url.replace(/^https?:\/\//, "")} <ExternalLink size={12} /></a>}</dd><dt><Send size={15} />Telegram</dt><dd>{lead.socials.telegram ? <a href={lead.socials.telegram} target="_blank" rel="noreferrer">Открыть канал <ExternalLink size={12} /></a> : "Не найден"}</dd><dt><Users size={15} />VK</dt><dd>{lead.socials.vk ? <a href={lead.socials.vk} target="_blank" rel="noreferrer">Открыть страницу <ExternalLink size={12} /></a> : "Не найден"}</dd></dl></section>
         <section className="panel detail-card problems-card"><div className="card-title"><AlertTriangle size={17} /><h2>Цифровые разрывы</h2></div><div className="problem-list">{lead.digitalProblems.map((problem) => <div key={problem}><AlertTriangle size={15} />{problem}</div>)}</div><p className="fact-note"><ShieldCheck size={14} />Факты основаны на карточке и указанном уровне проверки.</p></section>
         <section className="panel detail-card summary-card"><div className="card-title"><FileText size={17} /><h2>Краткая сводка</h2></div><p>{lead.summary}</p><div className="hypothesis"><Sparkles size={15} /><span><strong>Рабочая гипотеза</strong>{lead.recommendedOffer}</span></div></section>
         <section className="panel detail-card mini-map-card"><div className="card-title"><MapIcon size={17} /><h2>Карта и филиалы</h2></div><div className="detail-map"><LeadMap leads={[lead]} selectedLeadId={lead.id} onSelect={() => undefined} /></div>{lead.possibleBranches.length > 0 ? <ul>{lead.possibleBranches.map((branch) => <li key={branch}><MapPin size={13} />{branch}</li>)}</ul> : <p className="muted-copy">Другие филиалы не обнаружены</p>}</section>
-        <section className="panel detail-card discovery-card"><div className="card-title"><Layers3 size={17} /><h2>Как обнаружен</h2></div><p className="source-stamp"><Database size={14} />{lead.discovery.source === "yandex" ? "Яндекс Search API" : "Демонстрационная запись"} · {lead.discovery.observedAt}</p><dl><dt>Основной запрос</dt><dd>{lead.discovery.primaryFound ? "Найден" : "Не найден"}</dd><dt>Смежные запросы</dt><dd>{lead.discovery.matchedQueries.join(", ")}</dd><dt>Причина скрытости</dt><dd>{lead.discovery.hiddenReason}</dd></dl></section>
+        <section className="panel detail-card discovery-card"><div className="card-title"><Layers3 size={17} /><h2>Как обнаружен</h2></div><p className="source-stamp"><Database size={14} />{discoverySourceLabel(lead, response)} · {lead.discovery.observedAt}</p><dl><dt>Основной запрос</dt><dd>{lead.discovery.primaryFound ? "Найден" : "Не найден"}</dd><dt>Смежные запросы</dt><dd>{lead.discovery.matchedQueries.join(", ")}</dd><dt>Причина скрытости</dt><dd>{lead.discovery.hiddenReason}</dd></dl></section>
         <section className="panel detail-card offer-card"><div className="card-title"><Sparkles size={17} /><h2>Рекомендуемый заход</h2></div><p>{lead.recommendedOffer}</p><button className="button" onClick={() => onCopy(`Здравствуйте! Изучили цифровое присутствие компании «${lead.name}». ${lead.recommendedOffer}`, "offer")}>{copied === "offer" ? <Check size={15} /> : <Copy size={15} />}{copied === "offer" ? "Скопировано" : "Скопировать черновик"}</button></section>
         <section className="panel detail-card scores-card"><div className="card-title"><BarChart3 size={17} /><h2>Оценки</h2></div><div className="score-block"><span>Коммерческий потенциал</span><Score value={lead.scores.opportunity} /></div><div className="score-block"><span>Скрытость</span><Score value={lead.scores.hiddenness} /></div><div className="score-block"><span>Достоверность данных</span><Score value={lead.scores.confidence} /></div></section>
         <section className="panel detail-card note-card"><div className="card-title"><Clock3 size={17} /><h2>Рабочая заметка</h2></div><textarea rows={4} value={note} onChange={(event) => onNote(event.target.value)} placeholder="Результат звонка, контекст, следующий шаг…" /><small>Сохраняется локально в браузере</small></section>

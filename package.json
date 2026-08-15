@@ -1,14 +1,14 @@
 {
   "name": "lead-radar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev --hostname 0.0.0.0",
+    "dev": "vinext dev --hostname 127.0.0.1",
     "build": "vinext build",
-    "start": "vinext start",
+    "start": "vinext start --hostname 127.0.0.1",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },

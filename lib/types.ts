@@ -5,12 +5,43 @@ export type LeadStatus =
   | "Связались"
   | "Не подходит";
 
-export type WebsiteSourceStatus = "listed" | "not_listed";
+export type WebsiteSourceStatus = "listed" | "not_listed" | "not_checked";
 export type WebsiteVerifiedStatus =
   | "found"
   | "not_found_after_checks"
   | "unavailable"
   | "not_checked";
+
+export type SearchProviderId = "demo" | "yandex" | "geoapify";
+
+export type ProviderPersistencePolicy =
+  | "synthetic"
+  | "allowed_with_attribution"
+  | "contract_required";
+
+export type SearchProviderMetadata = {
+  id: SearchProviderId;
+  label: string;
+  queriedAt: string;
+  policy: {
+    persistence: ProviderPersistencePolicy;
+    attributionRequired: boolean;
+    attribution: string[];
+    /** LeadRadar never persists complete upstream responses. */
+    rawResponsesStored: false;
+  };
+  coverage?: {
+    categories: string[];
+    detailsRequested: number;
+    detailsSucceeded: number;
+  };
+};
+
+export type LeadSourceObservation = {
+  provider: SearchProviderId;
+  externalId: string;
+  observedAt: string;
+};
 
 export type SearchPayload = {
   description: string;
@@ -33,6 +64,7 @@ export type Lead = {
     coordinates: [number, number];
   };
   phone: string | null;
+  email?: string | null;
   website: {
     sourceStatus: WebsiteSourceStatus;
     verifiedStatus: WebsiteVerifiedStatus;
@@ -47,9 +79,10 @@ export type Lead = {
     matchedQueries: string[];
     hiddenReason: string;
     observedAt: string;
-    source: "demo" | "yandex";
+    source: SearchProviderId;
     primaryFound: boolean;
   };
+  sources: LeadSourceObservation[];
   scores: {
     opportunity: number;
     hiddenness: number;
@@ -72,7 +105,8 @@ export type SearchSummary = {
 };
 
 export type SearchResponse = {
-  mode: "demo" | "yandex";
+  mode: SearchProviderId;
+  provider: SearchProviderMetadata;
   query: SearchPayload;
   summary: SearchSummary;
   leads: Lead[];

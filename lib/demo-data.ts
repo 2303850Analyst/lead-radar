@@ -32,6 +32,7 @@ export const demoLeads: Lead[] = [
       source: "demo",
       primaryFound: false,
     },
+    sources: [{ provider: "demo", externalId: "fulfillment-pro", observedAt }],
     scores: { opportunity: 92, hiddenness: 78, confidence: 82 },
     status: "Новый",
     summary:
@@ -71,6 +72,7 @@ export const demoLeads: Lead[] = [
       source: "demo",
       primaryFound: false,
     },
+    sources: [{ provider: "demo", externalId: "sklad-market", observedAt }],
     scores: { opportunity: 88, hiddenness: 82, confidence: 75 },
     status: "Новый",
     summary:
@@ -103,6 +105,7 @@ export const demoLeads: Lead[] = [
       source: "demo",
       primaryFound: false,
     },
+    sources: [{ provider: "demo", externalId: "pack-store", observedAt }],
     scores: { opportunity: 76, hiddenness: 65, confidence: 70 },
     status: "Проверить",
     summary:
@@ -135,6 +138,7 @@ export const demoLeads: Lead[] = [
       source: "demo",
       primaryFound: false,
     },
+    sources: [{ provider: "demo", externalId: "logistic-market", observedAt }],
     scores: { opportunity: 61, hiddenness: 71, confidence: 40 },
     status: "Новый",
     summary:
@@ -166,6 +170,7 @@ export const demoLeads: Lead[] = [
       source: "demo",
       primaryFound: false,
     },
+    sources: [{ provider: "demo", externalId: "storage-plus", observedAt }],
     scores: { opportunity: 58, hiddenness: 54, confidence: 86 },
     status: "В работе",
     summary: "Складской комплекс с работающим сайтом, но без понятного онлайн-расчёта.",
@@ -196,6 +201,7 @@ export const demoLeads: Lead[] = [
       source: "demo",
       primaryFound: true,
     },
+    sources: [{ provider: "demo", externalId: "fulfill-center", observedAt }],
     scores: { opportunity: 73, hiddenness: 28, confidence: 92 },
     status: "Связались",
     summary: "Хорошо представленная компания, подходит скорее для автоматизации, чем для создания сайта.",
@@ -226,6 +232,7 @@ export const demoLeads: Lead[] = [
       source: "demo",
       primaryFound: false,
     },
+    sources: [{ provider: "demo", externalId: "ip-sokolov", observedAt }],
     scores: { opportunity: 84, hiddenness: 91, confidence: 68 },
     status: "Проверить",
     summary:
@@ -257,6 +264,7 @@ export const demoLeads: Lead[] = [
       source: "demo",
       primaryFound: false,
     },
+    sources: [{ provider: "demo", externalId: "mplace-pack", observedAt }],
     scores: { opportunity: 79, hiddenness: 88, confidence: 64 },
     status: "Новый",
     summary: "Упаковочная компания представлена в Telegram, но собственный сайт не указан.",
@@ -270,6 +278,17 @@ export function createDemoResponse(query: SearchPayload): SearchResponse {
 
   return {
     mode: "demo",
+    provider: {
+      id: "demo",
+      label: "Демонстрационные данные",
+      queriedAt: new Date().toISOString(),
+      policy: {
+        persistence: "synthetic",
+        attributionRequired: false,
+        attribution: [],
+        rawResponsesStored: false,
+      },
+    },
     query,
     summary: {
       cardsFound: 320,

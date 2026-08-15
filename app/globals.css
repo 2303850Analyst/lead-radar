@@ -120,6 +120,9 @@ input:hover, textarea:hover, select:hover { border-color: #c7d0de; }
 .check-card input:checked + span { border-color: var(--blue); color: #fff; background: var(--blue); }
 .source-note { display: flex; gap: 9px; margin-top: 13px; padding: 11px; border-radius: 8px; color: #456178; background: #f2f7fb; font-size: 10px; }
 .source-note > span { display: grid; gap: 2px; }
+.provider-attribution { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 9px; margin: -8px 0 16px; color: var(--muted); font-size: 10px; }
+.provider-attribution a { color: var(--blue); text-decoration: none; }
+.provider-attribution a:hover { text-decoration: underline; }
 
 /* Results */
 .stats-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 9px; margin-bottom: 14px; }
