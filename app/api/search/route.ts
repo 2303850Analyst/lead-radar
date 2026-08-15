@@ -4,8 +4,16 @@ import {
   geoapifyDetailsLimit,
   geoapifyPlacesLimit,
 } from "@/lib/providers/geoapify";
-import { SearchProviderError } from "@/lib/providers/types";
-import type { Lead, SearchPayload, SearchResponse } from "@/lib/types";
+import {
+  SearchProviderError,
+  type SearchProgressCallback,
+} from "@/lib/providers/types";
+import type {
+  Lead,
+  SearchPayload,
+  SearchProgressEvent,
+  SearchResponse,
+} from "@/lib/types";
 import packageMetadata from "@/package.json";
 
 const YANDEX_ENDPOINT = "https://search-maps.yandex.ru/v1/";
@@ -57,12 +65,39 @@ function stringList(
   return { value: normalized };
 }
 
+function searchCenter(
+  value: unknown,
+): { value?: [number, number]; error?: string } {
+  if (value === undefined) return {};
+  if (
+    !Array.isArray(value) ||
+    value.length !== 2 ||
+    typeof value[0] !== "number" ||
+    !Number.isFinite(value[0]) ||
+    value[0] < -180 ||
+    value[0] > 180 ||
+    typeof value[1] !== "number" ||
+    !Number.isFinite(value[1]) ||
+    value[1] < -90 ||
+    value[1] > 90
+  ) {
+    return {
+      error:
+        "Поле «center» должно содержать [долгота, широта] в допустимом диапазоне",
+    };
+  }
+  return { value: [value[0], value[1]] };
+}
+
 function parseSearchPayload(value: unknown): PayloadResult {
   if (!isRecord(value)) return { ok: false, error: "Тело запроса должно быть объектом" };
 
   const primaryQuery =
     typeof value.primaryQuery === "string" ? value.primaryQuery.trim() : "";
-  const location = typeof value.location === "string" ? value.location.trim() : "";
+  const center = searchCenter(value.center);
+  if (center.error) return { ok: false, error: center.error };
+  const locationInput = typeof value.location === "string" ? value.location.trim() : "";
+  const location = locationInput || (center.value ? "Точка на карте" : "");
   if (!primaryQuery) return { ok: false, error: "Укажите основной поисковый запрос" };
   if (!location) return { ok: false, error: "Укажите город, район или адрес центра поиска" };
   if (primaryQuery.length > 200 || location.length > 300) {
@@ -106,6 +141,7 @@ function parseSearchPayload(value: unknown): PayloadResult {
       relatedQueries: relatedQueries.value ?? [],
       excludeQueries: excludeQueries.value ?? [],
       location,
+      ...(center.value ? { center: center.value } : {}),
       radiusKm,
       ...(offer ? { offer } : {}),
       services: services.value ?? [],
@@ -120,6 +156,21 @@ function websiteStatus(hasWebsite: boolean) {
     // does not verify that the website is reachable or belongs to the entity.
     verifiedStatus: "not_checked" as const,
   };
+}
+
+function safeHttpUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  const candidate = /^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.toString()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function scoreLead(input: {
@@ -329,13 +380,28 @@ function isExcluded(feature: YandexFeature, exclusions: string[]): boolean {
 async function yandexSearch(
   payload: SearchPayload,
   apiKey: string,
+  onProgress?: SearchProgressCallback,
 ): Promise<SearchResponse> {
   const terms = [
     ...new Set([payload.primaryQuery, ...payload.relatedQueries].map((term) => term.trim())),
   ]
     .filter(Boolean)
     .slice(0, MAX_QUERY_TERMS);
-  const center = await resolveSearchCenter(payload.location, apiKey);
+  await emitProgress(onProgress, {
+    stage: "geocoding",
+    status: "started",
+    message: payload.center
+      ? "Используем точку, выбранную на карте"
+      : "Определяем координаты указанной географии",
+  });
+  const center: [number, number] = payload.center
+    ? [payload.center[0], payload.center[1]]
+    : await resolveSearchCenter(payload.location, apiKey);
+  await emitProgress(onProgress, {
+    stage: "geocoding",
+    status: "completed",
+    message: "География поиска определена",
+  });
   const span = searchSpan(center, payload.radiusKm);
   const observations = new Map<
     string,
@@ -343,7 +409,14 @@ async function yandexSearch(
   >();
   let cardsFound = 0;
 
-  for (const term of terms) {
+  await emitProgress(onProgress, {
+    stage: "places",
+    status: "started",
+    message: "Ищем организации по поисковым запросам",
+    completed: 0,
+    total: terms.length,
+  });
+  for (const [termIndex, term] of terms.entries()) {
     const data = await requestYandex({
       text: term,
       type: "biz",
@@ -379,7 +452,41 @@ async function yandexSearch(
         });
       }
     }
+    await emitProgress(onProgress, {
+      stage: "places",
+      status: "running",
+      message: `Обработано поисковых запросов: ${termIndex + 1} из ${terms.length}`,
+      completed: termIndex + 1,
+      total: terms.length,
+    });
   }
+
+  await emitProgress(onProgress, {
+    stage: "places",
+    status: "completed",
+    message: `Поиск организаций завершён: ${observations.size}`,
+    completed: terms.length,
+    total: terms.length,
+  });
+  await emitProgress(onProgress, {
+    stage: "details",
+    status: "started",
+    message: "Контакты получены вместе с карточками Яндекса",
+    completed: 0,
+    total: 0,
+  });
+  await emitProgress(onProgress, {
+    stage: "details",
+    status: "completed",
+    message: "Отдельное обогащение карточек не требуется",
+    completed: 0,
+    total: 0,
+  });
+  await emitProgress(onProgress, {
+    stage: "normalizing",
+    status: "started",
+    message: "Структурируем, оцениваем и сортируем лиды",
+  });
 
   const leads: Lead[] = [...observations.entries()].map(
     ([id, observation], index) => {
@@ -388,7 +495,8 @@ async function yandexSearch(
       const coordinates: [number, number] = validCoordinates(rawCoordinates)
         ? [rawCoordinates[0], rawCoordinates[1]]
         : center;
-      const hasWebsite = Boolean(company.url);
+      const websiteUrl = safeHttpUrl(company.url);
+      const hasWebsite = Boolean(websiteUrl);
       const phone = company.Phones?.find((item) => item.formatted)?.formatted ?? null;
       const scores = scoreLead({
         primaryFound: observation.primaryFound,
@@ -410,7 +518,7 @@ async function yandexSearch(
         phone,
         website: {
           ...websiteStatus(hasWebsite),
-          url: company.url ?? null,
+          url: websiteUrl,
         },
         socials: {},
         digitalProblems: hasWebsite
@@ -459,7 +567,12 @@ async function yandexSearch(
   leads.sort((left, right) => right.scores.opportunity - left.scores.opportunity);
   const foundByPrimary = leads.filter((lead) => lead.discovery.primaryFound).length;
   const foundOnlyExpanded = leads.length - foundByPrimary;
-  return {
+  await emitProgress(onProgress, {
+    stage: "normalizing",
+    status: "completed",
+    message: `Подготовлено лидов: ${leads.length}`,
+  });
+  const response: SearchResponse = {
     mode: "yandex",
     provider: {
       id: "yandex",
@@ -492,6 +605,12 @@ async function yandexSearch(
       "Результат является обнаруженной выборкой API, а не гарантированно полным реестром рынка.",
     generatedAt: new Date().toISOString(),
   };
+  await emitProgress(onProgress, {
+    stage: "complete",
+    status: "completed",
+    message: `Поиск завершён: ${leads.length} лидов`,
+  });
+  return response;
 }
 
 export async function GET() {
@@ -551,63 +670,243 @@ export async function GET() {
   });
 }
 
+type PublicSearchError = {
+  error: string;
+  code: string;
+  status: number;
+};
+
+async function emitProgress(
+  onProgress: SearchProgressCallback | undefined,
+  event: Omit<SearchProgressEvent, "type" | "timestamp">,
+) {
+  await onProgress?.({
+    type: "progress",
+    ...event,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+async function demoSearch(
+  payload: SearchPayload,
+  onProgress?: SearchProgressCallback,
+): Promise<SearchResponse> {
+  await emitProgress(onProgress, {
+    stage: "geocoding",
+    status: "completed",
+    message: payload.center
+      ? "Используем точку, выбранную на карте"
+      : "Демо-режим использует подготовленную географию",
+  });
+  await emitProgress(onProgress, {
+    stage: "places",
+    status: "started",
+    message: "Загружаем демонстрационную выборку",
+    completed: 0,
+    total: 1,
+  });
+  await emitProgress(onProgress, {
+    stage: "places",
+    status: "completed",
+    message: "Демонстрационная выборка загружена",
+    completed: 1,
+    total: 1,
+  });
+  await emitProgress(onProgress, {
+    stage: "details",
+    status: "started",
+    message: "Демо-карточки уже содержат подготовленные контакты",
+    completed: 0,
+    total: 0,
+  });
+  await emitProgress(onProgress, {
+    stage: "details",
+    status: "completed",
+    message: "Отдельное обогащение демо-карточек не требуется",
+    completed: 0,
+    total: 0,
+  });
+  await emitProgress(onProgress, {
+    stage: "normalizing",
+    status: "started",
+    message: "Структурируем демонстрационные лиды",
+  });
+  const response = createDemoResponse(payload);
+  await emitProgress(onProgress, {
+    stage: "normalizing",
+    status: "completed",
+    message: `Подготовлено лидов: ${response.leads.length}`,
+  });
+  await emitProgress(onProgress, {
+    stage: "complete",
+    status: "completed",
+    message: `Поиск завершён: ${response.leads.length} лидов`,
+  });
+  return response;
+}
+
+async function executeSearch(
+  payload: SearchPayload,
+  onProgress?: SearchProgressCallback,
+  signal?: AbortSignal,
+): Promise<SearchResponse> {
+  const provider = selectedProvider();
+  if (provider === "geoapify") {
+    const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+    if (!apiKey) return demoSearch(payload, onProgress);
+    return new GeoapifyProvider(apiKey).search(payload, {
+      onProgress,
+      signal,
+    });
+  }
+
+  if (provider === "demo") return demoSearch(payload, onProgress);
+
+  const liveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
+  const apiKey = liveUiEnabled
+    ? process.env.YANDEX_MAPS_API_KEY?.trim()
+    : undefined;
+  if (!apiKey) return demoSearch(payload, onProgress);
+  return yandexSearch(payload, apiKey, onProgress);
+}
+
+function publicSearchError(error: unknown): PublicSearchError {
+  if (error instanceof SearchProviderError) {
+    return {
+      error: error.message,
+      code: error.code,
+      status: error.code === "GEOAPIFY_UNSUPPORTED_CATEGORY" ? 422 : 502,
+    };
+  }
+  if (error instanceof YandexProviderError) {
+    return { error: error.message, code: error.code, status: 502 };
+  }
+  return {
+    error: "Неизвестная ошибка источника данных",
+    code: "SEARCH_UNKNOWN_ERROR",
+    status: 502,
+  };
+}
+
+function ndjsonResponseLine(
+  value: unknown,
+  status = 200,
+): Response {
+  return new Response(`${JSON.stringify(value)}\n`, {
+    status,
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+function streamSearch(
+  payload: SearchPayload,
+  requestSignal?: AbortSignal,
+): Response {
+  const encoder = new TextEncoder();
+  const searchController = new AbortController();
+  let closed = false;
+  const abortFromRequest = () => searchController.abort();
+  if (requestSignal?.aborted) abortFromRequest();
+  else requestSignal?.addEventListener("abort", abortFromRequest, { once: true });
+  const detachRequestAbort = () =>
+    requestSignal?.removeEventListener("abort", abortFromRequest);
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (event: unknown) => {
+        if (closed) return;
+        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      };
+
+      void (async () => {
+        try {
+          if (searchController.signal.aborted) return;
+          send({
+            type: "progress",
+            stage: "validation",
+            status: "started",
+            message: "Проверяем параметры поиска",
+            timestamp: new Date().toISOString(),
+          } satisfies SearchProgressEvent);
+          send({
+            type: "progress",
+            stage: "validation",
+            status: "completed",
+            message: "Параметры поиска проверены",
+            timestamp: new Date().toISOString(),
+          } satisfies SearchProgressEvent);
+          const result = await executeSearch(
+            payload,
+            (event) => send(event),
+            searchController.signal,
+          );
+          send({ type: "result", data: result });
+        } catch (error) {
+          if (!searchController.signal.aborted) {
+            const failure = publicSearchError(error);
+            send({ type: "error", error: failure.error, code: failure.code });
+          }
+        } finally {
+          detachRequestAbort();
+          if (!closed) {
+            closed = true;
+            controller.close();
+          }
+        }
+      })();
+    },
+    cancel() {
+      closed = true;
+      searchController.abort();
+      detachRequestAbort();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-store",
+      "X-Accel-Buffering": "no",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 export async function POST(request: Request) {
+  const streamRequested = new URL(request.url).searchParams.get("stream") === "1";
   let body: unknown;
   try {
     body = await request.json();
   } catch {
-    return Response.json({ error: "Некорректный JSON" }, { status: 400 });
+    const failure = { type: "error", error: "Некорректный JSON", code: "INVALID_JSON" };
+    return streamRequested
+      ? ndjsonResponseLine(failure, 400)
+      : Response.json({ error: failure.error }, { status: 400 });
   }
   const parsed = parseSearchPayload(body);
-  if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
-  const payload = parsed.payload;
-
-  const provider = selectedProvider();
-  if (provider === "geoapify") {
-    const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
-    if (!apiKey) return Response.json(createDemoResponse(payload));
-    try {
-      return Response.json(await new GeoapifyProvider(apiKey).search(payload));
-    } catch (error) {
-      const providerError =
-        error instanceof SearchProviderError
-          ? error
-          : new SearchProviderError(
-              "Неизвестная ошибка источника данных",
-              "GEOAPIFY_UNKNOWN_ERROR",
-            );
-      return Response.json(
-        { error: providerError.message, code: providerError.code },
-        {
-          status:
-            providerError.code === "GEOAPIFY_UNSUPPORTED_CATEGORY" ? 422 : 502,
-        },
-      );
-    }
+  if (!parsed.ok) {
+    const failure = {
+      type: "error",
+      error: parsed.error,
+      code: "INVALID_SEARCH_PAYLOAD",
+    };
+    return streamRequested
+      ? ndjsonResponseLine(failure, 400)
+      : Response.json({ error: failure.error }, { status: 400 });
   }
-
-  const liveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
-  const apiKey = provider === "yandex" && liveUiEnabled
-    ? process.env.YANDEX_MAPS_API_KEY?.trim()
-    : undefined;
-  if (!apiKey) return Response.json(createDemoResponse(payload));
+  const payload = parsed.payload;
+  if (streamRequested) return streamSearch(payload, request.signal);
 
   try {
-    return Response.json(await yandexSearch(payload, apiKey));
+    return Response.json(await executeSearch(payload));
   } catch (error) {
-    const providerError =
-      error instanceof YandexProviderError
-        ? error
-        : new YandexProviderError(
-            "Неизвестная ошибка источника данных",
-            "YANDEX_UNKNOWN_ERROR",
-          );
+    const failure = publicSearchError(error);
     return Response.json(
-      {
-        error: providerError.message,
-        code: providerError.code,
-      },
-      { status: 502 },
+      { error: failure.error, code: failure.code },
+      { status: failure.status },
     );
   }
 }

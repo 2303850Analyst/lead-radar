@@ -13,6 +13,8 @@ type LeadMapProps = {
   selectedLeadId?: string | null;
   onSelect: (lead: Lead) => void;
   className?: string;
+  focusCenter?: [longitude: number, latitude: number];
+  focusRadiusKm?: number;
 };
 
 type MapStatus = "loading" | "ready" | "error";
@@ -37,11 +39,28 @@ function hasValidCoordinates(lead: Lead) {
   );
 }
 
+function hasValidCenter(
+  center: [longitude: number, latitude: number] | undefined,
+): center is [longitude: number, latitude: number] {
+  if (!center) return false;
+  const [longitude, latitude] = center;
+  return (
+    Number.isFinite(longitude) &&
+    Number.isFinite(latitude) &&
+    longitude >= -180 &&
+    longitude <= 180 &&
+    latitude >= -90 &&
+    latitude <= 90
+  );
+}
+
 export default function LeadMap({
   leads,
   selectedLeadId,
   onSelect,
   className,
+  focusCenter,
+  focusRadiusKm,
 }: LeadMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Leaflet.Map | null>(null);
@@ -74,7 +93,10 @@ export default function LeadMap({
           .addTo(map);
 
         const markers = leaflet.layerGroup().addTo(map);
-        map.setView(DEFAULT_CENTER, 10);
+        const initialCenter = hasValidCenter(focusCenter)
+          ? ([focusCenter[1], focusCenter[0]] as Leaflet.LatLngExpression)
+          : DEFAULT_CENTER;
+        map.setView(initialCenter, 10);
 
         leafletRef.current = leaflet;
         mapRef.current = map;
@@ -99,7 +121,7 @@ export default function LeadMap({
       leafletRef.current = null;
       fittedCoordinatesRef.current = "";
     };
-  }, []);
+  }, [focusCenter]);
 
   useEffect(() => {
     if (status !== "ready") return;
@@ -157,11 +179,29 @@ export default function LeadMap({
           `${lead.id}:${lead.location.coordinates[0]}:${lead.location.coordinates[1]}`,
       )
       .join("|");
+    const focusKey = hasValidCenter(focusCenter)
+      ? `${focusCenter[0]}:${focusCenter[1]}:${focusRadiusKm ?? ""}`
+      : "auto";
+    const viewportKey = `${focusKey}|${coordinatesKey}`;
 
-    if (coordinatesKey !== fittedCoordinatesRef.current) {
-      fittedCoordinatesRef.current = coordinatesKey;
+    if (viewportKey !== fittedCoordinatesRef.current) {
+      fittedCoordinatesRef.current = viewportKey;
 
-      if (mappableLeads.length === 1) {
+      if (hasValidCenter(focusCenter)) {
+        const position: Leaflet.LatLngExpression = [focusCenter[1], focusCenter[0]];
+        if (Number.isFinite(focusRadiusKm) && (focusRadiusKm ?? 0) > 0) {
+          const focusBounds = leaflet
+            .circle(position, { radius: (focusRadiusKm ?? 15) * 1_000 })
+            .getBounds();
+          map.fitBounds(focusBounds, {
+            animate: false,
+            maxZoom: 14,
+            padding: [40, 40],
+          });
+        } else {
+          map.setView(position, 10, { animate: false });
+        }
+      } else if (mappableLeads.length === 1) {
         map.setView(bounds.getCenter(), 13, { animate: false });
       } else if (mappableLeads.length > 1) {
         map.fitBounds(bounds, {
@@ -173,7 +213,7 @@ export default function LeadMap({
         map.setView(DEFAULT_CENTER, 10, { animate: false });
       }
     }
-  }, [leads, onSelect, selectedLeadId, status]);
+  }, [focusCenter, focusRadiusKm, leads, onSelect, selectedLeadId, status]);
 
   const rootClassName = className
     ? `${styles.frame} ${className}`

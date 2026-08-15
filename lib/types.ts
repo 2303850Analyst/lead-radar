@@ -43,12 +43,32 @@ export type LeadSourceObservation = {
   observedAt: string;
 };
 
+export type SearchProgressStage =
+  | "validation"
+  | "geocoding"
+  | "places"
+  | "details"
+  | "normalizing"
+  | "complete";
+
+export type SearchProgressEvent = {
+  type: "progress";
+  stage: SearchProgressStage;
+  status: "started" | "running" | "completed";
+  message: string;
+  timestamp: string;
+  completed?: number;
+  total?: number;
+};
+
 export type SearchPayload = {
   description: string;
   primaryQuery: string;
   relatedQueries: string[];
   excludeQueries: string[];
   location: string;
+  /** Optional map-selected center in GeoJSON order: [longitude, latitude]. */
+  center?: [number, number];
   radiusKm: number;
   offer?: string;
   services: string[];

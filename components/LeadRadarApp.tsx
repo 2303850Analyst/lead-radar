@@ -17,6 +17,7 @@ import {
   FileText,
   Globe2,
   Layers3,
+  LocateFixed,
   Mail,
   Map as MapIcon,
   MapPin,
@@ -41,10 +42,13 @@ import type {
   Lead,
   LeadStatus,
   SearchPayload,
+  SearchProgressEvent,
   SearchResponse,
 } from "@/lib/types";
 
 import LeadMap from "./LeadMap";
+import SearchAreaMap from "./SearchAreaMap";
+import SearchProgressPanel from "./SearchProgressPanel";
 
 type Screen = "search" | "results" | "map" | "detail";
 
@@ -72,8 +76,14 @@ type LeadWithSources = Lead & {
   }>;
 };
 
+type SearchStreamMessage =
+  | SearchProgressEvent
+  | { type: "result"; data: SearchResponse }
+  | { type: "error"; error: string; code?: string };
+
 const STORAGE_KEY = "leadradar:last-search:v2";
 const TEMPLATE_KEY = "leadradar:template";
+const DEFAULT_SEARCH_CENTER: [number, number] = [37.6173, 55.7558];
 
 function providerMetadata(response: SearchResponse): ProviderMetadata {
   const metadata = (response as SearchResponseWithProvider).provider;
@@ -222,6 +232,14 @@ function websiteSourceLabel(lead: Lead) {
     return "Не указан в полученных данных";
   }
   return "Расширенные данные не запрашивались";
+}
+
+function websiteDisplayName(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "");
+  } catch {
+    return "Открыть сайт";
+  }
 }
 
 function scoreTone(score: number) {
@@ -397,6 +415,7 @@ export default function LeadRadarApp() {
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [searchProgress, setSearchProgress] = useState<SearchProgressEvent[]>([]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -478,21 +497,85 @@ export default function LeadRadarApp() {
 
   const runSearch = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (!query.primaryQuery.trim() || !query.location.trim()) {
+    if (!query.primaryQuery.trim() || (!query.location.trim() && !query.center)) {
       setError("Укажите основной запрос и географию поиска.");
       return;
     }
     setLoading(true);
     setError("");
     setNotice("");
+    setSearchProgress([
+      {
+        type: "progress",
+        stage: "validation",
+        status: "started",
+        message: "Проверяем параметры поискового задания",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
     try {
-      const result = await fetch("/api/search", {
+      const result = await fetch("/api/search?stream=1", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(query),
       });
-      const data = (await result.json()) as SearchResponse & { error?: string; details?: string };
-      if (!result.ok) throw new Error(data.details || data.error || "Ошибка поиска");
+      if (!result.ok) {
+        const failure = (await result.json().catch(() => null)) as {
+          error?: string;
+          details?: string;
+        } | null;
+        throw new Error(
+          failure?.details || failure?.error || `Ошибка поиска (HTTP ${result.status})`,
+        );
+      }
+
+      let data: SearchResponse | null = null;
+      const contentType = result.headers.get("content-type") ?? "";
+      if (contentType.includes("application/x-ndjson") && result.body) {
+        const reader = result.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        const consumeLine = (line: string) => {
+          if (!line.trim()) return;
+          const message = JSON.parse(line) as SearchStreamMessage;
+          if (message.type === "progress") {
+            setSearchProgress((current) => [...current, message].slice(-120));
+            return;
+          }
+          if (message.type === "result") {
+            data = message.data;
+            return;
+          }
+          throw new Error(message.error || "Ошибка поискового провайдера");
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) consumeLine(line);
+          if (done) break;
+        }
+        if (buffer.trim()) consumeLine(buffer);
+      } else {
+        const payload = (await result.json()) as SearchResponse & { error?: string };
+        if (payload.error) throw new Error(payload.error);
+        data = payload;
+        setSearchProgress((current) => [
+          ...current,
+          {
+            type: "progress",
+            stage: "complete",
+            status: "completed",
+            message: "Выборка готова",
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      }
+
+      if (!data) throw new Error("Поиск завершился без результата");
       setResponse(data);
       setSelectedLeadId(data.leads[0]?.id ?? null);
       setScreen("results");
@@ -604,6 +687,7 @@ export default function LeadRadarApp() {
             query={query}
             setQuery={setQuery}
             loading={loading}
+            progress={searchProgress}
             error={error}
             onSubmit={runSearch}
             onSave={saveTemplate}
@@ -688,6 +772,7 @@ function SearchScreen({
   query,
   setQuery,
   loading,
+  progress,
   error,
   onSubmit,
   onSave,
@@ -695,11 +780,57 @@ function SearchScreen({
   query: SearchPayload;
   setQuery: (query: SearchPayload) => void;
   loading: boolean;
+  progress: SearchProgressEvent[];
   error: string;
   onSubmit: (event: FormEvent) => void;
   onSave: () => void;
 }) {
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState("");
   const services = ["Создание сайта", "Внедрение CRM", "Автоматизация заявок", "Онлайн-калькулятор"];
+
+  const locateOnMap = async () => {
+    if (!query.location.trim()) {
+      setLocationError("Сначала укажите город, район или адрес.");
+      return;
+    }
+    setLocating(true);
+    setLocationError("");
+    try {
+      const response = await fetch("/api/geocode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location: query.location }),
+      });
+      const payload = (await response.json()) as {
+        coordinates?: [number, number];
+        error?: string;
+      };
+      if (!response.ok || !payload.coordinates) {
+        throw new Error(payload.error || "Не удалось найти адрес на карте");
+      }
+      setQuery({ ...query, center: payload.coordinates });
+    } catch (locationFailure) {
+      setLocationError(
+        locationFailure instanceof Error
+          ? locationFailure.message
+          : "Не удалось найти адрес на карте",
+      );
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  const selectMapCenter = (center: [number, number]) => {
+    const [longitude, latitude] = center;
+    setLocationError("");
+    setQuery({
+      ...query,
+      center,
+      location: `Точка на карте: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
+    });
+  };
+
   return (
     <section className="screen search-screen">
       <header className="screen-header">
@@ -715,6 +846,7 @@ function SearchScreen({
         ))}
       </ol>
       {error && <div className="error-banner" role="alert"><AlertTriangle size={18} /> {error}</div>}
+      {loading && <SearchProgressPanel events={progress} />}
       <form id="search-form" className="search-grid" onSubmit={onSubmit}>
         <section className="panel form-panel">
           <div className="section-title"><span className="icon-box"><Building2 size={18} /></span><div><h2>Кого ищем</h2><p>Опишите бизнес и расширьте словарь поиска</p></div></div>
@@ -732,13 +864,20 @@ function SearchScreen({
         <section className="panel location-panel">
           <div className="section-title"><span className="icon-box"><MapPin size={18} /></span><div><h2>Где ищем</h2><p>Центр и радиус будущей выборки</p></div></div>
           <div className="segmented"><button type="button">Город</button><button type="button">Район</button><button type="button" className="active">Радиус</button><button type="button">Область</button></div>
-          <div className="field-group"><label htmlFor="location">Центр</label><div className="input-icon"><input id="location" value={query.location} onChange={(event) => setQuery({ ...query, location: event.target.value })} required /><MapPin size={17} /></div></div>
+          <div className="field-group">
+            <label htmlFor="location">Центр</label>
+            <div className="location-input-row">
+              <div className="input-icon"><input id="location" value={query.location} onChange={(event) => setQuery({ ...query, location: event.target.value, center: undefined })} required /><MapPin size={17} /></div>
+              <button type="button" className="button button-small location-action" onClick={locateOnMap} disabled={locating || loading}><LocateFixed size={15} />{locating ? "Ищем…" : "Показать"}</button>
+            </div>
+            <small className="location-help">Введите адрес и нажмите «Показать» — либо выберите точку прямо на карте.</small>
+            {locationError && <small className="location-error" role="alert">{locationError}</small>}
+          </div>
           <div className="radius-row"><div className="field-group"><label htmlFor="radius">Радиус</label><div className="unit-input"><input id="radius" type="number" min={0.5} max={250} step={0.5} value={query.radiusKm} onChange={(event) => setQuery({ ...query, radiusKm: Number(event.target.value) })} /><span>км</span></div></div><div className="radius-summary"><strong>{query.radiusKm} км</strong><span>от выбранного центра</span></div></div>
-          <div className="location-visual" aria-label="Предпросмотр области поиска">
-            <div className="street-grid" />
-            <div className="search-radius"><span><MapPin size={22} /></span></div>
-            <div className="map-label">Москва</div>
-            <div className="map-legend"><i /> Зона поиска · {query.radiusKm} км</div>
+          <SearchAreaMap center={query.center ?? DEFAULT_SEARCH_CENTER} radiusKm={query.radiusKm} onCenterChange={selectMapCenter} className="location-map" />
+          <div className={`map-selection-meta ${query.center ? "selected" : ""}`}>
+            <LocateFixed size={14} />
+            <span>{query.center ? `Центр зафиксирован: ${query.center[1].toFixed(5)}, ${query.center[0].toFixed(5)}` : "Карта готова: нажмите на неё, чтобы точно зафиксировать центр"}</span>
           </div>
           <div className="service-section">
             <h3>Что предлагаем</h3><p>Это влияет на рекомендуемый заход, но не на поиск и скоринг лидов.</p>
@@ -827,8 +966,8 @@ function ResultsScreen({
       {showFilters && <div className="inline-filters"><label>Потенциал от <input type="number" min={0} max={100} value={minOpportunity} onChange={(event) => onOpportunity(Number(event.target.value))} /></label><label>URL сайта <select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">любой</option><option value="missing">не указан в полученных данных</option><option value="listed">указан источником</option><option value="unchecked">расширенные данные не запрашивались</option></select></label><label>Статус <select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label></div>}
       <div className="table-wrap panel">
         <table>
-          <thead><tr><th>№</th><th>Компания</th><th>Категория</th><th>Адрес</th><th>Телефон</th><th>Сайт в источнике</th><th>Цифровая проблема</th><th>Потенциал</th><th>Скрытость</th><th>Достоверность</th><th>Статус</th></tr></thead>
-          <tbody>{visibleLeads.map((lead, index) => <tr key={lead.id} onDoubleClick={() => onOpenLead(lead)}><td className="priority-cell">{(page - 1) * 5 + index + 1}</td><td className="company-cell"><button onClick={() => onOpenLead(lead)}>{lead.name}</button><small>{lead.tags[0]}</small></td><td>{lead.category}</td><td>{lead.location.address}</td><td>{lead.phone ?? "—"}</td><td><span className={`site-state ${lead.website.verifiedStatus === "found" ? "positive" : ""}`}>{websiteLabel(lead)}</span></td><td>{lead.digitalProblems[0] ?? "Не выявлено"}</td><td><Score value={lead.scores.opportunity} compact /></td><td><Score value={lead.scores.hiddenness} compact /></td><td><Score value={lead.scores.confidence} compact /></td><td><select className={`status-select ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(lead.id, event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></td></tr>)}</tbody>
+          <thead><tr><th>№</th><th>Компания</th><th>Категория</th><th>Адрес</th><th>Телефон</th><th>Сайт</th><th>Цифровая проблема</th><th>Потенциал</th><th>Скрытость</th><th>Достоверность</th><th>Статус</th></tr></thead>
+          <tbody>{visibleLeads.map((lead, index) => <tr key={lead.id} onDoubleClick={() => onOpenLead(lead)}><td className="priority-cell">{(page - 1) * 5 + index + 1}</td><td className="company-cell"><button onClick={() => onOpenLead(lead)}>{lead.name}</button><small>{lead.tags[0]}</small></td><td>{lead.category}</td><td>{lead.location.address}</td><td>{lead.phone ?? "—"}</td><td><div className="website-cell">{lead.website.url && <a className="website-link" href={lead.website.url} target="_blank" rel="noreferrer" title={lead.website.url}>{websiteDisplayName(lead.website.url)} <ExternalLink size={11} /></a>}<span className={`site-state ${lead.website.url ? "positive" : ""}`}>{websiteLabel(lead)}</span></div></td><td>{lead.digitalProblems[0] ?? "Не выявлено"}</td><td><Score value={lead.scores.opportunity} compact /></td><td><Score value={lead.scores.hiddenness} compact /></td><td><Score value={lead.scores.confidence} compact /></td><td><select className={`status-select ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(lead.id, event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></td></tr>)}</tbody>
         </table>
         {!visibleLeads.length && <div className="empty-state"><Search size={24} />Нет лидов с такими фильтрами</div>}
       </div>
@@ -886,7 +1025,7 @@ function MapScreen({
       <ProviderAttribution response={response} />
       <div className="map-layout panel">
         <aside className="map-filters"><div className="filter-heading"><SlidersHorizontal size={17} /><strong>Фильтры</strong><button onClick={() => { onOpportunity(0); onHiddenness(0); onConfidence(0); onWebsite("any"); onStatusFilter("any"); }}>Сбросить</button></div><label>URL сайта<select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">Любой</option><option value="missing">Не указан в полученных данных</option><option value="listed">Указан источником</option><option value="unchecked">Расширенные данные не запрашивались</option></select></label><label>Статус<select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">Любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label><RangeFilter label="Потенциал от" value={minOpportunity} onChange={onOpportunity} /><RangeFilter label="Скрытость от" value={minHiddenness} onChange={onHiddenness} /><RangeFilter label="Достоверность от" value={minConfidence} onChange={onConfidence} /><div className="map-key"><span><i className="key-green" />80–100</span><span><i className="key-orange" />60–79</span><span><i className="key-red" />до 59</span></div></aside>
-        <div className="map-canvas"><LeadMap leads={leads} selectedLeadId={selectedLeadId} onSelect={(lead) => onSelect(lead.id)} /></div>
+        <div className="map-canvas"><LeadMap leads={leads} selectedLeadId={selectedLeadId} onSelect={(lead) => onSelect(lead.id)} focusCenter={response.query.center ?? DEFAULT_SEARCH_CENTER} focusRadiusKm={response.query.radiusKm} /></div>
         <aside className="map-list"><div className="map-list-head"><div><strong>Компании в области</strong><span>{leads.length} результатов</span></div><select value={sort} onChange={(event) => onSort(event.target.value)}><option value="opportunity">По потенциалу</option><option value="hiddenness">По скрытости</option><option value="confidence">По достоверности</option></select></div><div className="lead-stack">{leads.map((lead, index) => <button key={lead.id} className={lead.id === selectedLeadId ? "selected" : ""} onClick={() => onSelect(lead.id)} onDoubleClick={() => onOpenLead(lead)}><span className="list-index">{index + 1}</span><span className="list-copy"><strong>{lead.name}</strong><small>{lead.location.address}</small><em>{lead.digitalProblems[0]}</em></span><Score value={lead.scores.opportunity} compact /></button>)}</div>{selectedLeadId && <button className="button button-primary map-open" onClick={() => { const lead = leads.find((item) => item.id === selectedLeadId); if (lead) onOpenLead(lead); }}>Открыть карточку <ChevronRight size={16} /></button>}</aside>
       </div>
     </section>

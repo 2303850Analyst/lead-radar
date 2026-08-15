@@ -1,8 +1,18 @@
 import type {
   SearchPayload,
+  SearchProgressEvent,
   SearchProviderId,
   SearchResponse,
 } from "../types";
+
+export type SearchProgressCallback = (
+  event: SearchProgressEvent,
+) => void | Promise<void>;
+
+export type SearchProviderOptions = {
+  onProgress?: SearchProgressCallback;
+  signal?: AbortSignal;
+};
 
 /**
  * Deliberately small provider boundary. Future failover/aggregation can depend
@@ -10,7 +20,10 @@ import type {
  */
 export interface SearchProvider {
   readonly id: SearchProviderId;
-  search(payload: SearchPayload): Promise<SearchResponse>;
+  search(
+    payload: SearchPayload,
+    options?: SearchProviderOptions,
+  ): Promise<SearchResponse>;
 }
 
 export class SearchProviderError extends Error {

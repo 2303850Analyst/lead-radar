@@ -184,6 +184,24 @@ test("Geoapify provider normalizes live data without inventing missing websites"
 
   try {
     const worker = await getWorker();
+    const geocodeResponse = await worker.fetch(
+      new Request("http://localhost/api/geocode", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ location: "Москва, ул. Лесная, 7" }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(geocodeResponse.status, 200);
+    assert.deepEqual(await geocodeResponse.json(), {
+      coordinates: [37.6176, 55.7558],
+      location: "Москва, ул. Лесная, 7",
+      provider: "geoapify",
+    });
+    assert.deepEqual(upstreamCalls, ["/v1/geocode/search"]);
+    upstreamCalls.length = 0;
+
     const response = await worker.fetch(
       new Request("http://localhost/api/search", {
         method: "POST",
@@ -225,6 +243,70 @@ test("Geoapify provider normalizes live data without inventing missing websites"
     ]);
     assert.equal(JSON.stringify(result).includes(fakeKey), false);
 
+    upstreamCalls.length = 0;
+    const streamResponse = await worker.fetch(
+      new Request("http://localhost/api/search?stream=1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          description: "Фулфилмент и склады",
+          primaryQuery: "Фулфилмент",
+          relatedQueries: ["Складские услуги", "Логистика"],
+          excludeQueries: [],
+          location: "",
+          center: [37.6176, 55.7558],
+          radiusKm: 15,
+          services: ["Создание сайта"],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(streamResponse.status, 200);
+    assert.match(
+      streamResponse.headers.get("content-type") ?? "",
+      /^application\/x-ndjson\b/i,
+    );
+    const streamText = await streamResponse.text();
+    const events = streamText
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const progressEvents = events.filter((event) => event.type === "progress");
+    assert.deepEqual(
+      [...new Set(progressEvents.map((event) => event.stage))],
+      [
+        "validation",
+        "geocoding",
+        "places",
+        "details",
+        "normalizing",
+        "complete",
+      ],
+    );
+    assert.ok(
+      progressEvents.some(
+        (event) =>
+          event.stage === "geocoding" &&
+          event.message === "Используем точку, выбранную на карте",
+      ),
+    );
+    assert.ok(
+      progressEvents.some(
+        (event) =>
+          event.stage === "details" &&
+          event.status === "running" &&
+          event.completed === 1 &&
+          event.total === 1,
+      ),
+    );
+    const resultEvent = events.at(-1);
+    assert.equal(resultEvent.type, "result");
+    assert.equal(resultEvent.data.mode, "geoapify");
+    assert.equal(resultEvent.data.query.location, "Точка на карте");
+    assert.equal(streamText.includes(fakeKey), false);
+    assert.deepEqual(upstreamCalls, ["/v2/places", "/v2/place-details"]);
+
     const callsBeforeUnsupportedQuery = upstreamCalls.length;
     const unsupportedResponse = await worker.fetch(
       new Request("http://localhost/api/search", {
@@ -258,6 +340,91 @@ test("Geoapify provider normalizes live data without inventing missing websites"
   }
 });
 
+test("Yandex provider exposes only safe website links", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEnv = {
+    SEARCH_PROVIDER: process.env.SEARCH_PROVIDER,
+    YANDEX_MAPS_API_KEY: process.env.YANDEX_MAPS_API_KEY,
+    YANDEX_LIVE_UI_ENABLED: process.env.YANDEX_LIVE_UI_ENABLED,
+  };
+  const fakeKey = "fake-yandex-test-key";
+
+  process.env.SEARCH_PROVIDER = "yandex";
+  process.env.YANDEX_MAPS_API_KEY = fakeKey;
+  process.env.YANDEX_LIVE_UI_ENABLED = "true";
+
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.searchParams.get("apikey"), fakeKey);
+    if (url.searchParams.get("type") === "geo") {
+      return Response.json({
+        features: [{ geometry: { type: "Point", coordinates: [37.6176, 55.7558] } }],
+      });
+    }
+    return Response.json({
+      features: [
+        {
+          properties: {
+            CompanyMetaData: {
+              id: "unsafe-site",
+              name: "Небезопасная ссылка",
+              address: "Москва",
+              url: "javascript:alert(1)",
+            },
+          },
+          geometry: { type: "Point", coordinates: [37.62, 55.76] },
+        },
+        {
+          properties: {
+            CompanyMetaData: {
+              id: "safe-site",
+              name: "Сайт без схемы",
+              address: "Москва",
+              url: "example.test/company",
+            },
+          },
+          geometry: { type: "Point", coordinates: [37.63, 55.75] },
+        },
+      ],
+    });
+  };
+
+  try {
+    const worker = await getWorker();
+    const response = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          primaryQuery: "Склад",
+          relatedQueries: [],
+          excludeQueries: [],
+          location: "Москва",
+          radiusKm: 15,
+          services: [],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    const unsafeLead = result.leads.find((lead) => lead.id === "yandex-unsafe-site");
+    const safeLead = result.leads.find((lead) => lead.id === "yandex-safe-site");
+    assert.equal(unsafeLead.website.url, null);
+    assert.equal(unsafeLead.website.sourceStatus, "not_listed");
+    assert.equal(safeLead.website.url, "https://example.test/company");
+    assert.equal(safeLead.website.sourceStatus, "listed");
+    assert.equal(JSON.stringify(result).includes(fakeKey), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("search API rejects invalid payloads", async () => {
   const worker = await getWorker();
   const response = await worker.fetch(
@@ -271,4 +438,27 @@ test("search API rejects invalid payloads", async () => {
   );
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /основной поисковый запрос/i);
+
+  const invalidCenterResponse = await worker.fetch(
+    new Request("http://localhost/api/search?stream=1", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        primaryQuery: "Склад",
+        location: "Москва",
+        center: [181, 91],
+      }),
+    }),
+    runtimeEnv,
+    runtimeContext,
+  );
+  assert.equal(invalidCenterResponse.status, 400);
+  assert.match(
+    invalidCenterResponse.headers.get("content-type") ?? "",
+    /^application\/x-ndjson\b/i,
+  );
+  const invalidCenterEvent = JSON.parse(await invalidCenterResponse.text());
+  assert.equal(invalidCenterEvent.type, "error");
+  assert.equal(invalidCenterEvent.code, "INVALID_SEARCH_PAYLOAD");
+  assert.match(invalidCenterEvent.error, /долгота, широта/i);
 });

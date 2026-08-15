@@ -1,5 +1,14 @@
-import type { Lead, SearchPayload, SearchResponse } from "../types";
-import { SearchProviderError, type SearchProvider } from "./types";
+import type {
+  Lead,
+  SearchPayload,
+  SearchProgressEvent,
+  SearchResponse,
+} from "../types";
+import {
+  SearchProviderError,
+  type SearchProvider,
+  type SearchProviderOptions,
+} from "./types";
 
 const GEOCODE_ENDPOINT = "https://api.geoapify.com/v1/geocode/search";
 const PLACES_ENDPOINT = "https://api.geoapify.com/v2/places";
@@ -14,6 +23,36 @@ const DEFAULT_DETAILS_LIMIT = 20;
 const MAX_DETAILS_LIMIT = 50;
 const DETAILS_CONCURRENCY = 3;
 let nextGeoapifyRequestAt = 0;
+
+function abortedSearchError(): SearchProviderError {
+  return new SearchProviderError("Поиск отменён", "SEARCH_ABORTED");
+}
+
+function throwIfSearchAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortedSearchError();
+}
+
+async function abortableDelay(
+  delayMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (delayMs <= 0) return;
+  throwIfSearchAborted(signal);
+
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const abort = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      reject(abortedSearchError());
+    };
+    const timeout = setTimeout(finish, delayMs);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 
 const LOGISTICS_CATEGORIES = [
   "office.logistics",
@@ -245,16 +284,19 @@ async function requestGeoapify(
   params: Record<string, string>,
   apiKey: string,
   timeoutMs = FETCH_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<GeoapifyCollection> {
+  throwIfSearchAborted(signal);
   const now = Date.now();
   const requestAt = Math.max(now, nextGeoapifyRequestAt);
   nextGeoapifyRequestAt = requestAt + MIN_REQUEST_INTERVAL_MS;
-  if (requestAt > now) {
-    await new Promise<void>((resolve) => setTimeout(resolve, requestAt - now));
-  }
+  await abortableDelay(requestAt - now, signal);
   const query = new URLSearchParams(params);
   query.set("apiKey", apiKey);
   const controller = new AbortController();
+  const abortRequest = () => controller.abort();
+  if (signal?.aborted) abortRequest();
+  else signal?.addEventListener("abort", abortRequest, { once: true });
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -313,6 +355,7 @@ async function requestGeoapify(
     }
   } catch (error) {
     if (error instanceof SearchProviderError) throw error;
+    if (signal?.aborted) throw abortedSearchError();
     if (controller.signal.aborted) {
       throw new SearchProviderError(
         `Geoapify не ответил за ${Math.ceil(timeoutMs / 1_000)} секунд`,
@@ -327,23 +370,41 @@ async function requestGeoapify(
     );
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortRequest);
   }
 }
 
-async function resolveCenter(
+export async function geocodeGeoapifyLocation(
   location: string,
   apiKey: string,
+  signal?: AbortSignal,
 ): Promise<[number, number]> {
+  const normalizedLocation = location.trim();
+  if (!normalizedLocation) {
+    throw new SearchProviderError(
+      "Укажите город, район или адрес центра поиска",
+      "GEOAPIFY_INVALID_LOCATION",
+    );
+  }
+  const normalizedApiKey = apiKey.trim();
+  if (!normalizedApiKey) {
+    throw new SearchProviderError(
+      "Серверный ключ Geoapify не настроен",
+      "GEOAPIFY_NOT_CONFIGURED",
+    );
+  }
   const data = await requestGeoapify(
     GEOCODE_ENDPOINT,
     {
-      text: location,
+      text: normalizedLocation,
       lang: "ru",
       filter: "countrycode:ru",
       format: "geojson",
       limit: "1",
     },
-    apiKey,
+    normalizedApiKey,
+    FETCH_TIMEOUT_MS,
+    signal,
   );
   const feature = data.features?.[0];
   const geometryCoordinates = feature?.geometry?.coordinates;
@@ -412,11 +473,13 @@ async function mapConcurrent<T, R>(
   items: T[],
   concurrency: number,
   mapper: (item: T) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const output = new Array<R>(items.length);
   let nextIndex = 0;
   async function worker() {
     while (nextIndex < items.length) {
+      throwIfSearchAborted(signal);
       const currentIndex = nextIndex;
       nextIndex += 1;
       output[currentIndex] = await mapper(items[currentIndex]);
@@ -431,14 +494,17 @@ async function mapConcurrent<T, R>(
 function isFatalDetailError(error: SearchProviderError): boolean {
   return (
     error.code === "GEOAPIFY_FORBIDDEN" ||
-    error.code === "GEOAPIFY_RATE_LIMIT"
+    error.code === "GEOAPIFY_RATE_LIMIT" ||
+    error.code === "SEARCH_ABORTED"
   );
 }
 
 async function enrichPlace(
   observation: PlaceObservation,
   apiKey: string,
+  signal?: AbortSignal,
 ): Promise<DetailEnrichment> {
+  throwIfSearchAborted(signal);
   if (!observation.placeId) {
     return { properties: null, succeeded: false, temporaryFailure: false };
   }
@@ -452,6 +518,7 @@ async function enrichPlace(
       },
       apiKey,
       DETAILS_FETCH_TIMEOUT_MS,
+      signal,
     );
     const detailFeature = collection.features?.find(
       (feature) => feature.properties?.feature_type === "details",
@@ -700,17 +767,73 @@ export class GeoapifyProvider implements SearchProvider {
     }
   }
 
-  async search(payload: SearchPayload): Promise<SearchResponse> {
+  async search(
+    payload: SearchPayload,
+    options: SearchProviderOptions = {},
+  ): Promise<SearchResponse> {
+    const reportProgress = async (
+      event: Omit<SearchProgressEvent, "type" | "timestamp">,
+    ) => {
+      throwIfSearchAborted(options.signal);
+      await options.onProgress?.({
+        type: "progress",
+        ...event,
+        timestamp: new Date().toISOString(),
+      });
+    };
     const apiKey = this.apiKey.trim();
     const observedAt = new Date().toISOString();
     const categoryPlan = resolveGeoapifyCategories(payload);
-    const center = await resolveCenter(payload.location, apiKey);
+    let center: [number, number];
+    if (payload.center) {
+      if (!validCoordinates(payload.center)) {
+        throw new SearchProviderError(
+          "Координаты центра поиска некорректны",
+          "GEOAPIFY_INVALID_CENTER",
+        );
+      }
+      await reportProgress({
+        stage: "geocoding",
+        status: "started",
+        message: "Используем точку, выбранную на карте",
+      });
+      center = [payload.center[0], payload.center[1]];
+      await reportProgress({
+        stage: "geocoding",
+        status: "completed",
+        message: "Используем точку, выбранную на карте",
+      });
+    } else {
+      await reportProgress({
+        stage: "geocoding",
+        status: "started",
+        message: "Определяем координаты указанной географии",
+      });
+      center = await geocodeGeoapifyLocation(
+        payload.location,
+        apiKey,
+        options.signal,
+      );
+      await reportProgress({
+        stage: "geocoding",
+        status: "completed",
+        message: "География поиска определена",
+      });
+    }
     const observations = new Map<string, PlaceObservation>();
     let cardsFound = 0;
 
+    await reportProgress({
+      stage: "places",
+      status: "started",
+      message: "Ищем организации по категориям Geoapify",
+      completed: 0,
+      total: categoryPlan.batches.length,
+    });
+
     // Category batches are sequential to remain friendly to the free-plan
     // request rate. The current MVP has one batch; the shape is future-ready.
-    for (const categoryBatch of categoryPlan.batches) {
+    for (const [batchIndex, categoryBatch] of categoryPlan.batches.entries()) {
       const collection = await requestGeoapify(
         PLACES_ENDPOINT,
         {
@@ -723,6 +846,8 @@ export class GeoapifyProvider implements SearchProvider {
           limit: String(geoapifyPlacesLimit()),
         },
         apiKey,
+        FETCH_TIMEOUT_MS,
+        options.signal,
       );
       cardsFound += collection.features?.length ?? 0;
       for (const feature of collection.features ?? []) {
@@ -744,7 +869,22 @@ export class GeoapifyProvider implements SearchProvider {
           });
         }
       }
+      await reportProgress({
+        stage: "places",
+        status: "running",
+        message: `Получено карточек: ${cardsFound}`,
+        completed: batchIndex + 1,
+        total: categoryPlan.batches.length,
+      });
     }
+
+    await reportProgress({
+      stage: "places",
+      status: "completed",
+      message: `Поиск организаций завершён: ${observations.size}`,
+      completed: categoryPlan.batches.length,
+      total: categoryPlan.batches.length,
+    });
 
     const namedPlaces = [...observations.values()];
     const detailTargets = namedPlaces
@@ -752,25 +892,62 @@ export class GeoapifyProvider implements SearchProvider {
       .slice(0, geoapifyDetailsLimit());
     let detailCircuitOpen = false;
     let detailsRequested = 0;
+    let detailsCompleted = 0;
+    await reportProgress({
+      stage: "details",
+      status: "started",
+      message: detailTargets.length
+        ? "Получаем контакты и сайты организаций"
+        : "Расширенные карточки не запрашиваются",
+      completed: 0,
+      total: detailTargets.length,
+    });
     const detailResults = await mapConcurrent(
       detailTargets,
       DETAILS_CONCURRENCY,
       async (observation) => {
+        let enrichment: DetailEnrichment;
         if (detailCircuitOpen) {
-          return { properties: null, succeeded: false, temporaryFailure: true };
+          enrichment = {
+            properties: null,
+            succeeded: false,
+            temporaryFailure: true,
+          };
+        } else {
+          detailsRequested += 1;
+          enrichment = await enrichPlace(observation, apiKey, options.signal);
+          if (enrichment.temporaryFailure) detailCircuitOpen = true;
         }
-        detailsRequested += 1;
-        const enrichment = await enrichPlace(observation, apiKey);
-        if (enrichment.temporaryFailure) detailCircuitOpen = true;
+        detailsCompleted += 1;
+        await reportProgress({
+          stage: "details",
+          status: "running",
+          message: `Обработано расширенных карточек: ${detailsCompleted} из ${detailTargets.length}`,
+          completed: detailsCompleted,
+          total: detailTargets.length,
+        });
         return enrichment;
       },
+      options.signal,
     );
+    await reportProgress({
+      stage: "details",
+      status: "completed",
+      message: `Расширенные карточки обработаны: ${detailsCompleted} из ${detailTargets.length}`,
+      completed: detailsCompleted,
+      total: detailTargets.length,
+    });
     const detailsById = new Map<string, DetailEnrichment>();
     detailTargets.forEach((observation, index) => {
       detailsById.set(observation.externalId, detailResults[index]);
     });
     const detailsSucceeded = detailResults.filter((result) => result.succeeded).length;
 
+    await reportProgress({
+      stage: "normalizing",
+      status: "started",
+      message: "Структурируем, оцениваем и сортируем лиды",
+    });
     const leads = namedPlaces.map((observation) => {
       const enrichment = detailsById.get(observation.externalId);
       return normalizeLead(
@@ -787,7 +964,13 @@ export class GeoapifyProvider implements SearchProvider {
     const foundOnlyExpanded = leads.length - foundByPrimary;
     const generatedAt = new Date().toISOString();
 
-    return {
+    await reportProgress({
+      stage: "normalizing",
+      status: "completed",
+      message: `Подготовлено лидов: ${leads.length}`,
+    });
+
+    const response: SearchResponse = {
       mode: "geoapify",
       provider: {
         id: "geoapify",
@@ -825,5 +1008,11 @@ export class GeoapifyProvider implements SearchProvider {
       notice: `Обнаруженная выборка Geoapify/OSM, а не полный реестр рынка. Именованных организаций: ${leads.length}; расширенные контакты получены для ${detailsSucceeded} из ${detailsRequested} фактически запрошенных карточек. Требуется атрибуция Geoapify и OpenStreetMap contributors.`,
       generatedAt,
     };
+    await reportProgress({
+      stage: "complete",
+      status: "completed",
+      message: `Поиск завершён: ${leads.length} лидов`,
+    });
+    return response;
   }
 }
