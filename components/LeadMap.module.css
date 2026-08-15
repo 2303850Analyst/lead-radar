@@ -1,0 +1,112 @@
+.frame {
+  box-sizing: border-box;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid #dde3ec;
+  border-radius: 14px;
+  background: #f5f7fa;
+  isolation: isolate;
+}
+
+.map {
+  position: absolute;
+  inset: 0;
+  background: #eef2f6;
+}
+
+.state {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: #5c6573;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: center;
+  background: rgba(247, 249, 252, 0.92);
+  backdrop-filter: blur(3px);
+}
+
+.empty {
+  inset: auto 16px 16px;
+  width: fit-content;
+  max-width: calc(100% - 32px);
+  margin-inline: auto;
+  padding: 9px 13px;
+  border: 1px solid #e2e7ef;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 5px 18px rgba(28, 39, 56, 0.08);
+  backdrop-filter: blur(5px);
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 2px solid #c9d8ef;
+  border-top-color: #1769e0;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.tooltip {
+  display: grid;
+  gap: 2px;
+  min-width: 116px;
+}
+
+.tooltip strong {
+  color: #172033;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tooltip span {
+  color: #697386;
+  font-size: 11px;
+}
+
+.frame :global(.leaflet-control-zoom) {
+  overflow: hidden;
+  border: 1px solid #dce3ed;
+  border-radius: 9px;
+  box-shadow: 0 3px 12px rgba(28, 39, 56, 0.12);
+}
+
+.frame :global(.leaflet-control-zoom a) {
+  color: #334155;
+}
+
+.frame :global(.leaflet-control-attribution) {
+  color: #7a8493;
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.frame :global(.leaflet-tooltip) {
+  padding: 8px 10px;
+  border: 1px solid #dce3ed;
+  border-radius: 9px;
+  box-shadow: 0 6px 20px rgba(28, 39, 56, 0.14);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 1.4s;
+  }
+}

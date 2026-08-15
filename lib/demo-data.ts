@@ -1,0 +1,288 @@
+import type { Lead, SearchPayload, SearchResponse } from "./types";
+
+const observedAt = "15.08.2026, 14:30";
+
+export const demoLeads: Lead[] = [
+  {
+    id: "fulfillment-pro",
+    name: "Фулфилмент Про",
+    category: "Складские услуги",
+    tags: ["Фулфилмент", "Комплектация заказов"],
+    location: {
+      address: "Москва, ул. Лесная, 7с3",
+      coordinates: [37.5928, 55.7814],
+    },
+    phone: "+7 495 123-45-67",
+    website: {
+      sourceStatus: "not_listed",
+      verifiedStatus: "found",
+      url: "https://fulfilmentpro.ru",
+    },
+    socials: { vk: "https://vk.com/fulfilmentpro" },
+    digitalProblems: [
+      "Сайт не указан в Яндексе",
+      "Не обнаружена форма заявки",
+      "Нет онлайн-расчёта",
+      "Нет онлайн-записи",
+    ],
+    discovery: {
+      matchedQueries: ["Складские услуги", "Комплектация заказов"],
+      hiddenReason: "Не найден по основному запросу, обнаружен по смежному",
+      observedAt,
+      source: "demo",
+      primaryFound: false,
+    },
+    scores: { opportunity: 92, hiddenness: 78, confidence: 82 },
+    status: "Новый",
+    summary:
+      "Компания оказывает услуги фулфилмента и хранения для маркетплейсов. Найдена по смежным запросам, карточка заполнена не полностью.",
+    recommendedOffer:
+      "Сайт с формой заявки и онлайн-расчётом, подключение CRM и автоматизация обработки обращений.",
+    possibleBranches: [
+      "Москва, ул. Складочная, 1с2",
+      "Москва, ул. Добролюбова, 3с1",
+    ],
+  },
+  {
+    id: "sklad-market",
+    name: "Склад Маркет",
+    category: "Ответственное хранение",
+    tags: ["Склад", "Ответственное хранение"],
+    location: {
+      address: "Москва, ул. Новодмитровская, 2",
+      coordinates: [37.5891, 55.8025],
+    },
+    phone: "+7 495 987-65-43",
+    website: {
+      sourceStatus: "not_listed",
+      verifiedStatus: "not_found_after_checks",
+      url: null,
+    },
+    socials: {},
+    digitalProblems: [
+      "Сайт не указан в Яндексе",
+      "Сайт не найден после проверки",
+      "Нет формы заявки",
+    ],
+    discovery: {
+      matchedQueries: ["Ответственное хранение"],
+      hiddenReason: "Карточка относится к смежной категории",
+      observedAt,
+      source: "demo",
+      primaryFound: false,
+    },
+    scores: { opportunity: 88, hiddenness: 82, confidence: 75 },
+    status: "Новый",
+    summary:
+      "Действующая складская компания с телефоном и режимом работы. Подтверждённый сайт не обнаружен.",
+    recommendedOffer:
+      "Быстрый корпоративный сайт, калькулятор хранения и подключение заявок к CRM.",
+    possibleBranches: [],
+  },
+  {
+    id: "pack-store",
+    name: "Pack & Store",
+    category: "Комплектация заказов",
+    tags: ["Упаковка", "Маркировка"],
+    location: {
+      address: "Москва, ул. Складочная, 1с5",
+      coordinates: [37.5985, 55.8037],
+    },
+    phone: "+7 499 555-12-34",
+    website: {
+      sourceStatus: "listed",
+      verifiedStatus: "unavailable",
+      url: "https://packandstore.ru",
+    },
+    socials: { telegram: "https://t.me/packandstore" },
+    digitalProblems: ["Сайт недоступен", "Не обнаружена резервная форма связи"],
+    discovery: {
+      matchedQueries: ["Комплектация заказов", "Упаковка товаров"],
+      hiddenReason: "Не использует слово «фулфилмент» в карточке",
+      observedAt,
+      source: "demo",
+      primaryFound: false,
+    },
+    scores: { opportunity: 76, hiddenness: 65, confidence: 70 },
+    status: "Проверить",
+    summary:
+      "Компания найдена по услугам комплектации и упаковки. Указанный сайт требует технической проверки.",
+    recommendedOffer:
+      "Технический аудит сайта, восстановление канала заявок и интеграция с CRM.",
+    possibleBranches: [],
+  },
+  {
+    id: "logistic-market",
+    name: "Логистик Маркет",
+    category: "Логистика для маркетплейсов",
+    tags: ["Логистика", "Маркетплейсы"],
+    location: {
+      address: "Москва, ул. Бутырская, 76",
+      coordinates: [37.5847, 55.8005],
+    },
+    phone: null,
+    website: {
+      sourceStatus: "not_listed",
+      verifiedStatus: "not_checked",
+      url: null,
+    },
+    socials: {},
+    digitalProblems: ["Телефон не указан", "Сайт не указан в Яндексе"],
+    discovery: {
+      matchedQueries: ["Логистика для маркетплейсов"],
+      hiddenReason: "Неполная карточка и смежная категория",
+      observedAt,
+      source: "demo",
+      primaryFound: false,
+    },
+    scores: { opportunity: 61, hiddenness: 71, confidence: 40 },
+    status: "Новый",
+    summary:
+      "Потенциально релевантная организация, но контактные данные требуют ручной проверки.",
+    recommendedOffer: "Сначала подтвердить деятельность и найти рабочий контакт.",
+    possibleBranches: [],
+  },
+  {
+    id: "storage-plus",
+    name: "Storage Plus",
+    category: "Складской комплекс",
+    tags: ["Хранение", "Склад"],
+    location: {
+      address: "Москва, ул. Добролюбова, 3",
+      coordinates: [37.6034, 55.8115],
+    },
+    phone: "+7 495 222-18-20",
+    website: {
+      sourceStatus: "listed",
+      verifiedStatus: "found",
+      url: "https://storageplus.ru",
+    },
+    socials: {},
+    digitalProblems: ["Не обнаружен онлайн-расчёт"],
+    discovery: {
+      matchedQueries: ["Складские услуги"],
+      hiddenReason: "Низкая релевантность основному запросу",
+      observedAt,
+      source: "demo",
+      primaryFound: false,
+    },
+    scores: { opportunity: 58, hiddenness: 54, confidence: 86 },
+    status: "В работе",
+    summary: "Складской комплекс с работающим сайтом, но без понятного онлайн-расчёта.",
+    recommendedOffer: "Калькулятор услуг и автоматическая передача расчётов в CRM.",
+    possibleBranches: [],
+  },
+  {
+    id: "fulfill-center",
+    name: "Фулфилл Центр",
+    category: "Фулфилмент",
+    tags: ["Фулфилмент", "Ozon", "Wildberries"],
+    location: {
+      address: "Москва, Дмитровское шоссе, 60",
+      coordinates: [37.5733, 55.8474],
+    },
+    phone: "+7 495 145-80-00",
+    website: {
+      sourceStatus: "listed",
+      verifiedStatus: "found",
+      url: "https://fulfill-center.ru",
+    },
+    socials: { telegram: "https://t.me/fulfillcenter" },
+    digitalProblems: ["Не обнаружена интеграция онлайн-заявки с CRM"],
+    discovery: {
+      matchedQueries: ["Фулфилмент"],
+      hiddenReason: "Найден обычным поиском",
+      observedAt,
+      source: "demo",
+      primaryFound: true,
+    },
+    scores: { opportunity: 73, hiddenness: 28, confidence: 92 },
+    status: "Связались",
+    summary: "Хорошо представленная компания, подходит скорее для автоматизации, чем для создания сайта.",
+    recommendedOffer: "Аудит обработки входящих заявок и интеграция сайта с CRM.",
+    possibleBranches: ["Москва, Коровинское шоссе, 35"],
+  },
+  {
+    id: "ip-sokolov",
+    name: "ИП Соколов — склад №3",
+    category: "Складские услуги",
+    tags: ["Склад", "Маркировка"],
+    location: {
+      address: "Москва, Сигнальный проезд, 16с4",
+      coordinates: [37.5917, 55.8508],
+    },
+    phone: "+7 916 443-19-01",
+    website: {
+      sourceStatus: "not_listed",
+      verifiedStatus: "not_found_after_checks",
+      url: null,
+    },
+    socials: { vk: "https://vk.com/sklad_sokolov" },
+    digitalProblems: ["Сайт не указан в Яндексе", "Нет единой точки приёма заявок"],
+    discovery: {
+      matchedQueries: ["Маркировка товаров", "Складские услуги"],
+      hiddenReason: "Нейтральное название и смежные категории",
+      observedAt,
+      source: "demo",
+      primaryFound: false,
+    },
+    scores: { opportunity: 84, hiddenness: 91, confidence: 68 },
+    status: "Проверить",
+    summary:
+      "Малозаметная складская точка с действующим телефоном. Коммерческий масштаб необходимо подтвердить.",
+    recommendedOffer: "Короткий сайт-визитка, форма расчёта и единый учёт обращений.",
+    possibleBranches: [],
+  },
+  {
+    id: "mplace-pack",
+    name: "MPlace Pack",
+    category: "Упаковка и маркировка",
+    tags: ["Упаковка", "Маркировка", "Маркетплейсы"],
+    location: {
+      address: "Москва, Алтуфьевское шоссе, 37с2",
+      coordinates: [37.5852, 55.8658],
+    },
+    phone: "+7 925 804-22-11",
+    website: {
+      sourceStatus: "not_listed",
+      verifiedStatus: "not_checked",
+      url: null,
+    },
+    socials: { telegram: "https://t.me/mplacepack" },
+    digitalProblems: ["Сайт не указан в Яндексе", "Продажи зависят от одного канала"],
+    discovery: {
+      matchedQueries: ["Упаковка товаров для маркетплейсов"],
+      hiddenReason: "Найдена только по узкой услуге",
+      observedAt,
+      source: "demo",
+      primaryFound: false,
+    },
+    scores: { opportunity: 79, hiddenness: 88, confidence: 64 },
+    status: "Новый",
+    summary: "Упаковочная компания представлена в Telegram, но собственный сайт не указан.",
+    recommendedOffer: "Лендинг с квизом расчёта и сохранением заявок в CRM.",
+    possibleBranches: [],
+  },
+];
+
+export function createDemoResponse(query: SearchPayload): SearchResponse {
+  const leads = demoLeads.map((lead) => ({ ...lead }));
+
+  return {
+    mode: "demo",
+    query,
+    summary: {
+      cardsFound: 320,
+      uniqueLocations: 245,
+      assumedBusinesses: 210,
+      foundByPrimary: 85,
+      foundOnlyExpanded: 125,
+      digitalGapCandidates: 63,
+      manualReviewCandidates: 28,
+    },
+    leads,
+    notice:
+      "Демонстрационные синтетические данные. Метрики не являются результатом реального поиска; даже в live-режиме API возвращает обнаруженную выборку, а не полный реестр рынка.",
+    generatedAt: new Date().toISOString(),
+  };
+}
