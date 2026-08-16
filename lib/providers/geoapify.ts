@@ -4,6 +4,11 @@ import type {
   SearchProgressEvent,
   SearchResponse,
 } from "../types";
+import type {
+  MetroStation,
+  RussianMetroSystem,
+  RussianMetroSystemId,
+} from "../metro";
 import { isGeoapifyCategoryId } from "../search-planner/catalogs/geoapify";
 import {
   SearchProviderError,
@@ -23,7 +28,18 @@ const MAX_PLACES_LIMIT = 500;
 const DEFAULT_DETAILS_LIMIT = 20;
 const MAX_DETAILS_LIMIT = 50;
 const DETAILS_CONCURRENCY = 3;
+const METRO_STATION_CATEGORY = "public_transport.subway";
+const METRO_STATION_ENTRANCE_CATEGORY = "public_transport.subway.entrance";
+const METRO_STATION_PAGE_LIMIT = 500;
+const MAX_METRO_STATION_PAGES = 5;
+const VERIFIED_METRO_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
+const MAX_VERIFIED_METRO_CACHE_ENTRIES = 500;
 let nextGeoapifyRequestAt = 0;
+
+const verifiedMetroStations = new Map<
+  string,
+  { station: MetroStation; expiresAtMs: number }
+>();
 
 function abortedSearchError(): SearchProviderError {
   return new SearchProviderError("Поиск отменён", "SEARCH_ABORTED");
@@ -71,6 +87,12 @@ type GeoapifyFeature = {
 
 type GeoapifyCollection = {
   features?: GeoapifyFeature[];
+};
+
+export type GeoapifyMetroStationDirectory = {
+  systemId: RussianMetroSystemId;
+  stations: MetroStation[];
+  fetchedAt: string;
 };
 
 type CategoryPlan = {
@@ -440,6 +462,434 @@ function isCountryPlace(feature: GeoapifyFeature, expectedCountryCode: string): 
     countryCode.toLocaleLowerCase("en-US") ===
       expectedCountryCode.toLocaleLowerCase("en-US")
   );
+}
+
+type MetroStationObservation = {
+  name: string;
+  normalizedName: string;
+  coordinates: [number, number];
+  lineColor: string | null;
+  placeId: string | null;
+};
+
+type MetroGeocodeCandidate = {
+  normalizedName: string;
+  coordinates: [number, number];
+  placeId: string;
+};
+
+type MetroStationGroup = {
+  names: Set<string>;
+  coordinates: Array<[number, number]>;
+  lineColors: Set<string>;
+  providerPlaceIds: Set<string>;
+};
+
+const metroStationCollator = new Intl.Collator("ru-RU", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function safeStationName(value: unknown): string | null {
+  const raw = stringValue(value, 160);
+  if (!raw) return null;
+  const normalizedWhitespace = raw
+    .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalizedWhitespace || null;
+}
+
+function safeMetroLineColor(value: unknown): string | null {
+  const color = stringValue(value, 9);
+  return color && /^#[\da-f]{3}(?:[\da-f]{3})?$/i.test(color)
+    ? color.toLocaleLowerCase("en-US")
+    : null;
+}
+
+function featureCoordinates(feature: GeoapifyFeature): [number, number] | null {
+  const geometryCoordinates = feature.geometry?.coordinates;
+  if (validCoordinates(geometryCoordinates)) {
+    return [geometryCoordinates[0], geometryCoordinates[1]];
+  }
+  const propertyCoordinates: unknown = [
+    feature.properties?.lon,
+    feature.properties?.lat,
+  ];
+  return validCoordinates(propertyCoordinates)
+    ? [propertyCoordinates[0], propertyCoordinates[1]]
+    : null;
+}
+
+function normalizeMetroStationObservation(
+  feature: GeoapifyFeature,
+): MetroStationObservation | null {
+  const properties = feature.properties ?? {};
+  const categories = stringArray(properties.categories);
+  if (
+    !categories.includes(METRO_STATION_CATEGORY) ||
+    categories.includes(METRO_STATION_ENTRANCE_CATEGORY) ||
+    !isCountryPlace(feature, "RU")
+  ) {
+    return null;
+  }
+  const name = safeStationName(properties.name);
+  const coordinates = featureCoordinates(feature);
+  if (!name || !coordinates) return null;
+  const normalizedName = normalizeText(name);
+  if (!normalizedName) return null;
+  return {
+    name,
+    normalizedName,
+    coordinates,
+    lineColor: safeMetroLineColor(properties.color),
+    placeId: stringValue(properties.place_id, 500),
+  };
+}
+
+function normalizeMetroGeocodeCandidate(
+  feature: GeoapifyFeature,
+): MetroGeocodeCandidate | null {
+  const properties = feature.properties ?? {};
+  if (
+    stringValue(properties.result_type, 40) !== "amenity" ||
+    !isCountryPlace(feature, "RU")
+  ) {
+    return null;
+  }
+  const name = safeStationName(properties.name);
+  const coordinates = featureCoordinates(feature);
+  const placeId = stringValue(properties.place_id, 500);
+  if (!name || !coordinates || !placeId) return null;
+  const normalizedName = normalizeText(name);
+  return normalizedName ? { normalizedName, coordinates, placeId } : null;
+}
+
+function averageStationCoordinates(
+  coordinates: Array<[number, number]>,
+): [number, number] {
+  const [lonTotal, latTotal] = coordinates.reduce(
+    ([lon, lat], current) => [lon + current[0], lat + current[1]],
+    [0, 0],
+  );
+  return [
+    Number((lonTotal / coordinates.length).toFixed(6)),
+    Number((latTotal / coordinates.length).toFixed(6)),
+  ];
+}
+
+function distanceMeters(
+  left: readonly [number, number],
+  right: readonly [number, number],
+): number {
+  const earthRadiusMeters = 6_371_000;
+  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+  const latitudeDelta = toRadians(right[1] - left[1]);
+  const longitudeDelta = toRadians(right[0] - left[0]);
+  const leftLatitude = toRadians(left[1]);
+  const rightLatitude = toRadians(right[1]);
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(leftLatitude) *
+      Math.cos(rightLatitude) *
+      Math.sin(longitudeDelta / 2) ** 2;
+  return 2 * earthRadiusMeters * Math.asin(Math.sqrt(haversine));
+}
+
+function metroStationId(
+  systemId: RussianMetroSystemId,
+  normalizedName: string,
+  providerPlaceIds: string[],
+): string {
+  return providerPlaceIds[0]
+    ? `geoapify:${providerPlaceIds[0]}`
+    : `${systemId}:${encodeURIComponent(normalizedName)}`;
+}
+
+function dedupeMetroStations(
+  systemId: RussianMetroSystemId,
+  observations: MetroStationObservation[],
+): MetroStation[] {
+  const groups = new Map<string, MetroStationGroup>();
+  for (const observation of observations) {
+    const group = groups.get(observation.normalizedName) ?? {
+      names: new Set<string>(),
+      coordinates: [],
+      lineColors: new Set<string>(),
+      providerPlaceIds: new Set<string>(),
+    };
+    group.names.add(observation.name);
+    group.coordinates.push(observation.coordinates);
+    if (observation.lineColor) group.lineColors.add(observation.lineColor);
+    if (observation.placeId) group.providerPlaceIds.add(observation.placeId);
+    groups.set(observation.normalizedName, group);
+  }
+
+  return [...groups.entries()]
+    .map(([normalizedName, group]): MetroStation => {
+      const names = [...group.names].sort(metroStationCollator.compare);
+      const providerPlaceIds = [...group.providerPlaceIds].sort();
+      return {
+        id: metroStationId(systemId, normalizedName, providerPlaceIds),
+        systemId,
+        name: names[0],
+        coordinates: averageStationCoordinates(group.coordinates),
+        lineColors: [...group.lineColors].sort(),
+        providerPlaceIds,
+      };
+    })
+    .sort((left, right) => metroStationCollator.compare(left.name, right.name));
+}
+
+export function searchGeoapifyMetroStations(
+  stations: readonly MetroStation[],
+  query: string,
+): MetroStation[] {
+  const normalizedQuery = normalizeText(query);
+  if (!normalizedQuery) return [...stations];
+  const queryTokens = normalizedQuery.split(" ").filter(Boolean);
+  return stations
+    .filter((station) => {
+      const normalizedName = normalizeText(station.name);
+      return (
+        normalizedName.includes(normalizedQuery) ||
+        queryTokens.every((token) => normalizedName.includes(token))
+      );
+    })
+    .sort((left, right) => {
+      const leftName = normalizeText(left.name);
+      const rightName = normalizeText(right.name);
+      const leftPrefix = leftName.startsWith(normalizedQuery) ? 0 : 1;
+      const rightPrefix = rightName.startsWith(normalizedQuery) ? 0 : 1;
+      return leftPrefix - rightPrefix || metroStationCollator.compare(left.name, right.name);
+    });
+}
+
+export async function fetchGeoapifyMetroStationDirectory(
+  system: RussianMetroSystem,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<GeoapifyMetroStationDirectory> {
+  const normalizedApiKey = apiKey.trim();
+  if (!normalizedApiKey) {
+    throw new SearchProviderError(
+      "Серверный ключ Geoapify не настроен",
+      "GEOAPIFY_NOT_CONFIGURED",
+    );
+  }
+
+  const observations: MetroStationObservation[] = [];
+  let completed = false;
+  for (let page = 0; page < MAX_METRO_STATION_PAGES; page += 1) {
+    const offset = page * METRO_STATION_PAGE_LIMIT;
+    const data = await requestGeoapify(
+      PLACES_ENDPOINT,
+      {
+        categories: METRO_STATION_CATEGORY,
+        conditions: "named",
+        filter: `circle:${system.center[0]},${system.center[1]},${system.searchRadiusMeters}`,
+        bias: `proximity:${system.center[0]},${system.center[1]}`,
+        lang: "ru",
+        limit: String(METRO_STATION_PAGE_LIMIT),
+        offset: String(offset),
+      },
+      normalizedApiKey,
+      FETCH_TIMEOUT_MS,
+      signal,
+    );
+    const features = data.features ?? [];
+    for (const feature of features) {
+      const observation = normalizeMetroStationObservation(feature);
+      if (observation) observations.push(observation);
+    }
+    if (features.length < METRO_STATION_PAGE_LIMIT) {
+      completed = true;
+      break;
+    }
+  }
+  if (!completed) {
+    throw new SearchProviderError(
+      "Geoapify вернул слишком большую выборку станций метро",
+      "GEOAPIFY_RESULT_LIMIT",
+    );
+  }
+
+  return {
+    systemId: system.id,
+    stations: dedupeMetroStations(system.id, observations),
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+export async function findGeoapifyMetroStations(
+  system: RussianMetroSystem,
+  query: string,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<MetroStation[]> {
+  const stationQuery = safeStationName(query);
+  if (!stationQuery) return [];
+  const normalizedApiKey = apiKey.trim();
+  if (!normalizedApiKey) {
+    throw new SearchProviderError(
+      "Серверный ключ Geoapify не настроен",
+      "GEOAPIFY_NOT_CONFIGURED",
+    );
+  }
+
+  const data = await requestGeoapify(
+    GEOCODE_ENDPOINT,
+    {
+      text: `метро ${stationQuery}, ${system.city}, Россия`,
+      type: "amenity",
+      filter: `circle:${system.center[0]},${system.center[1]},${system.searchRadiusMeters}`,
+      bias: `proximity:${system.center[0]},${system.center[1]}`,
+      lang: "ru",
+      format: "geojson",
+      limit: "20",
+    },
+    normalizedApiKey,
+    FETCH_TIMEOUT_MS,
+    signal,
+  );
+  const normalizedQuery = normalizeText(stationQuery);
+  const candidates = (data.features ?? [])
+    .map(normalizeMetroGeocodeCandidate)
+    .filter((station): station is MetroGeocodeCandidate => Boolean(station))
+    .filter(
+      (station) =>
+        distanceMeters(system.center, station.coordinates) <=
+          system.searchRadiusMeters &&
+        (station.normalizedName === normalizedQuery ||
+          station.normalizedName.startsWith(`${normalizedQuery} `)),
+    );
+  const observations: MetroStationObservation[] = [];
+  // Typed fallback is an exception path, not a broad directory crawl. Keep
+  // Place Details bounded so one typo cannot exhaust the provider quota or SLA.
+  for (const candidate of candidates.slice(0, 3)) {
+    const details = await requestGeoapify(
+      PLACE_DETAILS_ENDPOINT,
+      { id: candidate.placeId, features: "details", lang: "ru" },
+      normalizedApiKey,
+      DETAILS_FETCH_TIMEOUT_MS,
+      signal,
+    );
+    const detailFeature = details.features?.find(
+      (feature) => feature.properties?.feature_type === "details",
+    );
+    if (!detailFeature) continue;
+    const observation = normalizeMetroStationObservation(detailFeature);
+    if (
+      observation &&
+      distanceMeters(system.center, observation.coordinates) <=
+        system.searchRadiusMeters &&
+      (observation.normalizedName === normalizedQuery ||
+        observation.normalizedName.startsWith(`${normalizedQuery} `))
+    ) {
+      observations.push(observation);
+    }
+  }
+  return dedupeMetroStations(system.id, observations);
+}
+
+export async function verifyGeoapifyMetroStationSelection(
+  system: RussianMetroSystem,
+  selection: {
+    stationId: string;
+    stationName: string;
+    coordinates: [number, number];
+  },
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<MetroStation> {
+  const prefix = "geoapify:";
+  if (!selection.stationId.startsWith(prefix)) {
+    throw new SearchProviderError(
+      "Выберите станцию заново из серверного справочника",
+      "METRO_STATION_MISMATCH",
+    );
+  }
+  const placeId = selection.stationId.slice(prefix.length).trim();
+  if (!placeId || placeId.length > 500) {
+    throw new SearchProviderError(
+      "Выбранная станция содержит некорректный ID",
+      "METRO_STATION_MISMATCH",
+    );
+  }
+  const cacheKey = `${system.id}:${placeId}`;
+  const cached = verifiedMetroStations.get(cacheKey);
+  if (cached && cached.expiresAtMs > Date.now()) {
+    if (
+      normalizeText(cached.station.name) === normalizeText(selection.stationName) &&
+      distanceMeters(cached.station.coordinates, selection.coordinates) <= 1_500
+    ) {
+      return cached.station;
+    }
+    throw new SearchProviderError(
+      "Название или координаты станции не совпадают со справочником",
+      "METRO_STATION_MISMATCH",
+    );
+  }
+  if (cached) verifiedMetroStations.delete(cacheKey);
+
+  const normalizedApiKey = apiKey.trim();
+  if (!normalizedApiKey) {
+    throw new SearchProviderError(
+      "Серверный ключ Geoapify не настроен",
+      "GEOAPIFY_NOT_CONFIGURED",
+    );
+  }
+  const details = await requestGeoapify(
+    PLACE_DETAILS_ENDPOINT,
+    { id: placeId, features: "details", lang: "ru" },
+    normalizedApiKey,
+    DETAILS_FETCH_TIMEOUT_MS,
+    signal,
+  );
+  const detailFeature = details.features?.find(
+    (feature) => feature.properties?.feature_type === "details",
+  );
+  const observation = detailFeature
+    ? normalizeMetroStationObservation(detailFeature)
+    : null;
+  if (
+    !observation ||
+    normalizeText(observation.name) !== normalizeText(selection.stationName) ||
+    distanceMeters(system.center, observation.coordinates) >
+      system.searchRadiusMeters ||
+    distanceMeters(observation.coordinates, selection.coordinates) > 1_500
+  ) {
+    throw new SearchProviderError(
+      "Название или координаты станции не совпадают со справочником",
+      "METRO_STATION_MISMATCH",
+    );
+  }
+  const verifiedStation = dedupeMetroStations(system.id, [observation])[0];
+  if (!verifiedStation) {
+    throw new SearchProviderError(
+      "Не удалось подтвердить выбранную станцию",
+      "METRO_STATION_MISMATCH",
+    );
+  }
+  // Place Details may canonicalize a valid lookup ID to another provider ID
+  // for the same station/line record. Preserve the directory ID submitted by
+  // the client while retaining every canonical ID returned by Geoapify.
+  const station: MetroStation = {
+    ...verifiedStation,
+    id: selection.stationId,
+    providerPlaceIds: [
+      ...new Set([placeId, ...verifiedStation.providerPlaceIds]),
+    ].sort(),
+  };
+  if (verifiedMetroStations.size >= MAX_VERIFIED_METRO_CACHE_ENTRIES) {
+    const oldestKey = verifiedMetroStations.keys().next().value;
+    if (typeof oldestKey === "string") verifiedMetroStations.delete(oldestKey);
+  }
+  verifiedMetroStations.set(cacheKey, {
+    station,
+    expiresAtMs: Date.now() + VERIFIED_METRO_CACHE_TTL_MS,
+  });
+  return station;
 }
 
 function placeAddress(properties: Record<string, unknown>): string {

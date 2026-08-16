@@ -37,6 +37,7 @@ test("server-renders the LeadRadar search workspace", async () => {
   assert.match(html, /Новый поиск компаний/);
   assert.match(html, /Запустить поиск/);
   assert.match(html, /Geoapify Places API/);
+  assert.match(html, /Город[\s\S]*Район[\s\S]*Метро[\s\S]*Область[\s\S]*Радиус/);
   assert.match(html, /Владимир/);
   assert.doesNotMatch(html, /Алексей/);
   assert.doesNotMatch(html, /sites-skeleton|codex-preview|react-loading-skeleton/i);
@@ -105,6 +106,8 @@ test("search API exposes health and deterministic demo results", async () => {
   assert.equal(health.version, packageMetadata.version);
   assert.equal(health.capabilities.geoapifyPlaces.strictRadius, true);
   assert.equal(health.capabilities.geoapifyPlaces.rawResponsesStored, false);
+  assert.equal(health.capabilities.metroStations.systems.length, 7);
+  assert.equal(health.capabilities.metroStations.typedGeocodeFallback, true);
   assert.equal(health.capabilities.yandexGeosearch.strictRadius, true);
   assert.equal(health.capabilities.queryIntelligence.mode, "deterministic");
   assert.equal(health.capabilities.queryIntelligence.strictStructuredOutput, true);
@@ -206,6 +209,22 @@ test("Geoapify provider normalizes live data without inventing missing websites"
     }
 
     if (url.pathname === "/v2/place-details") {
+      if (url.searchParams.get("id") === "belorusskaya") {
+        return Response.json({
+          features: [
+            {
+              properties: {
+                feature_type: "details",
+                place_id: "canonical-belorusskaya",
+                name: "Белорусская",
+                country_code: "ru",
+                categories: ["public_transport.subway"],
+              },
+              geometry: { type: "Point", coordinates: [37.5859, 55.7767] },
+            },
+          ],
+        });
+      }
       return Response.json({
         features: [
           {
@@ -255,7 +274,7 @@ test("Geoapify provider normalizes live data without inventing missing websites"
           relatedQueries: ["Складские услуги", "Логистика"],
           excludeQueries: [],
           location: "Москва",
-          radiusKm: 15,
+          radiusKm: 1.5,
           services: ["Создание сайта"],
         }),
       }),
@@ -297,8 +316,14 @@ test("Geoapify provider normalizes live data without inventing missing websites"
           relatedQueries: ["Складские услуги", "Логистика"],
           excludeQueries: [],
           location: "",
-          center: [37.6176, 55.7558],
-          radiusKm: 15,
+          center: [37.5859, 55.7767],
+          locationMode: "metro",
+          metro: {
+            systemId: "moscow",
+            stationId: "geoapify:belorusskaya",
+            stationName: "Белорусская",
+          },
+          radiusKm: 1.5,
           services: ["Создание сайта"],
         }),
       }),
@@ -348,9 +373,51 @@ test("Geoapify provider normalizes live data without inventing missing websites"
     const resultEvent = events.at(-1);
     assert.equal(resultEvent.type, "result");
     assert.equal(resultEvent.data.mode, "geoapify");
-    assert.equal(resultEvent.data.query.location, "Точка на карте");
+    assert.equal(
+      resultEvent.data.query.location,
+      "Метро «Белорусская», Москва",
+    );
+    assert.equal(resultEvent.data.query.locationMode, "metro");
+    assert.equal(resultEvent.data.query.metro.stationName, "Белорусская");
+    assert.equal(
+      resultEvent.data.query.metro.stationId,
+      "geoapify:belorusskaya",
+    );
     assert.equal(streamText.includes(fakeKey), false);
-    assert.deepEqual(upstreamCalls, ["/v2/places", "/v2/place-details"]);
+    assert.deepEqual(upstreamCalls, [
+      "/v2/place-details",
+      "/v2/places",
+      "/v2/place-details",
+    ]);
+
+    const callsBeforeStationMismatch = upstreamCalls.length;
+    const stationMismatchResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          primaryQuery: "Фулфилмент",
+          location: "Метро «Потапово», Москва",
+          locationMode: "metro",
+          metro: {
+            systemId: "moscow",
+            stationId: "geoapify:belorusskaya",
+            stationName: "Потапово",
+          },
+          center: [37.7149, 55.5605],
+          radiusKm: 1.5,
+          services: [],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(stationMismatchResponse.status, 400);
+    assert.equal(
+      (await stationMismatchResponse.json()).code,
+      "METRO_STATION_MISMATCH",
+    );
+    assert.equal(upstreamCalls.length, callsBeforeStationMismatch);
 
     const callsBeforeUnsupportedQuery = upstreamCalls.length;
     const unsupportedResponse = await worker.fetch(
@@ -382,6 +449,298 @@ test("Geoapify provider normalizes live data without inventing missing websites"
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+  }
+});
+
+test("metro API deduplicates stations and falls back to typed geocoding", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.GEOAPIFY_API_KEY;
+  const fakeKey = "fake-metro-test-key";
+  const upstreamPaths = [];
+  process.env.GEOAPIFY_API_KEY = fakeKey;
+
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    upstreamPaths.push(url.pathname);
+    assert.equal(url.searchParams.get("apiKey"), fakeKey);
+
+    if (url.pathname === "/v2/places") {
+      assert.equal(url.searchParams.get("categories"), "public_transport.subway");
+      assert.equal(url.searchParams.get("conditions"), "named");
+      assert.equal(url.searchParams.get("limit"), "500");
+      assert.equal(url.searchParams.get("offset"), "0");
+      const filter = url.searchParams.get("filter") ?? "";
+      if (filter.includes("50.1002,53.1959")) {
+        return Response.json({
+          features: [
+            {
+              properties: {
+                place_id: "samara-moskovskaya",
+                name: "Московская",
+                country_code: "ru",
+                categories: ["public_transport.subway"],
+              },
+              geometry: { type: "Point", coordinates: [50.1501, 53.2038] },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        features: [
+          {
+            properties: {
+              place_id: "belorusskaya-green",
+              name: "Белорусская",
+              color: "#2d9b50",
+              country_code: "ru",
+              categories: ["public_transport.subway"],
+            },
+            geometry: { type: "Point", coordinates: [37.5859, 55.7767] },
+          },
+          {
+            properties: {
+              place_id: "belorusskaya-brown",
+              name: "Белорусская",
+              color: "#8c7042",
+              country_code: "ru",
+              categories: ["public_transport.subway"],
+            },
+            geometry: { type: "Point", coordinates: [37.5844, 55.7752] },
+          },
+          {
+            properties: {
+              place_id: "park-pobedy-moscow",
+              name: "Парк Победы",
+              country_code: "ru",
+              categories: ["public_transport.subway"],
+            },
+            geometry: { type: "Point", coordinates: [37.5038, 55.7362] },
+          },
+        ],
+      });
+    }
+
+    if (url.pathname === "/v1/geocode/search") {
+      assert.equal(url.searchParams.get("type"), "amenity");
+      assert.match(url.searchParams.get("text") ?? "", /метро Гагаринская, Самара, Россия/i);
+      return Response.json({
+        features: [
+          {
+            properties: {
+              place_id: "samara-gagarinskaya",
+              name: "Гагаринская",
+              result_type: "amenity",
+              country_code: "ru",
+              categories: ["public_transport.subway"],
+            },
+            geometry: { type: "Point", coordinates: [50.1325, 53.2001] },
+          },
+        ],
+      });
+    }
+
+    if (url.pathname === "/v2/place-details") {
+      assert.equal(url.searchParams.get("id"), "samara-gagarinskaya");
+      return Response.json({
+        features: [
+          {
+            properties: {
+              feature_type: "details",
+              place_id: "samara-gagarinskaya",
+              name: "Гагаринская",
+              country_code: "ru",
+              categories: ["public_transport.subway"],
+            },
+            geometry: { type: "Point", coordinates: [50.1325, 53.2001] },
+          },
+        ],
+      });
+    }
+
+    return new Response("Unexpected upstream request", { status: 500 });
+  };
+
+  try {
+    const worker = await getWorker();
+    const directoryResponse = await worker.fetch(
+      new Request("http://localhost/api/metro-stations?city=moscow"),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(directoryResponse.status, 200);
+    const directory = await directoryResponse.json();
+    assert.equal(directory.system.city, "Москва");
+    assert.equal(directory.stations.length, 2);
+    const belorusskaya = directory.stations.find(
+      (station) => station.name === "Белорусская",
+    );
+    assert.equal(belorusskaya.providerPlaceIds.length, 2);
+    assert.deepEqual(belorusskaya.lineColors, ["#2d9b50", "#8c7042"]);
+
+    const fallbackResponse = await worker.fetch(
+      new Request(
+        "http://localhost/api/metro-stations?city=samara&q=%D0%93%D0%B0%D0%B3%D0%B0%D1%80%D0%B8%D0%BD%D1%81%D0%BA%D0%B0%D1%8F",
+      ),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(fallbackResponse.status, 200);
+    const fallback = await fallbackResponse.json();
+    assert.equal(fallback.stations[0].name, "Гагаринская");
+    assert.equal(fallback.stations[0].systemId, "samara");
+    assert.equal(JSON.stringify(fallback).includes(fakeKey), false);
+    assert.ok(upstreamPaths.includes("/v1/geocode/search"));
+
+    const invalidCityResponse = await worker.fetch(
+      new Request("http://localhost/api/metro-stations?city=omsk"),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(invalidCityResponse.status, 400);
+    assert.equal((await invalidCityResponse.json()).code, "METRO_INVALID_CITY");
+
+    const tooShortQueryResponse = await worker.fetch(
+      new Request("http://localhost/api/metro-stations?city=moscow&q=%D0%91"),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(tooShortQueryResponse.status, 400);
+    assert.equal((await tooShortQueryResponse.json()).code, "METRO_INVALID_QUERY");
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.GEOAPIFY_API_KEY;
+    else process.env.GEOAPIFY_API_KEY = previousKey;
+  }
+});
+
+test("one cancelled metro directory request does not cancel a concurrent caller", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.GEOAPIFY_API_KEY;
+  process.env.GEOAPIFY_API_KEY = "fake-metro-concurrency-key";
+  let upstreamRequests = 0;
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => {
+    markFirstStarted = resolve;
+  });
+
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.pathname, "/v2/places");
+    upstreamRequests += 1;
+    if (upstreamRequests === 1) markFirstStarted();
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 35);
+      const abort = () => {
+        clearTimeout(timer);
+        reject(new DOMException("aborted", "AbortError"));
+      };
+      if (init.signal?.aborted) abort();
+      else init.signal?.addEventListener("abort", abort, { once: true });
+    });
+    return Response.json({
+      features: [
+        {
+          properties: {
+            place_id: "ekb-ploshchad-1905",
+            name: "Площадь 1905 года",
+            country_code: "ru",
+            categories: ["public_transport.subway"],
+          },
+          geometry: { type: "Point", coordinates: [60.5974, 56.8366] },
+        },
+      ],
+    });
+  };
+
+  try {
+    const worker = await getWorker();
+    const firstController = new AbortController();
+    const firstRequest = worker.fetch(
+      new Request(
+        "http://localhost/api/metro-stations?city=yekaterinburg",
+        { signal: firstController.signal },
+      ),
+      runtimeEnv,
+      runtimeContext,
+    );
+    await firstStarted;
+    const healthyRequest = worker.fetch(
+      new Request("http://localhost/api/metro-stations?city=yekaterinburg"),
+      runtimeEnv,
+      runtimeContext,
+    );
+    firstController.abort();
+
+    const firstOutcome = await Promise.allSettled([firstRequest]);
+    assert.ok(
+      firstOutcome[0].status === "rejected" ||
+        (firstOutcome[0].status === "fulfilled" &&
+          firstOutcome[0].value.status >= 400),
+    );
+    const healthyResponse = await healthyRequest;
+    assert.equal(healthyResponse.status, 200);
+    const healthyPayload = await healthyResponse.json();
+    assert.equal(healthyPayload.stations[0].name, "Площадь 1905 года");
+    assert.ok(upstreamRequests >= 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.GEOAPIFY_API_KEY;
+    else process.env.GEOAPIFY_API_KEY = previousKey;
+  }
+});
+
+test("rejected metro requests do not consume the global rate budget", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.GEOAPIFY_API_KEY;
+  process.env.GEOAPIFY_API_KEY = "fake-metro-rate-key";
+  let upstreamRequests = 0;
+
+  globalThis.fetch = async () => {
+    upstreamRequests += 1;
+    return Response.json({
+      features: [
+        {
+          properties: {
+            place_id: "kazan-kremlevskaya",
+            name: "Кремлёвская",
+            country_code: "ru",
+            categories: ["public_transport.subway"],
+          },
+          geometry: { type: "Point", coordinates: [49.1061, 55.7952] },
+        },
+      ],
+    });
+  };
+
+  try {
+    const worker = await getWorker();
+    const statuses = [];
+    for (let index = 0; index < 60; index += 1) {
+      const response = await worker.fetch(
+        new Request("http://localhost/api/metro-stations?city=kazan", {
+          headers: { "x-real-ip": "198.51.100.10" },
+        }),
+        runtimeEnv,
+        runtimeContext,
+      );
+      statuses.push(response.status);
+    }
+    assert.equal(statuses.filter((status) => status === 200).length, 30);
+    assert.equal(statuses.filter((status) => status === 429).length, 30);
+
+    const otherClientResponse = await worker.fetch(
+      new Request("http://localhost/api/metro-stations?city=kazan", {
+        headers: { "x-real-ip": "198.51.100.11" },
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(otherClientResponse.status, 200);
+    assert.equal(upstreamRequests, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey === undefined) delete process.env.GEOAPIFY_API_KEY;
+    else process.env.GEOAPIFY_API_KEY = previousKey;
   }
 });
 
@@ -525,6 +884,73 @@ test("search API rejects invalid payloads", async () => {
   const incompatibleLocaleError = await incompatibleLocaleResponse.json();
   assert.equal(incompatibleLocaleError.code, "INVALID_SEARCH_PAYLOAD");
   assert.match(incompatibleLocaleError.error, /несовместима/i);
+
+  const incompleteMetroResponse = await worker.fetch(
+    new Request("http://localhost/api/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        primaryQuery: "Кофейня",
+        location: "Москва",
+        locationMode: "metro",
+        metro: { systemId: "moscow" },
+        radiusKm: 1.5,
+      }),
+    }),
+    runtimeEnv,
+    runtimeContext,
+  );
+  assert.equal(incompleteMetroResponse.status, 400);
+  assert.match((await incompleteMetroResponse.json()).error, /конкретную станцию/i);
+
+  const validMetroBase = {
+    primaryQuery: "Кофейня",
+    location: "Москва",
+    locationMode: "metro",
+    metro: {
+      systemId: "moscow",
+      stationId: "geoapify:belorusskaya",
+      stationName: "Белорусская",
+    },
+    center: [37.5859, 55.7767],
+    radiusKm: 1.5,
+    locale: "ru-RU",
+    countryCodes: ["RU"],
+  };
+  for (const [payload, errorPattern] of [
+    [{ ...validMetroBase, radiusKm: 11 }, /0,5 до 10/i],
+    [{ ...validMetroBase, center: [82.9204, 55.0302] }, /не соответствуют/i],
+    [
+      {
+        ...validMetroBase,
+        locale: "ru-KZ",
+        countryCodes: ["KZ"],
+      },
+      /только для городов России/i,
+    ],
+    [
+      {
+        ...validMetroBase,
+        metro: {
+          ...validMetroBase.metro,
+          stationId: "manual:belorusskaya",
+        },
+      },
+      /серверного справочника/i,
+    ],
+  ]) {
+    const invalidMetroResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(invalidMetroResponse.status, 400);
+    assert.match((await invalidMetroResponse.json()).error, errorPattern);
+  }
 });
 
 test("search APIs expose a retryable error when Kimi is unavailable", { concurrency: false }, async () => {

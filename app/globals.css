@@ -71,7 +71,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .stepper li.active { color: var(--blue); font-weight: 700; }
 .stepper li.active span { border-color: #cddfff; background: var(--blue-soft); }
 .search-grid { display: grid; grid-template-columns: minmax(0,.9fr) minmax(430px,1.1fr); gap: 12px; }
-.form-panel, .location-panel { padding: 17px; }
+.form-panel, .location-panel { min-width: 0; padding: 17px; }
 .section-title { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .section-title h2, .card-title h2 { margin: 0; font-size: 14px; }
 .section-title p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
@@ -87,8 +87,11 @@ input:hover, textarea:hover, select:hover { border-color: #c7d0de; }
 .chip button { width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #7c8799; background: transparent; cursor: pointer; }
 .chip button:hover { color: #fff; background: var(--red); }
 .tag-add-row { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
-.segmented { display: grid; grid-template-columns: repeat(4,1fr); margin-bottom: 15px; padding: 3px; border-radius: 8px; background: #f4f6f9; }
+.segmented { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); max-width: 100%; margin-bottom: 15px; padding: 3px; border-radius: 8px; background: #f4f6f9; }
 .segmented button { min-height: 31px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; font-size: 11px; cursor: pointer; }
+.segmented button:hover:not(:disabled) { color: #40506a; background: rgba(255,255,255,.58); }
+.segmented button:focus-visible { outline: 2px solid #8bb6f6; outline-offset: 1px; }
+.segmented button:disabled { cursor: not-allowed; opacity: .55; }
 .segmented button.active { color: var(--blue); background: #fff; box-shadow: 0 2px 7px rgba(30,46,74,.08); font-weight: 650; }
 .input-icon { position: relative; }
 .input-icon input { padding-right: 35px; }
@@ -98,6 +101,19 @@ input:hover, textarea:hover, select:hover { border-color: #c7d0de; }
 .location-help, .location-error { display: block; font-size: 9px; line-height: 1.4; }
 .location-help { color: var(--muted); }
 .location-error { color: #b43f34; }
+.metro-fields { display: grid; grid-template-columns: minmax(145px,.72fr) minmax(0,1.28fr); gap: 9px; }
+.metro-fields .field-group { min-width: 0; }
+.select-icon select { padding-right: 34px; }
+.metro-input-row { grid-template-columns: minmax(0,1fr) 90px; }
+.metro-error { display: flex; align-items: center; gap: 7px; }
+.metro-error button { padding: 0; border: 0; color: inherit; background: transparent; font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.metro-match-message { color: #315b99; }
+.metro-candidates { display: flex; flex-wrap: wrap; gap: 5px; }
+.metro-candidates button { min-height: 28px; padding: 4px 8px; border: 1px solid #cfe0fa; border-radius: 7px; color: #245fae; background: #f5f9ff; font-size: 10px; cursor: pointer; }
+.metro-candidates button:hover, .metro-candidates button:focus-visible { border-color: #8bb6f6; background: #eaf3ff; outline: none; }
+.metro-attribution { display: flex; align-items: center; justify-content: flex-end; gap: 5px; margin: -10px 0 14px; color: var(--muted); font-size: 9px; }
+.metro-attribution a { color: var(--blue); text-decoration: none; }
+.metro-attribution a:hover { text-decoration: underline; }
 .radius-row { display: flex; align-items: end; gap: 14px; }
 .radius-row .field-group { width: 130px; }
 .unit-input { position: relative; }
@@ -315,6 +331,10 @@ tbody tr:hover { background: #fbfdff; }
   .stats-grid { grid-template-columns: 1fr; }.sample-warning { grid-column: auto; }
   .header-actions .button { width: 100%; }
   .location-map { height: 230px; min-height: 230px; }.tag-add-row { grid-template-columns: 1fr; }
+  .location-panel,.location-modes { min-width: 0; max-width: 100%; }
+  .location-modes { grid-template-columns: repeat(5,minmax(0,1fr)); overflow-x: hidden; }
+  .location-modes button { min-width: 0; padding-inline: 3px; font-size: 9px; }
+  .metro-fields { grid-template-columns: 1fr; gap: 0; }
   .location-input-row { grid-template-columns: 1fr; }.location-action { width: 100%; }
   .inline-filters { display: grid; }.inline-filters input,.inline-filters select { width: 100%; }
 }

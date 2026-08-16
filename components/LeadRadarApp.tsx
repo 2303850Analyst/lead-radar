@@ -17,7 +17,6 @@ import {
   FileText,
   Globe2,
   Layers3,
-  LocateFixed,
   Mail,
   Map as MapIcon,
   MapPin,
@@ -36,7 +35,14 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  FormEvent,
+  type SetStateAction,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type {
   Lead,
@@ -47,7 +53,7 @@ import type {
 import type { SearchPlan } from "@/lib/search-planner/types";
 
 import LeadMap from "./LeadMap";
-import SearchAreaMap from "./SearchAreaMap";
+import LocationSelector from "./LocationSelector";
 import SearchIntentPanel, { isSearchPlan } from "./SearchIntentPanel";
 import SearchProgressPanel, {
   type SearchProgressPanelEvent,
@@ -275,6 +281,7 @@ const DEFAULT_QUERY: SearchPayload = {
   ],
   excludeQueries: ["Камеры хранения", "Склады индивидуального хранения", "Аренда гаражей"],
   location: "Москва, ул. Лесная, 7",
+  locationMode: "radius",
   radiusKm: 15,
   services: ["Создание сайта", "Внедрение CRM", "Автоматизация заявок"],
 };
@@ -729,6 +736,13 @@ export default function LeadRadarApp() {
 
   const runSearch = async (event?: FormEvent) => {
     event?.preventDefault();
+    if (
+      query.locationMode === "metro" &&
+      (!query.metro?.stationId || !query.metro.stationName || !query.center)
+    ) {
+      setError("Выберите конкретную станцию метро перед запуском поиска.");
+      return;
+    }
     if (!query.primaryQuery.trim() || (!query.location.trim() && !query.center)) {
       setError("Укажите основной запрос и географию поиска.");
       return;
@@ -887,7 +901,7 @@ export default function LeadRadarApp() {
     }
   };
 
-  const updateQuery = (nextQuery: SearchPayload) => {
+  const updateQuery = (nextQuery: SetStateAction<SearchPayload>) => {
     setQuery(nextQuery);
     if (!loading) {
       setSearchPlan(null);
@@ -1090,7 +1104,7 @@ function SearchScreen({
   onSave,
 }: {
   query: SearchPayload;
-  setQuery: (query: SearchPayload) => void;
+  setQuery: (query: SetStateAction<SearchPayload>) => void;
   loading: boolean;
   searchPhase: SearchPhase;
   searchPlan: SearchPlan | null;
@@ -1101,51 +1115,7 @@ function SearchScreen({
   onConfirm: (conceptIds: string[], confirmationToken: string) => void;
   onSave: () => void;
 }) {
-  const [locating, setLocating] = useState(false);
-  const [locationError, setLocationError] = useState("");
   const services = ["Создание сайта", "Внедрение CRM", "Автоматизация заявок", "Онлайн-калькулятор"];
-
-  const locateOnMap = async () => {
-    if (!query.location.trim()) {
-      setLocationError("Сначала укажите город, район или адрес.");
-      return;
-    }
-    setLocating(true);
-    setLocationError("");
-    try {
-      const response = await fetch("/api/geocode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ location: query.location }),
-      });
-      const payload = (await response.json()) as {
-        coordinates?: [number, number];
-        error?: string;
-      };
-      if (!response.ok || !payload.coordinates) {
-        throw new Error(payload.error || "Не удалось найти адрес на карте");
-      }
-      setQuery({ ...query, center: payload.coordinates });
-    } catch (locationFailure) {
-      setLocationError(
-        locationFailure instanceof Error
-          ? locationFailure.message
-          : "Не удалось найти адрес на карте",
-      );
-    } finally {
-      setLocating(false);
-    }
-  };
-
-  const selectMapCenter = (center: [number, number]) => {
-    const [longitude, latitude] = center;
-    setLocationError("");
-    setQuery({
-      ...query,
-      center,
-      location: `Точка на карте: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
-    });
-  };
 
   return (
     <section className="screen search-screen">
@@ -1153,7 +1123,7 @@ function SearchScreen({
         <div><p className="eyebrow">Поисковое задание</p><h1>Новый поиск компаний</h1><p>Заполните параметры — сервис объединит основной и смежные запросы.</p></div>
         <div className="header-actions">
           <button type="button" className="button" onClick={onSave}><Save size={16} /> Сохранить шаблон</button>
-          <button type="submit" form="search-form" className="button button-primary" disabled={loading}><Rocket size={16} /> {searchPhase === "planning" ? "Разбираем запрос…" : searchPhase === "searching" ? "Ищем компании…" : "Запустить поиск"}</button>
+          <button type="submit" form="search-form" className="button button-primary" disabled={loading || (query.locationMode === "metro" && !query.metro?.stationId)}><Rocket size={16} /> {searchPhase === "planning" ? "Разбираем запрос…" : searchPhase === "searching" ? "Ищем компании…" : "Запустить поиск"}</button>
         </div>
       </header>
       <ol className="stepper" aria-label="Этапы настройки">
@@ -1199,23 +1169,12 @@ function SearchScreen({
           <TagEditor title="Исключить" values={query.excludeQueries} onChange={(excludeQueries) => setQuery({ ...query, excludeQueries })} />
         </section>
         <section className="panel location-panel">
-          <div className="section-title"><span className="icon-box"><MapPin size={18} /></span><div><h2>Где ищем</h2><p>Центр и радиус будущей выборки</p></div></div>
-          <div className="segmented"><button type="button">Город</button><button type="button">Район</button><button type="button" className="active">Радиус</button><button type="button">Область</button></div>
-          <div className="field-group">
-            <label htmlFor="location">Центр</label>
-            <div className="location-input-row">
-              <div className="input-icon"><input id="location" value={query.location} onChange={(event) => setQuery({ ...query, location: event.target.value, center: undefined })} required /><MapPin size={17} /></div>
-              <button type="button" className="button button-small location-action" onClick={locateOnMap} disabled={locating || loading}><LocateFixed size={15} />{locating ? "Ищем…" : "Показать"}</button>
-            </div>
-            <small className="location-help">Введите адрес и нажмите «Показать» — либо выберите точку прямо на карте.</small>
-            {locationError && <small className="location-error" role="alert">{locationError}</small>}
-          </div>
-          <div className="radius-row"><div className="field-group"><label htmlFor="radius">Радиус</label><div className="unit-input"><input id="radius" type="number" min={0.5} max={250} step={0.5} value={query.radiusKm} onChange={(event) => setQuery({ ...query, radiusKm: Number(event.target.value) })} /><span>км</span></div></div><div className="radius-summary"><strong>{query.radiusKm} км</strong><span>от выбранного центра</span></div></div>
-          <SearchAreaMap center={query.center ?? DEFAULT_SEARCH_CENTER} radiusKm={query.radiusKm} onCenterChange={selectMapCenter} className="location-map" />
-          <div className={`map-selection-meta ${query.center ? "selected" : ""}`}>
-            <LocateFixed size={14} />
-            <span>{query.center ? `Центр зафиксирован: ${query.center[1].toFixed(5)}, ${query.center[0].toFixed(5)}` : "Карта готова: нажмите на неё, чтобы точно зафиксировать центр"}</span>
-          </div>
+          <LocationSelector
+            key={`${query.locationMode ?? "radius"}:${query.metro?.systemId ?? "none"}`}
+            query={query}
+            setQuery={setQuery}
+            loading={loading}
+          />
           <div className="service-section">
             <h3>Что предлагаем</h3><p>Это влияет на рекомендуемый заход, но не на поиск и скоринг лидов.</p>
             <div className="service-grid">{services.map((service) => <label className="check-card" key={service}><input type="checkbox" checked={query.services.includes(service)} onChange={() => setQuery({ ...query, services: query.services.includes(service) ? query.services.filter((item) => item !== service) : [...query.services, service] })} /><span><Check size={13} /></span>{service}</label>)}</div>

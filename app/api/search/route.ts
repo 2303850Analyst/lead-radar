@@ -3,6 +3,7 @@ import {
   GeoapifyProvider,
   geoapifyDetailsLimit,
   geoapifyPlacesLimit,
+  verifyGeoapifyMetroStationSelection,
 } from "@/lib/providers/geoapify";
 import {
   SearchProviderError,
@@ -22,10 +23,17 @@ import {
 import type { SearchPlan } from "@/lib/search-planner/types";
 import type {
   Lead,
+  SearchLocationMode,
+  SearchMetroSelection,
   SearchPayload,
   SearchProgressEvent,
   SearchResponse,
 } from "@/lib/types";
+import {
+  RUSSIAN_METRO_SYSTEMS,
+  getRussianMetroSystem,
+  isRussianMetroSystemId,
+} from "@/lib/metro";
 import {
   SUPPORTED_COUNTRY_CODES,
   SUPPORTED_LOCALES,
@@ -59,6 +67,14 @@ function selectedProvider(): "demo" | "geoapify" | "yandex" {
 type PayloadResult =
   | { ok: true; payload: SearchPayload }
   | { ok: false; error: string };
+
+const SEARCH_LOCATION_MODES: SearchLocationMode[] = [
+  "city",
+  "district",
+  "radius",
+  "metro",
+  "region",
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -214,6 +230,92 @@ function parseSearchPayload(value: unknown): PayloadResult {
     return { ok: false, error: "Описание предложения не должно превышать 500 символов" };
   }
 
+  const locationModeInput = value.locationMode ?? "radius";
+  if (
+    typeof locationModeInput !== "string" ||
+    !SEARCH_LOCATION_MODES.includes(locationModeInput as SearchLocationMode)
+  ) {
+    return { ok: false, error: "Поле «locationMode» содержит неподдерживаемый режим" };
+  }
+  const locationMode = locationModeInput as SearchLocationMode;
+
+  let metro: SearchMetroSelection | undefined;
+  if (value.metro !== undefined) {
+    if (!isRecord(value.metro) || typeof value.metro.systemId !== "string") {
+      return { ok: false, error: "Поле «metro» должно содержать выбранный метрополитен" };
+    }
+    if (!isRussianMetroSystemId(value.metro.systemId)) {
+      return { ok: false, error: "Выбран неподдерживаемый метрополитен" };
+    }
+    const stationId =
+      typeof value.metro.stationId === "string"
+        ? value.metro.stationId.trim()
+        : undefined;
+    const stationName =
+      typeof value.metro.stationName === "string"
+        ? value.metro.stationName.trim()
+        : undefined;
+    if ((stationId && !stationName) || (!stationId && stationName)) {
+      return { ok: false, error: "Станция метро должна содержать ID и название" };
+    }
+    if (
+      (stationId?.length ?? 0) > 600 ||
+      (stationName?.length ?? 0) > 160 ||
+      (stationName ? /[\p{Cc}\p{Cf}]/u.test(stationName) : false)
+    ) {
+      return { ok: false, error: "Данные станции метро слишком длинные" };
+    }
+    metro = {
+      systemId: value.metro.systemId,
+      ...(stationId && stationName ? { stationId, stationName } : {}),
+    };
+  }
+  if (locationMode === "metro" && (!metro?.stationId || !metro.stationName || !center.value)) {
+    return {
+      ok: false,
+      error: "Для режима метро выберите конкретную станцию и её координаты",
+    };
+  }
+  if (locationMode !== "metro" && metro) {
+    return {
+      ok: false,
+      error: "Выбор станции метро допустим только в режиме «metro»",
+    };
+  }
+  if (locationMode === "metro" && metro && center.value) {
+    if (locale !== "ru-RU" || countryCodes[0] !== "RU") {
+      return {
+        ok: false,
+        error: "Поиск по метро доступен только для городов России",
+      };
+    }
+    if (radiusKm > 10) {
+      return {
+        ok: false,
+        error: "Радиус поиска от метро должен быть от 0,5 до 10 км",
+      };
+    }
+    if (!metro.stationId?.startsWith("geoapify:")) {
+      return {
+        ok: false,
+        error: "Станция метро должна быть выбрана из серверного справочника",
+      };
+    }
+    const system = getRussianMetroSystem(metro.systemId);
+    if (
+      !system ||
+      distanceKm(
+        [system.center[0], system.center[1]],
+        center.value,
+      ) > system.searchRadiusMeters / 1_000
+    ) {
+      return {
+        ok: false,
+        error: "Координаты станции не соответствуют выбранному метрополитену",
+      };
+    }
+  }
+
   return {
     ok: true,
     payload: {
@@ -221,7 +323,12 @@ function parseSearchPayload(value: unknown): PayloadResult {
       primaryQuery,
       relatedQueries: relatedQueries.value ?? [],
       excludeQueries: excludeQueries.value ?? [],
-      location,
+      location:
+        locationMode === "metro" && metro?.stationName
+          ? `Метро «${metro.stationName}», ${getRussianMetroSystem(metro.systemId)?.city ?? "Россия"}`
+          : location,
+      locationMode,
+      ...(metro ? { metro } : {}),
       ...(center.value ? { center: center.value } : {}),
       radiusKm,
       ...(offer ? { offer } : {}),
@@ -741,6 +848,13 @@ export async function GET() {
         supportedCountryCodes: SUPPORTED_COUNTRY_CODES,
         rawResponsesStored: false,
       },
+      metroStations: {
+        configured: geoapifyKeyConfigured,
+        systems: RUSSIAN_METRO_SYSTEMS.map(({ id, city }) => ({ id, city })),
+        source: "Geoapify / OpenStreetMap",
+        typedGeocodeFallback: true,
+        rawResponsesStored: false,
+      },
       yandexGeosearch: {
         configured: yandexConfigured,
         maxResultsPerQuery: 50,
@@ -863,6 +977,41 @@ async function executeSearch(
   onProgress?: SearchProgressCallback,
   signal?: AbortSignal,
 ): Promise<SearchResponse> {
+  if (
+    payload.locationMode === "metro" &&
+    payload.metro?.stationId &&
+    payload.metro.stationName &&
+    payload.center
+  ) {
+    const system = getRussianMetroSystem(payload.metro.systemId);
+    const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+    if (!system || !apiKey) {
+      throw new SearchProviderError(
+        "Справочник метро временно недоступен",
+        "GEOAPIFY_NOT_CONFIGURED",
+      );
+    }
+    const station = await verifyGeoapifyMetroStationSelection(
+      system,
+      {
+        stationId: payload.metro.stationId,
+        stationName: payload.metro.stationName,
+        coordinates: payload.center,
+      },
+      apiKey,
+      signal,
+    );
+    payload = {
+      ...payload,
+      location: `Метро «${station.name}», ${system.city}`,
+      metro: {
+        systemId: system.id,
+        stationId: station.id,
+        stationName: station.name,
+      },
+      center: station.coordinates,
+    };
+  }
   await emitProgress(onProgress, {
     stage: "intent_resolution",
     status: "started",
@@ -1021,7 +1170,14 @@ function publicSearchError(error: unknown): PublicSearchError {
     return {
       error: error.message,
       code: error.code,
-      status: error.code === "GEOAPIFY_UNSUPPORTED_CATEGORY" ? 422 : 502,
+      status:
+        error.code === "METRO_STATION_MISMATCH"
+          ? 400
+          : error.code === "GEOAPIFY_UNSUPPORTED_CATEGORY"
+            ? 422
+            : error.code === "GEOAPIFY_NOT_CONFIGURED"
+              ? 503
+              : 502,
     };
   }
   if (error instanceof YandexProviderError) {

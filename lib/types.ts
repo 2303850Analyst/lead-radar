@@ -3,6 +3,7 @@ import type {
   SupportedCountryCode,
   SupportedLocale,
 } from "./search-planner/types";
+import type { RussianMetroSystemId } from "./metro";
 
 export type LeadStatus =
   | "Новый"
@@ -70,12 +71,29 @@ export type SearchProgressEvent = {
   total?: number;
 };
 
+export type SearchLocationMode =
+  | "city"
+  | "district"
+  | "radius"
+  | "metro"
+  | "region";
+
+export type SearchMetroSelection = {
+  systemId: RussianMetroSystemId;
+  stationId?: string;
+  stationName?: string;
+};
+
 export type SearchPayload = {
   description: string;
   primaryQuery: string;
   relatedQueries: string[];
   excludeQueries: string[];
   location: string;
+  /** UI geography mode. Legacy clients may omit it and use radius mode. */
+  locationMode?: SearchLocationMode;
+  /** Selected metro system/station; the server revalidates it against the provider. */
+  metro?: SearchMetroSelection;
   /** Optional map-selected center in GeoJSON order: [longitude, latitude]. */
   center?: [number, number];
   radiusKm: number;
