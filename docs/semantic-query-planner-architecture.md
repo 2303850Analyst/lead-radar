@@ -1,10 +1,25 @@
 # LeadRadar Semantic Query Planner
 
-Статус решения: **принято, ещё не реализовано**
+Статус решения: **локальный alpha реализован; production-архитектура завершена
+частично**
 
 Дата проверки: 2026-08-16
 
 Целевой релиз: `v0.4.0`
+
+Текущая реализация: `v0.4.0-alpha.1`. Документ сохраняет целевую схему и явно
+отделяет её от того, что уже работает в alpha.
+
+| Блок | Статус alpha |
+|---|---|
+| Taxonomy 40 concepts, resolver, strict schema/AJV | Реализовано |
+| Kimi SSE, `/api/search/plan`, SearchPlan, HMAC confirmation | Реализовано и проверено real API canary |
+| Canonical ID -> allowlisted Geoapify categories | Реализовано |
+| RU + pilot BY/KZ contract | Реализовано, coverage ещё недостаточен для production |
+| Двухфазный search service и полное отделение provider | Частично: adapter сохраняет legacy payload flow |
+| Runtime relevance classifier | Не реализован; карточки Kimi не получает |
+| Scheduler, admission queue, circuit breaker, global deadline | Не реализовано |
+| Production telemetry, auth, quota limiter | Не реализовано |
 
 ## 1. Решение
 
@@ -12,6 +27,9 @@ LeadRadar получает отдельное ядро Query Intelligence, ко�
 свободное описание пользователя в проверяемый план поиска. Kimi не обращается к
 картам, не формирует URL и не придумывает категории провайдера. Модель может
 только выбрать канонические понятия из переданного ей ограниченного списка.
+
+Ниже показана **целевая схема `v0.4.0`**. Узлы post-search classifier и
+выделенного search service ещё не входят в alpha runtime.
 
 ```mermaid
 flowchart LR
@@ -41,17 +59,20 @@ AI не является источником организаций или ко
 картографический провайдер, а AI создаёт только версионированный вывод о смысле и
 релевантности.
 
-## 2. Почему текущая схема не масштабируется
+## 2. Baseline v0.3.1 и оставшийся legacy
 
-Сейчас понимание запроса смешано с Geoapify:
+До Query Intelligence понимание запроса было полностью смешано с Geoapify.
+Alpha вынесла taxonomy, planner и компиляцию категорий, но legacy adapter всё
+ещё выполняет geocoding, часть фильтрации/дедупликации и Details:
 
-- восемь regex-правил находятся в `lib/providers/geoapify.ts:92`;
-- `primaryQuery`, `relatedQueries` и `description` склеиваются в одну строку;
-- незнакомая формулировка заканчивается
-  `GEOAPIFY_UNSUPPORTED_CATEGORY` и HTTP 422;
-- provider-категории одновременно используются для retrieval и как доказательство
-  релевантности;
-- Россия зашита как `countrycode:ru`;
+- прежние regex-правила сохраняются в adapter для обратной совместимости;
+- raw `SearchPayload` пока всё ещё доходит до adapter вместе с optional compiled
+  plan;
+- прямой legacy-вызов provider может по-прежнему закончиться
+  `GEOAPIFY_UNSUPPORTED_CATEGORY`, хотя основной UI сначала строит SearchPlan;
+- provider-категории ещё участвуют в старой relevance-эвристике;
+- explicit RU/BY/KZ уже поддерживаются planner/compiler, но default legacy path
+  остаётся российским;
 - отдельного post-search классификатора нет.
 
 Поэтому «барбершоп», «мужская парикмахерская» и «место, где стригут мужчин» могут
@@ -598,11 +619,12 @@ Moonshot не публикует обычную p95 latency или contractual S
 - повтор идентичного intent при совпадении версий в пределах одного worker
   instance использует bounded LRU cache и не делает новый AI-вызов.
 
-MVP cache: максимум 500 semantic resolutions, TTL 24 часа, ключ
-`requestCacheKey`; значение не содержит raw intent, полного `SearchPlan`, raw
-Kimi response или reasoning. Cache является ускорением, а не
-гарантированным хранилищем: cold start может вызвать новый запрос. Durable cache
-проектируется вместе с production database.
+Текущий alpha cache находится внутри `planner.ts`: максимум 200 планов, TTL 10
+минут и versioned runtime key. Он не содержит raw Kimi response или reasoning и
+нужен прежде всего, чтобы UI-вызовы `/plan` и `/search` не делали два одинаковых
+Kimi-запроса. Cache является ускорением, а не гарантированным хранилищем: cold
+start может вызвать новый запрос. Целевая production-политика 500 semantic
+resolutions/24 часа и durable cache остаются частью будущего database design.
 
 ## 14. Security и policy
 
@@ -619,14 +641,22 @@ Kimi response или reasoning. Cache является ускорением, а 
 - Перед внешним deployment нужны server auth, quota limit и circuit breaker.
 - AI provenance не подменяет source provenance.
 
-## 15. Неизвестное до live-теста
+## 15. Initial canary и оставшееся неизвестное
 
-Без подключённого пользовательского ключа не подтверждены:
+На пользовательском ключе подтверждены доступность `kimi-k3`,
+`kimi-k2.7-code`, `kimi-k2.7-code-highspeed` и `kimi-k2.6`, strict Structured
+Output, входящий SSE и несколько обычных RU/BY/KZ semantic cases. Полный
+Kimi → Geoapify поток и confirmation для неоднозначного «склад» также прошли.
 
-- фактически доступные аккаунту model IDs;
-- качество русского языка, транслита и терминов стран CIS;
-- p50/p95 latency и реальный rate tier;
-- schema pass rate;
-- фактическая стоимость нашего корпуса.
+Этого недостаточно для production gate. Всё ещё не подтверждены:
 
-Эти пункты являются обязательными release gates, а не допущениями.
+- качество русского, транслита и CIS-терминов на hidden выборке нужного размера;
+- p50/p95/p99, фактический account tier и устойчивость под concurrency;
+- schema/semantic stability на 100 live intents/model и 30×3 hard cases;
+- фактическая стоимость production-корпуса; initial canary из пяти вызовов
+  использовал 15 399 input / 355 output tokens и стоил оценочно $0,051522, но
+  четыре вызова не уложились либо вплотную подошли к input target `≤ 3000`;
+- SLO heartbeat/deadline, scheduler/circuit breaker и provider completion;
+- post-search data-flow и classifier.
+
+Эти пункты остаются обязательными production release gates, а не допущениями.

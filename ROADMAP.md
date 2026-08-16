@@ -2,12 +2,13 @@
 
 Актуально на: 2026-08-16
 
-Текущая версия: `0.3.1`
+Текущая версия: `0.4.0-alpha.1`
 
-Статус: пользователь выбирает точный центр и радиус на интерактивной карте, а
-live-поиск показывает этапы выполнения через NDJSON. Geoapify остаётся
-единственным live-провайдером. Перед внешним deployment требуется ротация ключа,
-ранее появившегося вне server-side env.
+Статус: локальный alpha переводит свободный запрос в проверяемый `SearchPlan`,
+использует constrained Kimi для сложных формулировок и только после безопасной
+компиляции обращается к Geoapify. Реальные RU/BY/KZ canary и полный
+Kimi → Geoapify поток пройдены, но production release и внешний SLA имеют
+решение `NO-GO` до закрытия quality, reliability и security gates.
 
 ## Цель продукта
 
@@ -25,7 +26,7 @@ LeadRadar помогает находить B2B-компании, которые
 - **P2** — повышает масштабируемость и удобство.
 - **P3** — оптимизация после подтверждения бизнес-ценности.
 
-## Сейчас: версия 0.3.x
+## База 0.3.x: выполнено
 
 ### Выполнено. Управляемая область поиска и живой прогресс
 
@@ -94,7 +95,7 @@ Geoapify выполняет категорийный POI-поиск. До исп
 
 ### P1. Fallback providers — архитектурный черновик
 
-В `0.3.1` fallback не реализуется. Единственный активный live-источник —
+В `0.4.0-alpha.1` fallback не реализуется. Единственный активный live-источник —
 Geoapify. Публичный контракт поиска отделяется от provider-адаптера, чтобы затем
 добавить Overpass, Overture или договорной каталог.
 
@@ -128,39 +129,74 @@ Geoapify. Публичный контракт поиска отделяется 
 scoring, экспорт и показ на сторонней карте не включаются без письменного
 подтверждения разрешённого data flow.
 
-## Версия 0.4.0 — Query Intelligence
+## Сейчас: 0.4.0-alpha.1 — Query Intelligence
 
 Приоритет: P1.
 
-- Каноническая таксономия минимум из 30 типов физического бизнеса, независимая
-  от конкретного картографического API.
-- Перевод свободного пользовательского описания в версионированный `SearchPlan`.
-- Детерминированный exact/synonym resolver и constrained Kimi resolver для
-  неоднозначных и zero-token-overlap формулировок: при слабом lexical match Kimi
-  получает весь компактный allowlisted catalog, а не преждевременный отказ.
-- Kimi выбирает только allowlisted canonical IDs; provider categories и URL
-  компилируются исключительно серверным кодом.
-- Предварительное подтверждение трактовки до расхода Geoapify quota.
-- Post-search relevance: правила для всех результатов; AI-batch только после
-  отдельной проверки права передачи данных и по выключенному по умолчанию флагу.
-- Подписанное и ограниченное по времени подтверждение неоднозначного плана,
-  разделённые `requestCacheKey` и immutable `planHash`.
-- Двухфазный provider flow: optional geocoding, final compiled execution plan,
-  Places, deterministic exclusions/dedupe и только затем Details.
-- Pilot support matrix: RU, BY и KZ, по одной стране на поиск; это ещё не всё CIS.
-- Golden datasets, offline/live evaluation, контроль latency, стоимости,
-  hallucination, prompt injection и отказов API.
+Выполнено в alpha:
 
-Local Tier-0 SLO: fast path без Kimi `p95 ≤ 15 с`, AI-assisted выдача
-`p95 ≤ 55 с`, абсолютный deadline `60 с`; progress обновляется не реже раза в 2
-секунды минимум в 99% long-running jobs. Production target после минимум Tier-1: AI-assisted выдача `p95 ≤ 25 с`,
-deadline `45 с`. Первые 500 jobs/7 дней используются только для калибровки;
-внешний SLA не публикуется до минимум 10 000 репрезентативных jobs за 28 дней и
-статистического подтверждения цели.
+- 40 canonical concepts, независимых от конкретного картографического API;
+- exact/synonym/fuzzy resolver и full-catalog Kimi path для слабого lexical
+  совпадения;
+- strict Kimi SSE с `[DONE]`, AJV validation и выбором только allowlisted IDs;
+- `POST /api/search/plan`, новый `SearchPlan` в search response и визуальная
+  трактовка запроса до обращения к картам;
+- stateless HMAC confirmation token с TTL, `requestCacheKey`, `planHash` и
+  `parentPlanHash`;
+- server-side compilation canonical IDs в категории Geoapify;
+- RU support и пилотные locale/country-контракты BY/KZ, по одной стране на
+  поиск;
+- 222 planner cases, 30 zero-token-overlap cases, 60 synthetic classifier
+  fixtures и fault suite; initial offline metrics равны `1.0000`, hard
+  violations — `0`;
+- реальные Kimi canary для барбершопа, аптеки и автомойки, end-to-end
+  Kimi → Geoapify и остановка неоднозначного «склад» до provider.
 
-Критерии: auto-resolved precision `≥ 95%`, correct concept Top-1 `≥ 92%`,
-recall ambiguous/unsupported `≥ 95%`, неизвестных provider categories и
-выдуманных фактов `0`, все hard gates и live canary пройдены.
+Частично выполнено:
+
+- provider adapter принимает скомпилированные категории, но geocoding,
+  exclusions/dedupe и Details ещё не вынесены в отдельный двухфазный search
+  service;
+- in-process cache ограничен 200 планами и TTL 10 минут вместо целевой
+  production-политики;
+- progress показывает реальные этапы, но heartbeat `≤ 2 с` и единый
+  server-side terminal deadline ещё не доказаны.
+
+Не выполнено и блокирует production `v0.4.0`:
+
+- 500 planner cases, 600 classifier fixtures, hidden split и два независимых
+  разметчика;
+- runtime deterministic relevance classifier; post-search Kimi остаётся за
+  отдельным data-flow gate;
+- scheduler/admission queue, circuit breaker, global Abort/deadline, auth и
+  server-side quota limiter;
+- browser E2E, mock load 1000/concurrency 10, 100 live intents на модель,
+  stability 30×3 и 30 реальных поисковых задач;
+- официальный MFJS `walle` gate и versioned production evaluation с решением
+  `GO`;
+- cost gate: три обычных live cases использовали 3210–4127 input tokens, что
+  выше цели `≤ 3000`; пять canary-вызовов стоили оценочно $0,051522 при
+  измеренном usage 15 399 input / 355 output tokens.
+
+Текущие сроки ответа являются внутренней гипотезой, а не SLA. На нескольких
+canary наблюдаемый API p50 составил 3,798 с, а p95 на n=5 — 4,695 с, но этого
+недостаточно для заявленного p95. Цели local Tier-0 остаются `p95 ≤ 15 с` без
+Kimi, `p95 ≤ 55 с` с Kimi и deadline `60 с`; production target после минимум
+Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
+Первые 500 jobs/7 дней нужны только для калибровки. Внешний SLA не публикуется
+до минимум 10 000 репрезентативных jobs за 28 дней.
+
+## Следующие шаги до production v0.4.0
+
+1. Довести server orchestration: scheduler, единый deadline/AbortSignal,
+   circuit breaker, auth и quota limiter.
+2. Завершить двухфазную provider boundary и покрыть exclusions-before-Details.
+3. Расширить frozen datasets до 500/600 и добавить hidden/manual annotation.
+4. Прогнать model comparison, stability, browser E2E, load и 30 реальных
+   search tasks с versioned обезличенным отчётом.
+5. Оптимизировать prompt до token/cost gate и измерить минимум 100 поисков и
+   50 Kimi calls для local SLO.
+6. Только после всех hard gates и `GO` выпускать/tag `v0.4.0`.
 
 Архитектура и исполнимое ТЗ:
 
@@ -233,9 +269,9 @@ recall ambiguous/unsupported `≥ 95%`, неизвестных provider categori
 | Дубли и филиалы | Высокий | Объяснимая дедупликация и ручное объединение |
 | Утечка API-ключа | Высокий | Только server-side env, sanitization и secret scan |
 | Kimi неверно понял категорию | Высокий | Allowlist, confirmation, golden/hidden eval и безопасный fallback |
-| Kimi/provider не уложился во время | Высокий | Tier-0 timeout/deadline 30/60 с, production 12/45 с, единый AbortSignal и partial result |
+| Kimi/provider не уложился во время | Высокий | Kimi timeout 30 с уже есть; единый 60/45-секундный deadline и partial result ещё реализовать |
 | Передача карточек в Kimi нарушает условия источника или privacy policy | Высокий | Post-search AI выключен до country-specific data-flow review; planner не получает лиды |
-| Tier-0 Kimi не выдерживает несколько одновременных пользователей | Высокий | Concurrency 1, один ожидающий job, один Kimi-call/search; внешняя beta только после Tier-1 |
+| Tier-0 Kimi не выдерживает несколько одновременных пользователей | Высокий | Alpha только для одного владельца; scheduler concurrency 1/queue 1 ещё реализовать, внешняя beta только после Tier-1 |
 | Стоимость AI растёт незаметно | Средний | Usage metadata, cost gate и не более одного planner call |
 | Низкая конверсия | Высокий | Ранний ручной sales-эксперимент |
 | Нежелательные обращения | Высокий | Юридическая проверка и opt-out процесс |

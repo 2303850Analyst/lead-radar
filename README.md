@@ -1,6 +1,6 @@
 # LeadRadar
 
-Текущая версия: **0.3.1**
+Текущая версия: **0.4.0-alpha.1**
 
 LeadRadar — локальный MVP для обнаружения потенциальных B2B-клиентов среди
 малозаметных и слабо оцифрованных компаний. Пользователь задаёт основной и
@@ -10,10 +10,16 @@ LeadRadar — локальный MVP для обнаружения потенц�
 LeadRadar — **discovery-система, а не полный реестр рынка**. Поисковый источник
 возвращает релевантную выборку и не гарантирует, что найдены все компании.
 
-## Возможности версии 0.3.1
+## Возможности версии 0.4.0-alpha.1
 
 - создание поискового задания на русском языке;
 - основной запрос, смежные запросы и исключения;
+- предварительное понимание свободного запроса через canonical taxonomy из
+  40 типов физического бизнеса;
+- детерминированный resolver и ограниченный Kimi resolver со strict Structured
+  Output: модель выбирает только IDs из серверного allowlist;
+- показ трактовки до обращения к картам и подтверждение неоднозначных запросов;
+- пилотные locale/country-контракты для RU, BY и KZ;
 - четыре представления: поиск, таблица, карта и карточка лида;
 - интерактивная карта OpenStreetMap для выбора точного центра и радиуса поиска;
 - карта результатов открывается на выбранной области, по умолчанию — на Москве;
@@ -23,6 +29,7 @@ LeadRadar — **discovery-система, а не полный реестр ры
 - статусы, заметки и локальное сохранение результатов разрешённых источников;
 - серверные `GET/POST /api/search` и `POST /api/geocode`;
 - живой прогресс поиска через NDJSON без изменения обычного JSON-контракта;
+- отдельный `POST /api/search/plan`, который не расходует квоту Geoapify;
 - детерминированный demo-режим без ключа;
 - live-поиск через Geoapify Geocoding и Places API;
 - серверное хранение API-ключа без передачи в браузер;
@@ -49,8 +56,9 @@ npm run start
 плагин Cloudflare иногда завершается внутри `workerd`; проверенный путь для
 локального использования MVP — production build и `npm run start`.
 
-Без дополнительных настроек приложение использует только синтетические
-demo-данные.
+Без дополнительных настроек приложение использует синтетические demo-данные и
+детерминированное понимание категорий. Реальный Kimi не обязателен для знакомых
+таксономии запросов.
 
 Для live-поиска создайте `.env.local`:
 
@@ -66,21 +74,54 @@ GEOAPIFY_DETAILS_LIMIT=20
 [`docs/geoapify-setup.md`](docs/geoapify-setup.md). После изменения окружения
 перезапустите сервер.
 
+Для Kimi planner положите ключ во внешний, не входящий в проект файл
+`C:\Users\<пользователь>\.sa-trainer-secrets\kimi.env`:
+
+```env
+KIMI_API_KEY=ваш_ключ_Moonshot
+```
+
+Затем запускайте production build через wrapper:
+
+```powershell
+npm run build
+.\scripts\run-with-kimi-secret.ps1 -NpmScript start
+```
+
+Wrapper передаёт ключ только дочернему процессу, включает
+`QUERY_INTELLIGENCE_MODE=kimi` и при необходимости создаёт временный signing
+secret. Другой путь можно передать через server-side переменную
+`KIMI_SECRET_FILE`; без `-NpmScript start` wrapper запускает `dev`. После
+перезапуска выданные ранее confirmation tokens станут
+недействительными. Для постоянной среды задайте отдельный стабильный
+`SEARCH_PLAN_SIGNING_SECRET` длиной не менее 32 байт в secret storage.
+
 ## Проверка проекта
 
 ```powershell
-npm run lint
-npm test
+npm run quality
 ```
 
-`npm test` собирает production-версию и проверяет SSR, health endpoint,
-demo-поиск, валидацию, имя пакета и версию API.
+`npm run quality` запускает ESLint, строгий TypeScript, production build,
+автотесты и offline evaluation. Реальный Kimi не вызывается обычными тестами.
+
+Опциональный live canary запускается явно, чтобы случайно не расходовать квоту:
+
+```powershell
+$env:RUN_KIMI_LIVE_EVAL="1"
+.\scripts\run-with-kimi-secret.ps1 -NpmScript eval:kimi:live
+Remove-Item Env:RUN_KIMI_LIVE_EVAL
+```
+
+Скрипт записывает в игнорируемый `work/evaluations/` только canonical IDs,
+статусы, latency и token usage. Prompt, ключ, reasoning и карточки компаний не
+сохраняются.
 
 ## API приложения
 
 ### `GET /api/search`
 
-Возвращает health, версию `0.3.1`, активный режим и безопасные признаки
+Возвращает health, версию `0.4.0-alpha.1`, активный режим и безопасные признаки
 конфигурации провайдеров. Значения API-ключей, upstream URL с ключом и полные
 ответы внешнего источника в health не возвращаются. При
 `SEARCH_PROVIDER=geoapify` и рабочем `GEOAPIFY_API_KEY` активным режимом является
@@ -92,23 +133,34 @@ demo-поиск, валидацию, имя пакета и версию API.
 {
   "status": "ok",
   "service": "LeadRadar Search API",
-  "version": "0.3.1",
+  "version": "0.4.0-alpha.1",
   "mode": "geoapify",
   "searchProvider": "geoapify",
   "geoapifyConfigured": true,
   "geoapifyKeyConfigured": true,
   "capabilities": {
+    "queryIntelligence": {
+      "configured": true,
+      "mode": "kimi",
+      "model": "kimi-k3",
+      "strictStructuredOutput": true
+    },
     "geoapifyPlaces": {
       "configured": true,
       "placesLimit": 100,
       "detailsLimit": 20,
       "strictRadius": true,
       "countryFilter": "ru",
+      "supportedCountryCodes": ["RU", "BY", "KZ"],
       "rawResponsesStored": false
     }
   }
 }
 ```
+
+`countryFilter: "ru"` сохраняет прежний default для старого payload;
+`supportedCountryCodes` описывает новый явный контракт. В alpha за один поиск
+разрешена ровно одна страна.
 
 ### `POST /api/geocode`
 
@@ -125,6 +177,27 @@ Geocoding API. Ключ остаётся на сервере.
 `location` и `provider`. Интерфейс использует этот endpoint, чтобы поставить
 маркер на карте; пользователь затем может перенести маркер или выбрать другую
 точку кликом.
+
+### `POST /api/search/plan`
+
+Интерпретирует запрос и не обращается к Geoapify. Вход совпадает с поисковым
+заданием; дополнительно поддерживаются `locale` и одна страна:
+
+```json
+{
+  "description": "Место, где стригут мужчин",
+  "primaryQuery": "мужская стрижка",
+  "relatedQueries": [],
+  "excludeQueries": ["груминг животных"],
+  "locale": "ru-RU",
+  "countryCodes": ["RU"]
+}
+```
+
+Ответ содержит `SearchPlan` со статусом `ready`, `needs_confirmation`,
+`unsupported` или `degraded`, выбранными canonical IDs, альтернативами,
+причинами и безопасным preview категорий. `needs_confirmation` на этом endpoint
+является обычным HTTP 200: UI должен показать варианты и не запускать карты.
 
 ### `POST /api/search`
 
@@ -145,7 +218,9 @@ Geocoding API. Ключ остаётся на сервере.
   "center": [37.6173, 55.7558],
   "radiusKm": 15,
   "offer": "Оцифровка обработки заявок и внедрение CRM",
-  "services": ["Создание сайта", "CRM", "Автоматизация"]
+  "services": ["Создание сайта", "CRM", "Автоматизация"],
+  "locale": "ru-RU",
+  "countryCodes": ["RU"]
 }
 ```
 
@@ -156,16 +231,42 @@ Geocoding API. Ключ остаётся на сервере.
 Обычный endpoint возвращает JSON с параметрами запроса, provider-метаданными,
 сводкой и массивом `leads`. У каждого лида есть массив `sources` с provider ID,
 внешним ID и временем наблюдения. Ошибки валидации возвращаются с HTTP 400.
-Ошибка live-провайдера возвращается с HTTP 502 и не подменяется демоданными.
+Неоднозначный intent возвращает HTTP 409 с
+`SEARCH_PLAN_CONFIRMATION_REQUIRED`, неподдерживаемый — HTTP 422 с
+`SEARCH_PLAN_UNSUPPORTED`. Ошибка live-провайдера возвращается с HTTP 502 и не
+подменяется демоданными.
+
+Чтобы продолжить неоднозначный поиск, повторите тот же payload и добавьте только
+ID из показанных alternatives и подписанный token:
+
+```json
+{
+  "confirmedConceptIds": ["logistics.warehouse"],
+  "confirmationToken": "token_из_SearchPlan"
+}
+```
+
+Token действует 10 минут, связан с исходным intent и не позволяет подтвердить
+произвольную категорию.
 
 ### `POST /api/search?stream=1`
 
 Возвращает `application/x-ndjson`: отдельные JSON-строки показывают этапы
-`validation`, `geocoding`, `places`, `details`, `normalizing` и `complete`.
+`validation`, `intent_resolution`, optional `geocoding`,
+`provider_compilation`, `places`, `details`, `normalizing` и `complete`.
 Последняя строка содержит либо итоговый `{ "type": "result", "data": ... }`,
 либо структурированную ошибку `{ "type": "error", ... }`. Веб-интерфейс
 использует этот режим для живого индикатора, а JSON-вариант `/api/search`
 остаётся доступным для существующих интеграций.
+
+Для уже запущенного локального сервера есть обезличенный end-to-end smoke:
+
+```powershell
+npm run smoke:stream
+```
+
+Default smoke использует zero-overlap формулировку и при Kimi-режиме проверяет
+всю цепочку до Geoapify. Запрос можно заменить через `SMOKE_SEARCH_QUERY`.
 
 ## Live-поиск Geoapify
 
@@ -175,14 +276,13 @@ Geoapify Places API. Основной запрос для фулфилмента
 намеренно исключена из live-поиска MVP: в контрольной выборке она возвращала
 преимущественно безымянные промышленные объекты и вытесняла карточки организаций.
 
-Контрольный live smoke test 2026-08-15 успешно проверил Geocoding, Places и
-Place Details. Детали получены для 20 из 20 карточек: телефон присутствовал у
-14, email у 11, сайт у 15. Это подтверждает работоспособность интеграции, но не
-полноту рынка. В итоговой выборке из 99 лидов URL не был указан у 5 проверенных
-карточек; ещё 79 карточек без Place Details имеют статус «данные не проверены» и
-не считаются автоматически кандидатами без сайта.
+Geocoding, Places и Place Details проверены реальным transient smoke test.
+Конкретные агрегаты и дата находятся в [`changes_log.md`](changes_log.md), чтобы
+стабильный README не превращался в хронологический журнал. Такая проверка
+подтверждает транспорт и одну выборку, но не полноту рынка.
 
-Geoapify остаётся единственным live-провайдером версии `0.3.1`. Автоматический
+Geoapify остаётся единственным live-провайдером версии `0.4.0-alpha.1`.
+Автоматический
 fallback пока не реализован: timeout, `429` или `5xx` возвращаются как ошибка
 источника и не маскируются demo-данными. Черновик будущего failover находится в
 [`docs/geoapify-setup.md`](docs/geoapify-setup.md).
@@ -191,6 +291,25 @@ Free plan требует видимую атрибуцию Geoapify и OpenStree
 на экранах live-результата и в CSV-экспорте. Использованный для локального теста ключ нужно
 заменить перед внешним deployment, поскольку он ранее появился вне server-side
 окружения.
+
+## Query Intelligence и Kimi
+
+Planner использует два пути:
+
+1. Exact/synonym/fuzzy resolver решает знакомые категории локально.
+2. Для слабого или неоднозначного совпадения Kimi выбирает только из
+   server-side списка canonical IDs.
+
+Модель не получает карточки организаций, контакты или категории Geoapify и не
+выполняет сетевой поиск. После Kimi сервер проверяет strict JSON Schema, локальный
+allowlist и decision policy. Только validated canonical ID компилируется в
+provider selectors.
+
+Alpha проверена на реальном `kimi-k3` для пяти RU/BY/KZ сценариев и на полном
+Kimi → Geoapify потоке. Все пять outcome и strict schema прошли; наблюдаемый
+p50 составил 3,798 с, p95 на малой выборке — 4,695 с. Это функциональный canary,
+а не доказательство SLA. Подробные usage, стоимость, quality gates и фактический
+статус находятся в evaluation report ниже.
 
 ## Экспериментальный API Яндекса
 
@@ -201,6 +320,20 @@ scoring, CSV или отображения поверх сторонней ка�
 
 ## Ограничения
 
+- Это локальный alpha: production release `v0.4.0` ещё имеет решение `NO-GO`.
+- Taxonomy содержит 40 concepts, но offline release coverage пока составляет
+  222 из требуемых 500 planner cases и 60 из 600 classifier fixtures.
+- Runtime post-search classifier отсутствует; найденные карточки Kimi не
+  получает, а `Lead.relevance` пока не заполняется.
+- RU поддерживается, BY/KZ являются пилотными; остальные страны CIS пока
+  возвращают контролируемый unsupported.
+- Нет production scheduler, admission limiter, circuit breaker, единого
+  server-side deadline, auth или multi-tenancy. Live API предназначен только
+  для владельца на `127.0.0.1`.
+- Несколько live canary-вызовов не подтверждают p95: внешний SLA отсутствует.
+- Provider boundary мигрирован частично: категории уже компилируются из
+  canonical IDs, но geocoding, exclusions/dedupe и Details ещё не вынесены в
+  отдельный двухфазный search service.
 - До восьми поисковых терминов на одно задание.
 - Круговой радиус от 0,5 до 250 км; произвольный полигон отсутствует.
 - Geoapify Places ищет по категориям и не является исчерпывающим
@@ -223,6 +356,12 @@ scoring, CSV или отображения поверх сторонней ка�
   атрибуция, live test и черновик fallback.
 - [`docs/yandex-live-test.md`](docs/yandex-live-test.md) — изолированная проверка
   экспериментального адаптера Яндекса.
+- [`docs/semantic-query-planner-architecture.md`](docs/semantic-query-planner-architecture.md)
+  — границы AI, SearchPlan, SLO-гипотезы и целевая production-архитектура.
+- [`docs/v0.4.0-query-intelligence-spec.md`](docs/v0.4.0-query-intelligence-spec.md)
+  — исполнимое ТЗ и release quality gates.
+- [`docs/evaluations/v0.4.0-alpha.1-query-intelligence.md`](docs/evaluations/v0.4.0-alpha.1-query-intelligence.md)
+  — обезличенный initial evaluation report и решение `NO-GO` для production.
 - [`AGENTS.md`](AGENTS.md) — постоянные правила версий и релизов.
 
 README имеет стабильную структуру и не используется как хронологический журнал.
@@ -231,7 +370,9 @@ README имеет стабильную структуру и не использ
 ## Версионирование
 
 - Канонический номер версии находится в `package.json`.
-- Релизы используют Semantic Versioning и Git-теги `vX.Y.Z`.
+- Готовые релизы используют Semantic Versioning и annotated Git-теги `vX.Y.Z`.
+- Alpha-версии остаются без release-тега, пока production quality gates не дали
+  `GO`.
 - PATCH — исправление без изменения бизнес-правил.
 - MINOR — новая возможность или изменение продуктовой логики.
 - MAJOR — несовместимое изменение контракта, модели данных или workflow.
@@ -242,6 +383,11 @@ README имеет стабильную структуру и не использ
 - [Geoapify Pricing](https://www.geoapify.com/pricing/)
 - [Geoapify Pricing Details](https://www.geoapify.com/pricing-details/)
 - [Geoapify Terms and Conditions](https://www.geoapify.com/terms-and-conditions/)
+- [Kimi API models](https://platform.kimi.ai/docs/models)
+- [Kimi Chat API](https://platform.kimi.ai/docs/api/chat)
+- [Kimi Structured Output](https://platform.kimi.ai/docs/guide/response_format)
+- [Kimi streaming output](https://platform.kimi.ai/docs/guide/utilize-the-streaming-output-feature-of-kimi-api)
+- [Kimi rate limits](https://platform.kimi.ai/docs/pricing/limits)
 
 - [API Поиска по организациям](https://yandex.ru/maps-api/docs/geosearch-api/index.html)
 - [Формат запроса](https://yandex.ru/maps-api/docs/geosearch-api/request.html)
