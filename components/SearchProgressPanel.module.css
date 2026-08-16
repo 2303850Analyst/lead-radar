@@ -45,10 +45,30 @@
   font-size: 14px;
 }
 
-.header > strong {
+.metrics {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+}
+
+.metrics > strong {
   color: #1769e0;
   font-size: 16px;
   font-variant-numeric: tabular-nums;
+}
+
+.metrics small {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #6c7d95;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.metrics small.ending {
+  color: #a86a10;
 }
 
 .track {
@@ -69,7 +89,7 @@
 
 .steps {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -172,13 +192,14 @@
 }
 
 @media (max-width: 1050px) {
-  .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 13px; }
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 13px; }
 }
 
 @media (max-width: 620px) {
   .panel { padding: 14px; }
   .steps { grid-template-columns: 1fr 1fr; }
   .stepCopy small { display: none; }
+  .metrics small { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,3 +1,9 @@
+import type {
+  SearchPlan,
+  SupportedCountryCode,
+  SupportedLocale,
+} from "./search-planner/types";
+
 export type LeadStatus =
   | "Новый"
   | "Проверить"
@@ -45,9 +51,12 @@ export type LeadSourceObservation = {
 
 export type SearchProgressStage =
   | "validation"
+  | "intent_resolution"
   | "geocoding"
+  | "provider_compilation"
   | "places"
   | "details"
+  | "relevance_classification"
   | "normalizing"
   | "complete";
 
@@ -72,6 +81,10 @@ export type SearchPayload = {
   radiusKm: number;
   offer?: string;
   services: string[];
+  locale?: SupportedLocale;
+  countryCodes?: SupportedCountryCode[];
+  confirmedConceptIds?: string[];
+  confirmationToken?: string;
 };
 
 export type Lead = {
@@ -112,6 +125,12 @@ export type Lead = {
   summary: string;
   recommendedOffer: string;
   possibleBranches: string[];
+  relevance?: {
+    status: "matched" | "not_matched" | "ambiguous" | "not_checked";
+    confidence: number | null;
+    evidence: string[];
+    source: "deterministic" | "kimi" | "not_checked";
+  };
 };
 
 export type SearchSummary = {
@@ -132,4 +151,5 @@ export type SearchResponse = {
   leads: Lead[];
   notice: string;
   generatedAt: string;
+  plan?: SearchPlan;
 };

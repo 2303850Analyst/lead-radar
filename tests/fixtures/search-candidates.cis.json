@@ -1,0 +1,421 @@
+{
+  "version": "classifier-golden-cis-v0.4.0-draft.1",
+  "status": "initial_synthetic_fixture",
+  "privacy": {
+    "syntheticOnly": true,
+    "containsContacts": false,
+    "containsStreetAddresses": false,
+    "containsRawProviderResponses": false
+  },
+  "allowedEvidencePointers": ["name", "providerCategoryIds", "locality", "sourceDescription"],
+  "cases": [
+    {
+      "id": "match-001",
+      "targetConceptId": "personal_care.barbershop",
+      "materializeProviderCategoriesFromConceptId": "personal_care.barbershop",
+      "evidence": { "candidateId": "synthetic-match-001", "name": "Мужской стиль", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Мужские стрижки и оформление бороды" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["name", "sourceDescription"] }
+    },
+    {
+      "id": "match-002",
+      "targetConceptId": "logistics.fulfillment",
+      "materializeProviderCategoriesFromConceptId": "logistics.fulfillment",
+      "evidence": { "candidateId": "synthetic-match-002", "name": "Заказ Комплект", "providerCategoryIds": [], "locality": "Подольск", "sourceDescription": "Приемка, упаковка и отправка заказов продавцов" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "match-003",
+      "targetConceptId": "logistics.warehouse",
+      "materializeProviderCategoriesFromConceptId": "logistics.warehouse",
+      "evidence": { "candidateId": "synthetic-match-003", "name": "Северный склад", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Ответственное паллетное хранение" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["name", "providerCategoryIds"] }
+    },
+    {
+      "id": "match-004",
+      "targetConceptId": "retail.supermarket",
+      "materializeProviderCategoriesFromConceptId": "retail.supermarket",
+      "evidence": { "candidateId": "synthetic-match-004", "name": "Продукты каждый день", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Продовольственные товары" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds"] }
+    },
+    {
+      "id": "match-005",
+      "targetConceptId": "food.restaurant",
+      "materializeProviderCategoriesFromConceptId": "food.restaurant",
+      "evidence": { "candidateId": "synthetic-match-005", "name": "Тёплый стол", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Ресторан с обслуживанием в зале" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["sourceDescription"] }
+    },
+    {
+      "id": "match-006",
+      "targetConceptId": "food.cafe",
+      "materializeProviderCategoriesFromConceptId": "food.cafe",
+      "evidence": { "candidateId": "synthetic-match-006", "name": "Кофе и точка", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Кофейные напитки и десерты" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["name", "providerCategoryIds"] }
+    },
+    {
+      "id": "match-007",
+      "targetConceptId": "health.dentist",
+      "materializeProviderCategoriesFromConceptId": "health.dentist",
+      "evidence": { "candidateId": "synthetic-match-007", "name": "Здоровая улыбка", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Лечение зубов и профилактика" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "match-008",
+      "targetConceptId": "automotive.repair",
+      "materializeProviderCategoriesFromConceptId": "automotive.repair",
+      "evidence": { "candidateId": "synthetic-match-008", "name": "Мотор сервис", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Диагностика и ремонт автомобилей" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "match-009",
+      "targetConceptId": "automotive.car_wash",
+      "materializeProviderCategoriesFromConceptId": "automotive.car_wash",
+      "evidence": { "candidateId": "synthetic-match-009", "name": "Чистый кузов", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Мойка кузова и уборка салона автомобиля" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["sourceDescription"] }
+    },
+    {
+      "id": "match-010",
+      "targetConceptId": "professional.accounting",
+      "materializeProviderCategoriesFromConceptId": "professional.accounting",
+      "evidence": { "candidateId": "synthetic-match-010", "name": "Точный баланс", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Бухгалтерское сопровождение организаций" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["sourceDescription"] }
+    },
+    {
+      "id": "match-011",
+      "targetConceptId": "business.real_estate_agency",
+      "materializeProviderCategoriesFromConceptId": "business.real_estate_agency",
+      "evidence": { "candidateId": "synthetic-match-011", "name": "Городские квартиры", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Аренда и продажа жилой недвижимости" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "match-012",
+      "targetConceptId": "education.driving_school",
+      "materializeProviderCategoriesFromConceptId": "education.driving_school",
+      "evidence": { "candidateId": "synthetic-match-012", "name": "Первое вождение", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Подготовка водителей категории B" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "match-013",
+      "targetConceptId": "business.coworking",
+      "materializeProviderCategoriesFromConceptId": "business.coworking",
+      "evidence": { "candidateId": "synthetic-match-013", "name": "Рабочий день", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Гибкие рабочие места и переговорные комнаты" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "match-014",
+      "targetConceptId": "hospitality.hotel",
+      "materializeProviderCategoriesFromConceptId": "hospitality.hotel",
+      "evidence": { "candidateId": "synthetic-match-014", "name": "Тихая ночь", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Размещение гостей в номерах" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "match-015",
+      "targetConceptId": "retail.pet_store",
+      "materializeProviderCategoriesFromConceptId": "retail.pet_store",
+      "evidence": { "candidateId": "synthetic-match-015", "name": "Лапы и хвост", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Корма и товары для домашних животных" },
+      "expected": { "status": "matched", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+
+    {
+      "id": "ambiguous-001",
+      "targetConceptId": "personal_care.barbershop",
+      "materializeProviderCategoriesFromConceptId": "retail.florist",
+      "evidence": { "candidateId": "synthetic-ambiguous-001", "name": "Стиль", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Стрижки для всех" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["name", "providerCategoryIds"] }
+    },
+    {
+      "id": "ambiguous-002",
+      "targetConceptId": "logistics.fulfillment",
+      "materializeProviderCategoriesFromConceptId": "logistics.warehouse",
+      "evidence": { "candidateId": "synthetic-ambiguous-002", "name": "Логистический центр", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Хранение и обработка грузов" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-003",
+      "targetConceptId": "health.dentist",
+      "materializeProviderCategoriesFromConceptId": "health.medical_clinic",
+      "evidence": { "candidateId": "synthetic-ambiguous-003", "name": "Семейная клиника", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Прием специалистов" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["providerCategoryIds"] }
+    },
+    {
+      "id": "ambiguous-004",
+      "targetConceptId": "food.restaurant",
+      "materializeProviderCategoriesFromConceptId": "food.cafe",
+      "evidence": { "candidateId": "synthetic-ambiguous-004", "name": "Городская кухня", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Еда и напитки" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-005",
+      "targetConceptId": "retail.building_materials",
+      "materializeProviderCategoriesFromConceptId": "marketing.advertising_agency",
+      "evidence": { "candidateId": "synthetic-ambiguous-005", "name": "Дом и ремонт", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Товары для ремонта" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["name", "providerCategoryIds"] }
+    },
+    {
+      "id": "ambiguous-006",
+      "targetConceptId": "automotive.repair",
+      "materializeProviderCategoriesFromConceptId": "retail.electronics",
+      "evidence": { "candidateId": "synthetic-ambiguous-006", "name": "Автоцентр", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Запчасти и техническое обслуживание" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-007",
+      "targetConceptId": "professional.law_firm",
+      "materializeProviderCategoriesFromConceptId": "professional.accounting",
+      "evidence": { "candidateId": "synthetic-ambiguous-007", "name": "Бизнес поддержка", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Сопровождение компаний" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["name", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-008",
+      "targetConceptId": "education.language_school",
+      "materializeProviderCategoriesFromConceptId": "education.driving_school",
+      "evidence": { "candidateId": "synthetic-ambiguous-008", "name": "Новая школа", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Курсы для взрослых" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-009",
+      "targetConceptId": "services.cleaning",
+      "materializeProviderCategoriesFromConceptId": "automotive.car_wash",
+      "evidence": { "candidateId": "synthetic-ambiguous-009", "name": "Чистота", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Мойка и уборка" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-010",
+      "targetConceptId": "services.cleaning",
+      "materializeProviderCategoriesFromConceptId": "services.laundry",
+      "evidence": { "candidateId": "synthetic-ambiguous-010", "name": "Чистота плюс", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Уборка помещений и чистка текстиля" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-011",
+      "targetConceptId": "retail.furniture",
+      "materializeProviderCategoriesFromConceptId": "retail.building_materials",
+      "evidence": { "candidateId": "synthetic-ambiguous-011", "name": "Всё для дома", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Домашние товары" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["name", "providerCategoryIds"] }
+    },
+    {
+      "id": "ambiguous-012",
+      "targetConceptId": "retail.bakery",
+      "materializeProviderCategoriesFromConceptId": "food.cafe",
+      "evidence": { "candidateId": "synthetic-ambiguous-012", "name": "Утро", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Кофе и выпечка" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-013",
+      "targetConceptId": "business.real_estate_agency",
+      "materializeProviderCategoriesFromConceptId": "professional.law_firm",
+      "evidence": { "candidateId": "synthetic-ambiguous-013", "name": "Городское агентство", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Сделки и документы" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["name", "sourceDescription"] }
+    },
+    {
+      "id": "ambiguous-014",
+      "targetConceptId": "personal_care.beauty_salon",
+      "materializeProviderCategoriesFromConceptId": "retail.florist",
+      "evidence": { "candidateId": "synthetic-ambiguous-014", "name": "Красота", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": null },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["name", "providerCategoryIds"] }
+    },
+    {
+      "id": "ambiguous-015",
+      "targetConceptId": "automotive.fuel_station",
+      "materializeProviderCategoriesFromConceptId": "automotive.repair",
+      "evidence": { "candidateId": "synthetic-ambiguous-015", "name": "Авто точка", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Заправка и обслуживание автомобилей" },
+      "expected": { "status": "ambiguous", "requiredEvidencePointers": ["name", "providerCategoryIds"] }
+    },
+
+    {
+      "id": "rejected-001",
+      "targetConceptId": "personal_care.barbershop",
+      "materializeProviderCategoriesFromConceptId": "services.laundry",
+      "evidence": { "candidateId": "synthetic-rejected-001", "name": "Усатый пёс", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Стрижка собак и уход за шерстью" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-002",
+      "targetConceptId": "health.medical_clinic",
+      "materializeProviderCategoriesFromConceptId": "retail.pet_store",
+      "evidence": { "candidateId": "synthetic-rejected-002", "name": "Доктор Лапа", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Лечение кошек и собак" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-003",
+      "targetConceptId": "food.restaurant",
+      "materializeProviderCategoriesFromConceptId": "hospitality.hotel",
+      "evidence": { "candidateId": "synthetic-rejected-003", "name": "Ночлег", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Размещение в номерах" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-004",
+      "targetConceptId": "logistics.warehouse",
+      "materializeProviderCategoriesFromConceptId": "retail.supermarket",
+      "evidence": { "candidateId": "synthetic-rejected-004", "name": "Продукты у дома", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Розничная торговля продуктами" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-005",
+      "targetConceptId": "automotive.repair",
+      "materializeProviderCategoriesFromConceptId": "automotive.car_wash",
+      "evidence": { "candidateId": "synthetic-rejected-005", "name": "Быстрая мойка", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Мойка кузова без ремонта" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-006",
+      "targetConceptId": "education.language_school",
+      "materializeProviderCategoriesFromConceptId": "education.driving_school",
+      "evidence": { "candidateId": "synthetic-rejected-006", "name": "Уверенный водитель", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Обучение управлению автомобилем" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-007",
+      "targetConceptId": "retail.furniture",
+      "materializeProviderCategoriesFromConceptId": "retail.electronics",
+      "evidence": { "candidateId": "synthetic-rejected-007", "name": "Авто деталь", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Запчасти для легковых автомобилей" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-008",
+      "targetConceptId": "professional.accounting",
+      "materializeProviderCategoriesFromConceptId": "business.coworking",
+      "evidence": { "candidateId": "synthetic-rejected-008", "name": "Баланс тела", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Фитнес и тренировки" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-009",
+      "targetConceptId": "business.real_estate_agency",
+      "materializeProviderCategoriesFromConceptId": "professional.law_firm",
+      "evidence": { "candidateId": "synthetic-rejected-009", "name": "Судебная защита", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Представительство в суде без сделок с недвижимостью" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-010",
+      "targetConceptId": "services.laundry",
+      "materializeProviderCategoriesFromConceptId": "retail.florist",
+      "evidence": { "candidateId": "synthetic-rejected-010", "name": "Женская укладка", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Окрашивание и укладка волос для людей" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-011",
+      "targetConceptId": "services.cleaning",
+      "materializeProviderCategoriesFromConceptId": "automotive.car_wash",
+      "evidence": { "candidateId": "synthetic-rejected-011", "name": "Мой авто", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Только наружная мойка машин" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-012",
+      "targetConceptId": "health.pharmacy",
+      "materializeProviderCategoriesFromConceptId": "retail.supermarket",
+      "evidence": { "candidateId": "synthetic-rejected-012", "name": "Еда рядом", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Продовольственный ассортимент" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-013",
+      "targetConceptId": "marketing.advertising_agency",
+      "materializeProviderCategoriesFromConceptId": "retail.furniture",
+      "evidence": { "candidateId": "synthetic-rejected-013", "name": "Диваны", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Готовая мягкая мебель" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-014",
+      "targetConceptId": "retail.bakery",
+      "materializeProviderCategoriesFromConceptId": "retail.building_materials",
+      "evidence": { "candidateId": "synthetic-rejected-014", "name": "Крепёж", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Инструменты и расходные материалы" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+    {
+      "id": "rejected-015",
+      "targetConceptId": "hospitality.hotel",
+      "materializeProviderCategoriesFromConceptId": "business.real_estate_agency",
+      "evidence": { "candidateId": "synthetic-rejected-015", "name": "Квартиры навсегда", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Продажа жилой недвижимости без краткосрочного размещения" },
+      "expected": { "status": "rejected", "requiredEvidencePointers": ["providerCategoryIds", "sourceDescription"] }
+    },
+
+    {
+      "id": "insufficient-001",
+      "targetConceptId": "personal_care.barbershop",
+      "evidence": { "candidateId": "synthetic-insufficient-001", "name": "Точка 1", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": [] }
+    },
+    {
+      "id": "insufficient-002",
+      "targetConceptId": "logistics.fulfillment",
+      "evidence": { "candidateId": "synthetic-insufficient-002", "name": null, "providerCategoryIds": [], "locality": "Минск", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": [] }
+    },
+    {
+      "id": "insufficient-003",
+      "targetConceptId": "health.dentist",
+      "evidence": { "candidateId": "synthetic-insufficient-003", "name": "Центр", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Услуги" },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name", "sourceDescription"] }
+    },
+    {
+      "id": "insufficient-004",
+      "targetConceptId": "retail.supermarket",
+      "evidence": { "candidateId": "synthetic-insufficient-004", "name": null, "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Торговля" },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["sourceDescription"] }
+    },
+    {
+      "id": "insufficient-005",
+      "targetConceptId": "food.restaurant",
+      "evidence": { "candidateId": "synthetic-insufficient-005", "name": "Место", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name"] }
+    },
+    {
+      "id": "insufficient-006",
+      "targetConceptId": "automotive.repair",
+      "evidence": { "candidateId": "synthetic-insufficient-006", "name": "Сервис", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name"] }
+    },
+    {
+      "id": "insufficient-007",
+      "targetConceptId": "professional.accounting",
+      "evidence": { "candidateId": "synthetic-insufficient-007", "name": "Компания", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Консультации" },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name", "sourceDescription"] }
+    },
+    {
+      "id": "insufficient-008",
+      "targetConceptId": "education.language_school",
+      "evidence": { "candidateId": "synthetic-insufficient-008", "name": "Школа", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name"] }
+    },
+    {
+      "id": "insufficient-009",
+      "targetConceptId": "business.coworking",
+      "evidence": { "candidateId": "synthetic-insufficient-009", "name": null, "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": "Занятия" },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["sourceDescription"] }
+    },
+    {
+      "id": "insufficient-010",
+      "targetConceptId": "hospitality.hotel",
+      "evidence": { "candidateId": "synthetic-insufficient-010", "name": "Дом", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name"] }
+    },
+    {
+      "id": "insufficient-011",
+      "targetConceptId": "services.cleaning",
+      "evidence": { "candidateId": "synthetic-insufficient-011", "name": "Порядок", "providerCategoryIds": [], "locality": "Минск", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name"] }
+    },
+    {
+      "id": "insufficient-012",
+      "targetConceptId": "marketing.advertising_agency",
+      "evidence": { "candidateId": "synthetic-insufficient-012", "name": "База", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name"] }
+    },
+    {
+      "id": "insufficient-013",
+      "targetConceptId": "retail.pet_store",
+      "evidence": { "candidateId": "synthetic-insufficient-013", "name": "Друг", "providerCategoryIds": [], "locality": "Москва", "sourceDescription": "Помощь" },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name", "sourceDescription"] }
+    },
+    {
+      "id": "insufficient-014",
+      "targetConceptId": "professional.law_firm",
+      "evidence": { "candidateId": "synthetic-insufficient-014", "name": null, "providerCategoryIds": [], "locality": "Минск", "sourceDescription": "Сопровождение" },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["sourceDescription"] }
+    },
+    {
+      "id": "insufficient-015",
+      "targetConceptId": "services.laundry",
+      "evidence": { "candidateId": "synthetic-insufficient-015", "name": "Уход", "providerCategoryIds": [], "locality": "Алматы", "sourceDescription": null },
+      "expected": { "status": "insufficient_data", "requiredEvidencePointers": ["name"] }
+    }
+  ]
+}

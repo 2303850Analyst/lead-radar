@@ -36,19 +36,22 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   Lead,
   LeadStatus,
   SearchPayload,
-  SearchProgressEvent,
   SearchResponse,
 } from "@/lib/types";
+import type { SearchPlan } from "@/lib/search-planner/types";
 
 import LeadMap from "./LeadMap";
 import SearchAreaMap from "./SearchAreaMap";
-import SearchProgressPanel from "./SearchProgressPanel";
+import SearchIntentPanel, { isSearchPlan } from "./SearchIntentPanel";
+import SearchProgressPanel, {
+  type SearchProgressPanelEvent,
+} from "./SearchProgressPanel";
 
 type Screen = "search" | "results" | "map" | "detail";
 
@@ -77,13 +80,89 @@ type LeadWithSources = Lead & {
 };
 
 type SearchStreamMessage =
-  | SearchProgressEvent
+  | SearchProgressPanelEvent
   | { type: "result"; data: SearchResponse }
-  | { type: "error"; error: string; code?: string };
+  | {
+      type: "error";
+      error: string;
+      details?: string;
+      code?: string;
+      plan?: SearchPlan;
+    };
+
+type SearchApiFailure = {
+  error?: string;
+  details?: string;
+  code?: string;
+  plan?: SearchPlan;
+};
+
+type SearchPhase = "idle" | "planning" | "searching";
+
+class SearchWorkflowError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly plan?: SearchPlan,
+    readonly retryAfterSeconds?: number,
+  ) {
+    super(message);
+    this.name = "SearchWorkflowError";
+  }
+}
 
 const STORAGE_KEY = "leadradar:last-search:v2";
 const TEMPLATE_KEY = "leadradar:template";
 const DEFAULT_SEARCH_CENTER: [number, number] = [37.6173, 55.7558];
+const SEARCH_CLIENT_TIMEOUT_MS = 62_000;
+
+async function readSearchFailure(response: Response): Promise<SearchWorkflowError> {
+  const contentType = response.headers.get("content-type") ?? "";
+  let failure: SearchApiFailure | null = null;
+
+  try {
+    if (contentType.includes("application/x-ndjson")) {
+      const records = (await response.text())
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as SearchStreamMessage);
+      const errorRecord = [...records]
+        .reverse()
+        .find((record) => record.type === "error");
+      if (errorRecord?.type === "error") failure = errorRecord;
+    } else {
+      const payload = (await response.json()) as SearchApiFailure;
+      failure = {
+        ...payload,
+        plan: isSearchPlan(payload.plan) ? payload.plan : undefined,
+      };
+    }
+  } catch {
+    // A provider error body is untrusted and optional. Use the controlled
+    // status-based message below when it cannot be parsed.
+  }
+
+  const retryAfterValue = Number(response.headers.get("retry-after"));
+  const retryAfterSeconds = Number.isFinite(retryAfterValue) && retryAfterValue > 0
+    ? Math.ceil(retryAfterValue)
+    : undefined;
+  const message =
+    failure?.details ||
+    failure?.error ||
+    (response.status === 429
+      ? "Сервис занят и пока не может принять новый поиск."
+      : `Ошибка поиска (HTTP ${response.status})`);
+
+  return new SearchWorkflowError(
+    message,
+    response.status,
+    failure?.code,
+    isSearchPlan(failure?.plan) ? failure.plan : undefined,
+    retryAfterSeconds,
+  );
+}
 
 function providerMetadata(response: SearchResponse): ProviderMetadata {
   const metadata = (response as SearchResponseWithProvider).provider;
@@ -415,7 +494,10 @@ export default function LeadRadarApp() {
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [searchProgress, setSearchProgress] = useState<SearchProgressEvent[]>([]);
+  const [searchProgress, setSearchProgress] = useState<SearchProgressPanelEvent[]>([]);
+  const [searchPlan, setSearchPlan] = useState<SearchPlan | null>(null);
+  const [searchPhase, setSearchPhase] = useState<SearchPhase>("idle");
+  const [searchStartedAt, setSearchStartedAt] = useState<number>();
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -429,6 +511,7 @@ export default function LeadRadarApp() {
   const [statusFilter, setStatusFilter] = useState("any");
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState("");
+  const activeSearchController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const restoreLocalState = () => {
@@ -463,6 +546,13 @@ export default function LeadRadarApp() {
     }
   }, [response]);
 
+  useEffect(
+    () => () => {
+      activeSearchController.current?.abort();
+    },
+    [],
+  );
+
   const selectedLead = useMemo(
     () => response?.leads.find((lead) => lead.id === selectedLeadId) ?? null,
     [response, selectedLeadId],
@@ -495,100 +585,314 @@ export default function LeadRadarApp() {
     effectivePage * pageSize,
   );
 
+  const presentSearchFailure = (failure: unknown) => {
+    if (failure instanceof SearchWorkflowError) {
+      if (failure.code === "SEARCH_PLANNER_UNAVAILABLE") {
+        setSearchPlan(null);
+        setError(
+          "Сервис интерпретации запроса временно недоступен. Подождите немного и повторите поиск.",
+        );
+        return;
+      }
+
+      if (failure.plan) setSearchPlan(failure.plan);
+
+      if (
+        failure.code === "SEARCH_PLAN_CONFIRMATION_REQUIRED" ||
+        failure.status === 409
+      ) {
+        setError(failure.plan ? "" : failure.message);
+        return;
+      }
+
+      if (failure.code === "SEARCH_PLAN_UNSUPPORTED" || failure.status === 422) {
+        setError(failure.plan ? "" : failure.message);
+        return;
+      }
+
+      if (failure.code === "SEARCH_ADMISSION_LIMIT" || failure.status === 429) {
+        setError(
+          failure.retryAfterSeconds
+            ? `Сервис занят. Повторите поиск примерно через ${failure.retryAfterSeconds} сек.`
+            : "Сервис занят. Подождите немного и повторите поиск.",
+        );
+        return;
+      }
+
+      setError(failure.message);
+      return;
+    }
+
+    if (failure instanceof DOMException && failure.name === "AbortError") {
+      setError(
+        "Поиск занял больше минуты и был аккуратно остановлен. Уменьшите радиус или повторите попытку.",
+      );
+      return;
+    }
+
+    setError(failure instanceof Error ? failure.message : "Не удалось выполнить поиск");
+  };
+
+  const readSearchResponse = async (result: Response): Promise<SearchResponse> => {
+    if (!result.ok) throw await readSearchFailure(result);
+
+    let data: SearchResponse | null = null;
+    const contentType = result.headers.get("content-type") ?? "";
+    if (contentType.includes("application/x-ndjson") && result.body) {
+      const reader = result.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      const consumeLine = (line: string) => {
+        if (!line.trim()) return;
+        const message = JSON.parse(line) as SearchStreamMessage;
+        if (message.type === "progress") {
+          setSearchProgress((current) => [...current, message].slice(-160));
+          return;
+        }
+        if (message.type === "result") {
+          data = message.data;
+          return;
+        }
+        throw new SearchWorkflowError(
+          message.details || message.error || "Ошибка поискового провайдера",
+          result.status,
+          message.code,
+          isSearchPlan(message.plan) ? message.plan : undefined,
+        );
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) consumeLine(line);
+        if (done) break;
+      }
+      if (buffer.trim()) consumeLine(buffer);
+    } else {
+      const payload = (await result.json()) as SearchResponse & SearchApiFailure & {
+        plan?: SearchPlan;
+      };
+      if (payload.error) {
+        throw new SearchWorkflowError(
+          payload.details || payload.error,
+          result.status,
+          payload.code,
+          isSearchPlan(payload.plan) ? payload.plan : undefined,
+        );
+      }
+      data = payload;
+      setSearchProgress((current) => [
+        ...current,
+        {
+          type: "progress",
+          stage: "complete",
+          status: "completed",
+          message: "Выборка готова",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    }
+
+    if (!data) throw new Error("Поиск завершился без результата");
+    return data;
+  };
+
+  const acceptSearchResponse = (data: SearchResponse) => {
+    const responsePlan = (data as SearchResponse & { plan?: unknown }).plan;
+    if (isSearchPlan(responsePlan)) setSearchPlan(responsePlan);
+    setResponse(data);
+    setSelectedLeadId(data.leads[0]?.id ?? null);
+    setScreen("results");
+    const provider = providerMetadata(data);
+    setNotice(
+      String(data.mode) === "demo"
+        ? "Демо-режим: интерфейс работает без ключа провайдера."
+        : `Данные получены через ${provider.label}.`,
+    );
+  };
+
+  const requestSearch = async (
+    payload: SearchPayload,
+    signal: AbortSignal,
+  ) => {
+    const result = await fetch("/api/search?stream=1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+    acceptSearchResponse(await readSearchResponse(result));
+  };
+
   const runSearch = async (event?: FormEvent) => {
     event?.preventDefault();
     if (!query.primaryQuery.trim() || (!query.location.trim() && !query.center)) {
       setError("Укажите основной запрос и географию поиска.");
       return;
     }
+
+    activeSearchController.current?.abort();
+    const controller = new AbortController();
+    activeSearchController.current = controller;
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      SEARCH_CLIENT_TIMEOUT_MS,
+    );
+
     setLoading(true);
+    setSearchPhase("planning");
+    setSearchStartedAt(Date.now());
+    setSearchPlan(null);
     setError("");
     setNotice("");
     setSearchProgress([
       {
         type: "progress",
-        stage: "validation",
+        stage: "intent_resolution",
         status: "started",
-        message: "Проверяем параметры поискового задания",
+        message: "Сопоставляем формулировку с бизнес-категориями",
         timestamp: new Date().toISOString(),
       },
     ]);
+
+    const queryWithLocale: SearchPayload = {
+      ...query,
+      locale: "ru-RU",
+      countryCodes: ["RU"],
+    };
+
     try {
-      const result = await fetch("/api/search?stream=1", {
+      const planResult = await fetch("/api/search/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(query),
+        body: JSON.stringify(queryWithLocale),
+        signal: controller.signal,
       });
-      if (!result.ok) {
-        const failure = (await result.json().catch(() => null)) as {
-          error?: string;
-          details?: string;
-        } | null;
-        throw new Error(
-          failure?.details || failure?.error || `Ошибка поиска (HTTP ${result.status})`,
-        );
-      }
 
-      let data: SearchResponse | null = null;
-      const contentType = result.headers.get("content-type") ?? "";
-      if (contentType.includes("application/x-ndjson") && result.body) {
-        const reader = result.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        const consumeLine = (line: string) => {
-          if (!line.trim()) return;
-          const message = JSON.parse(line) as SearchStreamMessage;
-          if (message.type === "progress") {
-            setSearchProgress((current) => [...current, message].slice(-120));
-            return;
-          }
-          if (message.type === "result") {
-            data = message.data;
-            return;
-          }
-          throw new Error(message.error || "Ошибка поискового провайдера");
-        };
-
-        while (true) {
-          const { value, done } = await reader.read();
-          buffer += decoder.decode(value, { stream: !done });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-          for (const line of lines) consumeLine(line);
-          if (done) break;
-        }
-        if (buffer.trim()) consumeLine(buffer);
-      } else {
-        const payload = (await result.json()) as SearchResponse & { error?: string };
-        if (payload.error) throw new Error(payload.error);
-        data = payload;
+      // v0.3 compatibility: until the planner route is deployed, known/demo
+      // searches keep using the existing endpoint without losing functionality.
+      if (planResult.status === 404 || planResult.status === 405) {
         setSearchProgress((current) => [
           ...current,
           {
             type: "progress",
-            stage: "complete",
+            stage: "intent_resolution",
             status: "completed",
-            message: "Выборка готова",
+            message: "Используем совместимый поиск по известному словарю",
             timestamp: new Date().toISOString(),
           },
         ]);
+        setSearchPhase("searching");
+        await requestSearch(query, controller.signal);
+        return;
       }
 
-      if (!data) throw new Error("Поиск завершился без результата");
-      setResponse(data);
-      setSelectedLeadId(data.leads[0]?.id ?? null);
-      setScreen("results");
-      const provider = providerMetadata(data);
-      setNotice(
-        String(data.mode) === "demo"
-          ? "Демо-режим: интерфейс работает без ключа провайдера."
-          : `Данные получены через ${provider.label}.`,
+      if (!planResult.ok) throw await readSearchFailure(planResult);
+      const planPayload = (await planResult.json()) as unknown;
+      if (!isSearchPlan(planPayload)) {
+        throw new Error("Сервис трактовки вернул неподдерживаемый формат ответа");
+      }
+
+      setSearchPlan(planPayload);
+      setSearchProgress((current) => [
+        ...current,
+        {
+          type: "progress",
+          stage: "intent_resolution",
+          status: "completed",
+          message:
+            planPayload.status === "needs_confirmation"
+              ? "Найдены несколько возможных трактовок"
+              : planPayload.status === "unsupported"
+                ? "Безопасная категория пока не найдена"
+                : "Трактовка запроса готова",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+
+      if (
+        planPayload.status === "needs_confirmation" ||
+        planPayload.status === "unsupported"
+      ) {
+        return;
+      }
+
+      if (planPayload.resolution.selectedConceptIds.length === 0) {
+        throw new Error("Не удалось получить безопасную категорию для поиска");
+      }
+
+      setSearchPhase("searching");
+      await requestSearch(queryWithLocale, controller.signal);
+    } catch (searchError) {
+      presentSearchFailure(searchError);
+    } finally {
+      window.clearTimeout(timeout);
+      if (activeSearchController.current === controller) {
+        activeSearchController.current = null;
+      }
+      setLoading(false);
+      setSearchPhase("idle");
+    }
+  };
+
+  const confirmSearchPlan = async (
+    confirmedConceptIds: string[],
+    confirmationToken: string,
+  ) => {
+    activeSearchController.current?.abort();
+    const controller = new AbortController();
+    activeSearchController.current = controller;
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      SEARCH_CLIENT_TIMEOUT_MS,
+    );
+
+    setLoading(true);
+    setSearchPhase("searching");
+    setSearchStartedAt(Date.now());
+    setError("");
+    setSearchProgress([
+      {
+        type: "progress",
+        stage: "intent_resolution",
+        status: "completed",
+        message: "Трактовка подтверждена — запускаем поиск",
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+
+    try {
+      await requestSearch(
+        {
+          ...query,
+          locale: "ru-RU",
+          countryCodes: ["RU"],
+          confirmationToken,
+          confirmedConceptIds,
+        },
+        controller.signal,
       );
     } catch (searchError) {
-      setError(searchError instanceof Error ? searchError.message : "Не удалось выполнить поиск");
+      presentSearchFailure(searchError);
     } finally {
+      window.clearTimeout(timeout);
+      if (activeSearchController.current === controller) {
+        activeSearchController.current = null;
+      }
       setLoading(false);
+      setSearchPhase("idle");
+    }
+  };
+
+  const updateQuery = (nextQuery: SearchPayload) => {
+    setQuery(nextQuery);
+    if (!loading) {
+      setSearchPlan(null);
+      setSearchProgress([]);
+      setError("");
     }
   };
 
@@ -685,11 +989,15 @@ export default function LeadRadarApp() {
         {screen === "search" && (
           <SearchScreen
             query={query}
-            setQuery={setQuery}
+            setQuery={updateQuery}
             loading={loading}
+            searchPhase={searchPhase}
+            searchPlan={searchPlan}
+            searchStartedAt={searchStartedAt}
             progress={searchProgress}
             error={error}
             onSubmit={runSearch}
+            onConfirm={confirmSearchPlan}
             onSave={saveTemplate}
           />
         )}
@@ -745,7 +1053,7 @@ export default function LeadRadarApp() {
             onResults={() => setScreen("results")}
           />
         )}
-        {screen === "detail" && selectedLead && (
+        {screen === "detail" && selectedLead && response && (
           <DetailScreen
             response={response}
             lead={selectedLead}
@@ -772,17 +1080,25 @@ function SearchScreen({
   query,
   setQuery,
   loading,
+  searchPhase,
+  searchPlan,
+  searchStartedAt,
   progress,
   error,
   onSubmit,
+  onConfirm,
   onSave,
 }: {
   query: SearchPayload;
   setQuery: (query: SearchPayload) => void;
   loading: boolean;
-  progress: SearchProgressEvent[];
+  searchPhase: SearchPhase;
+  searchPlan: SearchPlan | null;
+  searchStartedAt?: number;
+  progress: SearchProgressPanelEvent[];
   error: string;
   onSubmit: (event: FormEvent) => void;
+  onConfirm: (conceptIds: string[], confirmationToken: string) => void;
   onSave: () => void;
 }) {
   const [locating, setLocating] = useState(false);
@@ -837,7 +1153,7 @@ function SearchScreen({
         <div><p className="eyebrow">Поисковое задание</p><h1>Новый поиск компаний</h1><p>Заполните параметры — сервис объединит основной и смежные запросы.</p></div>
         <div className="header-actions">
           <button type="button" className="button" onClick={onSave}><Save size={16} /> Сохранить шаблон</button>
-          <button type="submit" form="search-form" className="button button-primary" disabled={loading}><Rocket size={16} /> {loading ? "Ищем компании…" : "Запустить поиск"}</button>
+          <button type="submit" form="search-form" className="button button-primary" disabled={loading}><Rocket size={16} /> {searchPhase === "planning" ? "Разбираем запрос…" : searchPhase === "searching" ? "Ищем компании…" : "Запустить поиск"}</button>
         </div>
       </header>
       <ol className="stepper" aria-label="Этапы настройки">
@@ -846,7 +1162,28 @@ function SearchScreen({
         ))}
       </ol>
       {error && <div className="error-banner" role="alert"><AlertTriangle size={18} /> {error}</div>}
-      {loading && <SearchProgressPanel events={progress} />}
+      {searchPlan && (
+        <SearchIntentPanel
+          key={searchPlan.planHash}
+          plan={searchPlan}
+          busy={loading}
+          onConfirm={onConfirm}
+          onRevise={() => {
+            document.getElementById("primary-query")?.focus();
+            document.getElementById("primary-query")?.scrollIntoView({
+              behavior: "smooth",
+              block: "center",
+            });
+          }}
+        />
+      )}
+      {loading && (
+        <SearchProgressPanel
+          events={progress}
+          startedAt={searchStartedAt}
+          deadlineSeconds={60}
+        />
+      )}
       <form id="search-form" className="search-grid" onSubmit={onSubmit}>
         <section className="panel form-panel">
           <div className="section-title"><span className="icon-box"><Building2 size={18} /></span><div><h2>Кого ищем</h2><p>Опишите бизнес и расширьте словарь поиска</p></div></div>

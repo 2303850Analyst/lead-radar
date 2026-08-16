@@ -1,39 +1,66 @@
 "use client";
 
-import { Check, Circle, LoaderCircle, Radar } from "lucide-react";
+import { Check, Circle, Clock3, LoaderCircle, Radar } from "lucide-react";
+import { useEffect, useState } from "react";
 
-import type {
-  SearchProgressEvent,
-  SearchProgressStage,
-} from "@/lib/types";
+import type { SearchProgressEvent } from "@/lib/types";
 
 import styles from "./SearchProgressPanel.module.css";
 
+type QueryIntelligenceStage =
+  | SearchProgressEvent["stage"]
+  | "intent_resolution"
+  | "provider_compilation"
+  | "relevance_classification";
+
+type DisplayStage =
+  | "intent_resolution"
+  | "geocoding"
+  | "provider_compilation"
+  | "places"
+  | "details"
+  | "normalizing"
+  | "relevance_classification"
+  | "complete";
+
+export type SearchProgressPanelEvent = Omit<SearchProgressEvent, "stage"> & {
+  stage: QueryIntelligenceStage;
+};
+
 const STAGES: Array<{
-  id: SearchProgressStage;
+  id: DisplayStage;
   label: string;
   hint: string;
 }> = [
-  { id: "validation", label: "Проверяем задачу", hint: "Запрос и ограничения" },
+  { id: "intent_resolution", label: "Понимаем запрос", hint: "Категория и ограничения" },
   { id: "geocoding", label: "Определяем центр", hint: "Адрес или точка на карте" },
+  { id: "provider_compilation", label: "Готовим поиск", hint: "Безопасные категории карты" },
   { id: "places", label: "Ищем компании", hint: "Категории и радиус" },
   { id: "details", label: "Получаем контакты", hint: "Телефоны, email и сайты" },
   { id: "normalizing", label: "Готовим выборку", hint: "Дубли и приоритеты" },
+  { id: "relevance_classification", label: "Проверяем релевантность", hint: "Соответствие задаче" },
   { id: "complete", label: "Готово", hint: "Результат сформирован" },
 ];
 
-function latestByStage(events: SearchProgressEvent[]) {
-  const result = new Map<SearchProgressStage, SearchProgressEvent>();
-  for (const event of events) result.set(event.stage, event);
+function displayStage(stage: QueryIntelligenceStage): DisplayStage {
+  // The v0.3 API called the first stage `validation`. Treat it as intent
+  // resolution so the legacy/demo path remains visually compatible.
+  if (stage === "validation") return "intent_resolution";
+  return stage as DisplayStage;
+}
+
+function latestByStage(events: SearchProgressPanelEvent[]) {
+  const result = new Map<DisplayStage, SearchProgressPanelEvent>();
+  for (const event of events) result.set(displayStage(event.stage), event);
   return result;
 }
 
-function percentFor(events: SearchProgressEvent[]) {
+function percentFor(events: SearchProgressPanelEvent[]) {
   const latest = events.at(-1);
   if (!latest) return 2;
   const stageIndex = Math.max(
     0,
-    STAGES.findIndex((stage) => stage.id === latest.stage),
+    STAGES.findIndex((stage) => stage.id === displayStage(latest.stage)),
   );
   let stageShare = latest.status === "completed" ? 1 : 0.2;
   if (
@@ -48,15 +75,35 @@ function percentFor(events: SearchProgressEvent[]) {
 
 export default function SearchProgressPanel({
   events,
+  startedAt,
+  deadlineSeconds = 60,
 }: {
-  events: SearchProgressEvent[];
+  events: SearchProgressPanelEvent[];
+  startedAt?: number;
+  deadlineSeconds?: number;
 }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   const latest = events.at(-1);
   const byStage = latestByStage(events);
   const activeIndex = latest
-    ? STAGES.findIndex((stage) => stage.id === latest.stage)
+    ? STAGES.findIndex((stage) => stage.id === displayStage(latest.stage))
     : 0;
   const percent = percentFor(events);
+  const elapsedSeconds = startedAt
+    ? Math.max(0, Math.floor((now - startedAt) / 1_000))
+    : 0;
+  const elapsedLabel = `${Math.floor(elapsedSeconds / 60)}:${String(
+    elapsedSeconds % 60,
+  ).padStart(2, "0")}`;
+  const deadlineLabel = `${Math.floor(deadlineSeconds / 60)}:${String(
+    deadlineSeconds % 60,
+  ).padStart(2, "0")}`;
 
   return (
     <section className={styles.panel} aria-labelledby="search-progress-title">
@@ -66,7 +113,13 @@ export default function SearchProgressPanel({
           <p>Живой прогресс</p>
           <h2 id="search-progress-title">Формируем базу лидов</h2>
         </div>
-        <strong>{Math.round(percent)}%</strong>
+        <span className={styles.metrics}>
+          <strong>{Math.round(percent)}%</strong>
+          <small className={elapsedSeconds >= deadlineSeconds - 10 ? styles.ending : ""}>
+            <Clock3 size={12} aria-hidden="true" />
+            {elapsedLabel} / до {deadlineLabel}
+          </small>
+        </span>
       </div>
 
       <div
@@ -117,7 +170,9 @@ export default function SearchProgressPanel({
 
       <p className={styles.liveMessage} aria-live="polite">
         <span aria-hidden="true" />
-        {latest?.message ?? "Запускаем поисковый конвейер…"}
+        {elapsedSeconds >= deadlineSeconds
+          ? "Завершаем запрос контролируемым результатом — бесконечного ожидания не будет."
+          : latest?.message ?? "Запускаем поисковый конвейер…"}
       </p>
     </section>
   );

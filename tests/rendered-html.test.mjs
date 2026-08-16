@@ -57,6 +57,17 @@ test("search-area map keeps a bounded responsive height", async () => {
   );
 });
 
+test("planner outage UI never presents an infrastructure failure as an unsupported niche", async () => {
+  const source = await readFile(
+    new URL("../components/LeadRadarApp.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /failure\.code === "SEARCH_PLANNER_UNAVAILABLE"[\s\S]*?setSearchPlan\(null\)[\s\S]*?повторите поиск/i,
+  );
+});
+
 test("search API exposes health and deterministic demo results", async () => {
   const worker = await getWorker();
   const healthResponse = await worker.fetch(
@@ -80,6 +91,8 @@ test("search API exposes health and deterministic demo results", async () => {
   assert.equal(health.capabilities.geoapifyPlaces.strictRadius, true);
   assert.equal(health.capabilities.geoapifyPlaces.rawResponsesStored, false);
   assert.equal(health.capabilities.yandexGeosearch.strictRadius, true);
+  assert.equal(health.capabilities.queryIntelligence.mode, "deterministic");
+  assert.equal(health.capabilities.queryIntelligence.strictStructuredOutput, true);
 
   const searchResponse = await worker.fetch(
     new Request("http://localhost/api/search", {
@@ -292,6 +305,8 @@ test("Geoapify provider normalizes live data without inventing missing websites"
       [...new Set(progressEvents.map((event) => event.stage))],
       [
         "validation",
+        "intent_resolution",
+        "provider_compilation",
         "geocoding",
         "places",
         "details",
@@ -328,8 +343,8 @@ test("Geoapify provider normalizes live data without inventing missing websites"
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          description: "Юридические услуги",
-          primaryQuery: "Юристы",
+          description: "Удалённый финансовый совет без физического офиса",
+          primaryQuery: "Онлайн-консультант по инвестициям",
           relatedQueries: [],
           excludeQueries: [],
           location: "Москва",
@@ -343,7 +358,7 @@ test("Geoapify provider normalizes live data without inventing missing websites"
     assert.equal(unsupportedResponse.status, 422);
     assert.equal(
       (await unsupportedResponse.json()).code,
-      "GEOAPIFY_UNSUPPORTED_CATEGORY",
+      "SEARCH_PLAN_UNSUPPORTED",
     );
     assert.equal(upstreamCalls.length, callsBeforeUnsupportedQuery);
   } finally {
@@ -411,7 +426,7 @@ test("Yandex provider exposes only safe website links", { concurrency: false }, 
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          primaryQuery: "Склад",
+          primaryQuery: "Ответственное хранение",
           relatedQueries: [],
           excludeQueries: [],
           location: "Москва",
@@ -476,4 +491,92 @@ test("search API rejects invalid payloads", async () => {
   assert.equal(invalidCenterEvent.type, "error");
   assert.equal(invalidCenterEvent.code, "INVALID_SEARCH_PAYLOAD");
   assert.match(invalidCenterEvent.error, /долгота, широта/i);
+
+  const incompatibleLocaleResponse = await worker.fetch(
+    new Request("http://localhost/api/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        primaryQuery: "Барбершоп",
+        location: "Алматы",
+        locale: "ru-RU",
+        countryCodes: ["KZ"],
+      }),
+    }),
+    runtimeEnv,
+    runtimeContext,
+  );
+  assert.equal(incompatibleLocaleResponse.status, 400);
+  const incompatibleLocaleError = await incompatibleLocaleResponse.json();
+  assert.equal(incompatibleLocaleError.code, "INVALID_SEARCH_PAYLOAD");
+  assert.match(incompatibleLocaleError.error, /несовместима/i);
+});
+
+test("search APIs expose a retryable error when Kimi is unavailable", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEnv = {
+    QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
+    MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+    KIMI_API_KEY: process.env.KIMI_API_KEY,
+    KIMI_MODEL: process.env.KIMI_MODEL,
+  };
+
+  process.env.QUERY_INTELLIGENCE_MODE = "kimi";
+  process.env.MOONSHOT_API_KEY = "fake-kimi-test-key";
+  delete process.env.KIMI_API_KEY;
+  process.env.KIMI_MODEL = "kimi-k3";
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.hostname, "api.moonshot.ai");
+    return Response.json(
+      { error: { message: "rate limited" } },
+      { status: 429 },
+    );
+  };
+
+  const payload = {
+    primaryQuery: "привести бороду в порядок",
+    location: "Москва",
+    locale: "ru-RU",
+    countryCodes: ["RU"],
+  };
+
+  try {
+    const worker = await getWorker();
+    const planResponse = await worker.fetch(
+      new Request("http://localhost/api/search/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(planResponse.status, 503);
+    const planFailure = await planResponse.json();
+    assert.equal(planFailure.code, "SEARCH_PLANNER_UNAVAILABLE");
+    assert.equal(planFailure.plan.status, "unsupported");
+    assert.ok(planFailure.plan.resolution.reasonCodes.includes("KIMI_UNAVAILABLE"));
+
+    const searchResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(searchResponse.status, 503);
+    const searchFailure = await searchResponse.json();
+    assert.equal(searchFailure.code, "SEARCH_PLANNER_UNAVAILABLE");
+    assert.equal(searchFailure.plan.status, "unsupported");
+    assert.equal(JSON.stringify(searchFailure).includes("fake-kimi-test-key"), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });

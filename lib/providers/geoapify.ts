@@ -4,6 +4,7 @@ import type {
   SearchProgressEvent,
   SearchResponse,
 } from "../types";
+import { isGeoapifyCategoryId } from "../search-planner/catalogs/geoapify";
 import {
   SearchProviderError,
   type SearchProvider,
@@ -378,6 +379,8 @@ export async function geocodeGeoapifyLocation(
   location: string,
   apiKey: string,
   signal?: AbortSignal,
+  countryCode = "RU",
+  language: "ru" | "be" | "kk" = "ru",
 ): Promise<[number, number]> {
   const normalizedLocation = location.trim();
   if (!normalizedLocation) {
@@ -397,8 +400,8 @@ export async function geocodeGeoapifyLocation(
     GEOCODE_ENDPOINT,
     {
       text: normalizedLocation,
-      lang: "ru",
-      filter: "countrycode:ru",
+      lang: language,
+      filter: `countrycode:${countryCode.toLocaleLowerCase("en-US")}`,
       format: "geojson",
       limit: "1",
     },
@@ -413,11 +416,12 @@ export async function geocodeGeoapifyLocation(
   }
   const lon = feature?.properties?.lon;
   const lat = feature?.properties?.lat;
-  if (validCoordinates([lon, lat])) {
-    return [lon, lat];
+  const propertyCoordinates: unknown = [lon, lat];
+  if (validCoordinates(propertyCoordinates)) {
+    return propertyCoordinates;
   }
   throw new SearchProviderError(
-    "Не удалось определить указанную географию в России",
+    "Не удалось определить указанную географию в выбранной стране",
     "GEOAPIFY_LOCATION_NOT_FOUND",
   );
 }
@@ -426,12 +430,16 @@ function placeName(feature: GeoapifyFeature): string | null {
   return stringValue(feature.properties?.name, 300);
 }
 
-function isRussianPlace(feature: GeoapifyFeature): boolean {
+function isCountryPlace(feature: GeoapifyFeature, expectedCountryCode: string): boolean {
   const countryCode = stringValue(feature.properties?.country_code, 8);
   // Old or community-authored OSM objects may omit the country code. The
   // circle still guarantees geographic proximity, so only reject an explicit
   // non-Russian country marker.
-  return !countryCode || countryCode.toLocaleLowerCase("en-US") === "ru";
+  return (
+    !countryCode ||
+    countryCode.toLocaleLowerCase("en-US") ===
+      expectedCountryCode.toLocaleLowerCase("en-US")
+  );
 }
 
 function placeAddress(properties: Record<string, unknown>): string {
@@ -783,7 +791,28 @@ export class GeoapifyProvider implements SearchProvider {
     };
     const apiKey = this.apiKey.trim();
     const observedAt = new Date().toISOString();
-    const categoryPlan = resolveGeoapifyCategories(payload);
+    const compiledPlan = options.compiledPlan;
+    const categoryPlan = compiledPlan
+      ? {
+          categories: [...compiledPlan.categoryIds],
+          batches: compiledPlan.batches.map((batch) => [...batch]),
+        }
+      : resolveGeoapifyCategories(payload);
+    if (
+      !categoryPlan.categories.length ||
+      !categoryPlan.batches.length ||
+      (compiledPlan &&
+        categoryPlan.categories.some(
+          (categoryId) => !isGeoapifyCategoryId(categoryId),
+        ))
+    ) {
+      throw new SearchProviderError(
+        "Сервер не смог подготовить категории Geoapify",
+        "GEOAPIFY_UNSUPPORTED_CATEGORY",
+      );
+    }
+    const countryCode = compiledPlan?.countryCode ?? "RU";
+    const language = compiledPlan?.language ?? "ru";
     let center: [number, number];
     if (payload.center) {
       if (!validCoordinates(payload.center)) {
@@ -813,6 +842,8 @@ export class GeoapifyProvider implements SearchProvider {
         payload.location,
         apiKey,
         options.signal,
+        countryCode,
+        language,
       );
       await reportProgress({
         stage: "geocoding",
@@ -842,7 +873,7 @@ export class GeoapifyProvider implements SearchProvider {
             payload.radiusKm * 1_000,
           )}`,
           bias: `proximity:${center[0]},${center[1]}`,
-          lang: "ru",
+          lang: language,
           limit: String(geoapifyPlacesLimit()),
         },
         apiKey,
@@ -855,7 +886,7 @@ export class GeoapifyProvider implements SearchProvider {
         // usually have no contacts; skip them before spending detail credits.
         if (
           !placeName(feature) ||
-          !isRussianPlace(feature) ||
+          !isCountryPlace(feature, countryCode) ||
           isExcluded(feature, payload.excludeQueries)
         ) {
           continue;

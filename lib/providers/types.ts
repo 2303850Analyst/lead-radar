@@ -4,6 +4,17 @@ import type {
   SearchProviderId,
   SearchResponse,
 } from "../types";
+import type { SupportedCountryCode } from "../search-planner/types";
+
+export type CompiledGeoapifyPlan = {
+  provider: "geoapify";
+  providerCatalogVersion: string;
+  categoryIds: string[];
+  batches: string[][];
+  countryCode: SupportedCountryCode;
+  language: "ru" | "be" | "kk";
+  conceptIds: string[];
+};
 
 export type SearchProgressCallback = (
   event: SearchProgressEvent,
@@ -12,6 +23,8 @@ export type SearchProgressCallback = (
 export type SearchProviderOptions = {
   onProgress?: SearchProgressCallback;
   signal?: AbortSignal;
+  /** Server-compiled selectors. They must never be accepted directly from a client. */
+  compiledPlan?: CompiledGeoapifyPlan;
 };
 
 /**
