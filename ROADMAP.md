@@ -128,9 +128,48 @@ Geoapify. Публичный контракт поиска отделяется 
 scoring, экспорт и показ на сторонней карте не включаются без письменного
 подтверждения разрешённого data flow.
 
-## Версия 0.4.0 — проверка цифрового присутствия
+## Версия 0.4.0 — Query Intelligence
 
 Приоритет: P1.
+
+- Каноническая таксономия минимум из 30 типов физического бизнеса, независимая
+  от конкретного картографического API.
+- Перевод свободного пользовательского описания в версионированный `SearchPlan`.
+- Детерминированный exact/synonym resolver и constrained Kimi resolver для
+  неоднозначных и zero-token-overlap формулировок: при слабом lexical match Kimi
+  получает весь компактный allowlisted catalog, а не преждевременный отказ.
+- Kimi выбирает только allowlisted canonical IDs; provider categories и URL
+  компилируются исключительно серверным кодом.
+- Предварительное подтверждение трактовки до расхода Geoapify quota.
+- Post-search relevance: правила для всех результатов; AI-batch только после
+  отдельной проверки права передачи данных и по выключенному по умолчанию флагу.
+- Подписанное и ограниченное по времени подтверждение неоднозначного плана,
+  разделённые `requestCacheKey` и immutable `planHash`.
+- Двухфазный provider flow: optional geocoding, final compiled execution plan,
+  Places, deterministic exclusions/dedupe и только затем Details.
+- Pilot support matrix: RU, BY и KZ, по одной стране на поиск; это ещё не всё CIS.
+- Golden datasets, offline/live evaluation, контроль latency, стоимости,
+  hallucination, prompt injection и отказов API.
+
+Local Tier-0 SLO: fast path без Kimi `p95 ≤ 15 с`, AI-assisted выдача
+`p95 ≤ 55 с`, абсолютный deadline `60 с`; progress обновляется не реже раза в 2
+секунды минимум в 99% long-running jobs. Production target после минимум Tier-1: AI-assisted выдача `p95 ≤ 25 с`,
+deadline `45 с`. Первые 500 jobs/7 дней используются только для калибровки;
+внешний SLA не публикуется до минимум 10 000 репрезентативных jobs за 28 дней и
+статистического подтверждения цели.
+
+Критерии: auto-resolved precision `≥ 95%`, correct concept Top-1 `≥ 92%`,
+recall ambiguous/unsupported `≥ 95%`, неизвестных provider categories и
+выдуманных фактов `0`, все hard gates и live canary пройдены.
+
+Архитектура и исполнимое ТЗ:
+
+- [`docs/semantic-query-planner-architecture.md`](docs/semantic-query-planner-architecture.md);
+- [`docs/v0.4.0-query-intelligence-spec.md`](docs/v0.4.0-query-intelligence-spec.md).
+
+## Версия 0.5.0 — проверка цифрового присутствия
+
+Приоритет: P1 после Query Intelligence.
 
 - Проверка доступности указанного сайта.
 - Поиск официального сайта через разрешённые источники.
@@ -143,7 +182,7 @@ scoring, экспорт и показ на сторонней карте не в
 Критерии: нет категоричного «нет сайта» без проверки; ложные выводы о цифровом
 разрыве `≤ 10%` на ручной контрольной выборке.
 
-## Версия 0.5.0 — рабочий процесс продаж
+## Версия 0.6.0 — рабочий процесс продаж
 
 Приоритет: P1 после разрешения на хранение.
 
@@ -156,9 +195,9 @@ scoring, экспорт и показ на сторонней карте не в
 Критерий: пользователь получает готовый к работе список за 10 минут, а
 происхождение каждого поля известно.
 
-## Версия 0.6.0 — проверка бизнес-эффекта
+## Параллельный gate — проверка бизнес-эффекта
 
-Приоритет: P1.
+Приоритет: P0, начинается до завершения `v0.4.0` и не откладывается до CRM.
 
 - Выбрать одну нишу и один регион.
 - Вручную проверить 50 лидов.
@@ -167,6 +206,8 @@ scoring, экспорт и показ на сторонней карте не в
 - Сравнить основной поиск против расширенного.
 
 Продолжение разработки определяется фактической воронкой, а не числом карточек.
+Минимальный успех: две независимые команды готовы повторно заплатить за новую
+проверенную выборку; иначе расширение feature scope приостанавливается.
 
 ## Версия 1.0.0 — внутренний production
 
@@ -191,6 +232,11 @@ scoring, экспорт и показ на сторонней карте не в
 | Ошибочный вывод «нет сайта» | Высокий | Многоступенчатая проверка и evidence |
 | Дубли и филиалы | Высокий | Объяснимая дедупликация и ручное объединение |
 | Утечка API-ключа | Высокий | Только server-side env, sanitization и secret scan |
+| Kimi неверно понял категорию | Высокий | Allowlist, confirmation, golden/hidden eval и безопасный fallback |
+| Kimi/provider не уложился во время | Высокий | Tier-0 timeout/deadline 30/60 с, production 12/45 с, единый AbortSignal и partial result |
+| Передача карточек в Kimi нарушает условия источника или privacy policy | Высокий | Post-search AI выключен до country-specific data-flow review; planner не получает лиды |
+| Tier-0 Kimi не выдерживает несколько одновременных пользователей | Высокий | Concurrency 1, один ожидающий job, один Kimi-call/search; внешняя beta только после Tier-1 |
+| Стоимость AI растёт незаметно | Средний | Usage metadata, cost gate и не более одного planner call |
 | Низкая конверсия | Высокий | Ранний ручной sales-эксперимент |
 | Нежелательные обращения | Высокий | Юридическая проверка и opt-out процесс |
 
@@ -200,6 +246,10 @@ scoring, экспорт и показ на сторонней карте не в
 - [Geoapify Pricing](https://www.geoapify.com/pricing/)
 - [Geoapify Pricing Details](https://www.geoapify.com/pricing-details/)
 - [Geoapify Terms and Conditions](https://www.geoapify.com/terms-and-conditions/)
+- [Kimi API models](https://platform.kimi.ai/docs/models)
+- [Kimi API Structured Output](https://platform.kimi.ai/docs/guide/response_format)
+- [Kimi API model parameters](https://platform.kimi.ai/docs/api/models-overview)
+- [Kimi API rate limits](https://platform.kimi.ai/docs/pricing/limits)
 - [API Поиска по организациям](https://yandex.ru/maps-api/docs/geosearch-api/index.html)
 - [Формат запроса](https://yandex.ru/maps-api/docs/geosearch-api/request.html)
 - [Формат ответа](https://yandex.ru/maps-api/docs/geosearch-api/response.html)
