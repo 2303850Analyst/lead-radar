@@ -190,9 +190,8 @@ export default function LeadMap({
       if (hasValidCenter(focusCenter)) {
         const position: Leaflet.LatLngExpression = [focusCenter[1], focusCenter[0]];
         if (Number.isFinite(focusRadiusKm) && (focusRadiusKm ?? 0) > 0) {
-          const focusBounds = leaflet
-            .circle(position, { radius: (focusRadiusKm ?? 15) * 1_000 })
-            .getBounds();
+          const diameterMeters = (focusRadiusKm ?? 15) * 2_000;
+          const focusBounds = leaflet.latLng(position).toBounds(diameterMeters);
           map.fitBounds(focusBounds, {
             animate: false,
             maxZoom: 14,

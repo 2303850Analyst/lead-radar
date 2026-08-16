@@ -57,6 +57,21 @@ test("search-area map keeps a bounded responsive height", async () => {
   );
 });
 
+test("result map derives focus bounds without a detached Leaflet circle", async () => {
+  const source = await readFile(
+    new URL("../components/LeadMap.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    source,
+    /leaflet\s*\.circle\([\s\S]{0,240}?\.getBounds\(\)/,
+  );
+  assert.match(
+    source,
+    /leaflet\s*\.latLng\(position\)\s*\.toBounds\(/,
+  );
+});
+
 test("planner outage UI never presents an infrastructure failure as an unsupported niche", async () => {
   const source = await readFile(
     new URL("../components/LeadRadarApp.tsx", import.meta.url),
