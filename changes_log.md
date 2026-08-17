@@ -57,6 +57,22 @@
 
 ### Бизнес-логика и ограничения
 
+- Поиск получил единый local Tier-0 runtime deadline 60 секунд от admission до
+  terminal outcome. Один `AbortSignal` отменяет Kimi SSE, Geoapify/Yandex
+  fetch, pacing waits, optional classifier и Details enrichment. JSON при
+  исчерпании времени возвращает контролируемый HTTP 504
+  `SEARCH_DEADLINE_EXCEEDED`, NDJSON — ровно одну terminal-строку; heartbeat
+  поддерживает интервал progress не более 2 секунд. Все stage timeout
+  ограничиваются остатком общего бюджета, а пропущенные optional classifier и
+  Details отражаются в `provider.coverage.degradedStages`, не выдавая
+  `not_checked` за отсутствие контактов.
+- Kimi защищён in-process Tier-0 scheduler: один активный вызов, один ожидающий,
+  admission timeout 20 секунд и минимальный интервал стартов 20 секунд.
+  Переполнение/истечение очереди даёт retryable planner failure
+  `KIMI_ADMISSION_TIMEOUT`, а не semantic unsupported. Circuit breaker
+  открывается после трёх transient failures за 60 секунд и хранит только
+  агрегированные admission/cache counters без ключей, prompt или lead payload.
+
 - После дедупликации и до Geoapify Details добавлена доказательная проверка
   релевантности карточки исходному `SemanticIntentV2`. API и UI используют один
   контракт `matched`, `maybe`, `rejected`, `not_checked`; доказательства могут

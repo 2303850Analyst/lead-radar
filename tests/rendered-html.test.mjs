@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+// Keep production admission semantics while removing the 20-second Tier-0
+// pacing delay from mocked worker tests.
+process.env.KIMI_MIN_START_INTERVAL_MS = "0";
+process.env.KIMI_ADMISSION_TIMEOUT_MS = "100";
+process.env.KIMI_CIRCUIT_FAILURE_THRESHOLD = "100";
+
 const runtimeEnv = {
   ASSETS: {
     fetch: async () => new Response("Not found", { status: 404 }),
@@ -298,6 +304,85 @@ test("JSON and NDJSON demo search share one result without Geoapify compilation"
   } finally {
     if (previousProvider === undefined) delete process.env.SEARCH_PROVIDER;
     else process.env.SEARCH_PROVIDER = previousProvider;
+  }
+});
+
+test("JSON and NDJSON deadline races yield one controlled terminal outcome", { concurrency: false }, async () => {
+  const previous = {
+    SEARCH_PROVIDER: process.env.SEARCH_PROVIDER,
+    GEOAPIFY_API_KEY: process.env.GEOAPIFY_API_KEY,
+    QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
+    SEARCH_REQUEST_DEADLINE_MS: process.env.SEARCH_REQUEST_DEADLINE_MS,
+  };
+  const previousFetch = globalThis.fetch;
+  process.env.SEARCH_PROVIDER = "geoapify";
+  process.env.GEOAPIFY_API_KEY = "deadline-test-key";
+  process.env.QUERY_INTELLIGENCE_MODE = "deterministic";
+  process.env.SEARCH_REQUEST_DEADLINE_MS = "25";
+  globalThis.fetch = async (_input, init = {}) =>
+    await new Promise((_resolve, reject) => {
+      const fail = () => {
+        reject(new DOMException("aborted", "AbortError"));
+      };
+      if (init.signal?.aborted) fail();
+      else init.signal?.addEventListener("abort", fail, { once: true });
+    });
+
+  const payload = {
+    description: "Фулфилмент",
+    primaryQuery: "Фулфилмент",
+    relatedQueries: [],
+    excludeQueries: [],
+    location: "Москва",
+    center: [37.6176, 55.7558],
+    radiusKm: 5,
+    services: [],
+  };
+
+  try {
+    const worker = await getWorker();
+    const jsonResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    const jsonFailure = await jsonResponse.json();
+    assert.equal(jsonResponse.status, 504, JSON.stringify(jsonFailure));
+    assert.equal(jsonFailure.code, "SEARCH_DEADLINE_EXCEEDED");
+    assert.equal(jsonFailure.retryable, true);
+
+    const streamResponse = await worker.fetch(
+      new Request("http://localhost/api/search?stream=1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    const records = (await streamResponse.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const terminal = records.filter((record) =>
+      record.type === "result" || record.type === "error",
+    );
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0].type, "error");
+    assert.equal(terminal[0].code, "SEARCH_DEADLINE_EXCEEDED");
+    assert.equal(terminal[0].retryable, true);
+    assert.equal(records[0].type, "progress");
+    assert.equal(records[0].stage, "validation");
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

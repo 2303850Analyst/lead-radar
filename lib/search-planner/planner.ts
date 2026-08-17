@@ -23,6 +23,12 @@ import {
 } from "./resolver";
 import { validateKimiSemanticIntent } from "./schema";
 import {
+  KimiSchedulerError,
+  createTier0KimiScheduler,
+  type KimiSchedulerMetrics,
+  type Tier0KimiScheduler,
+} from "./scheduler";
+import {
   CANONICAL_TAXONOMY_VERSION,
   canonicalConceptLabel,
   isCanonicalConceptId,
@@ -58,6 +64,13 @@ export type CreateSearchPlanOptions = {
   confirmationTtlSeconds?: number;
   signal?: AbortSignal;
   now?: Date;
+};
+
+export type CreateSearchPlanFromEnvOptions = Omit<
+  CreateSearchPlanOptions,
+  "mode" | "kimiClient" | "signingSecret"
+> & {
+  scheduler?: Tier0KimiScheduler;
 };
 
 export type ConfirmSearchPlanRequest = {
@@ -105,6 +118,13 @@ type CachedSearchPlan = {
 };
 
 const runtimePlanCache = new Map<string, CachedSearchPlan>();
+let runtimeKimiScheduler: Tier0KimiScheduler | null = null;
+let runtimeKimiSchedulerConfigKey = "";
+const runtimeCacheMetrics = {
+  hits: 0,
+  misses: 0,
+  evictions: 0,
+};
 
 const AI_NOT_USED: SearchPlanAiMetadata = {
   used: false,
@@ -308,6 +328,11 @@ function failedAiMetadata(modelId: string | null): SearchPlanAiMetadata {
 }
 
 function reasonForKimiFailure(error: unknown): ResolutionReasonCode {
+  if (error instanceof KimiSchedulerError) {
+    return error.code === "KIMI_ADMISSION_TIMEOUT"
+      ? "KIMI_ADMISSION_TIMEOUT"
+      : "KIMI_UNAVAILABLE";
+  }
   if (error instanceof KimiClientError) {
     if (error.code === "KIMI_TIMEOUT") return "KIMI_ADMISSION_TIMEOUT";
     if (error.code === "KIMI_INVALID_RESPONSE") return "KIMI_INVALID_RESPONSE";
@@ -754,7 +779,10 @@ export async function createSearchPlan(
       signingOptions,
     );
   } catch (error) {
-    if (error instanceof KimiClientError && error.code === "KIMI_ABORTED") throw error;
+    if (
+      (error instanceof KimiClientError && error.code === "KIMI_ABORTED") ||
+      (error instanceof KimiSchedulerError && error.code === "KIMI_ABORTED")
+    ) throw error;
     if (deterministic.decision === "ready" && deterministic.selectedConceptId) {
       const selectedConceptIds = [deterministic.selectedConceptId];
       return finalizePlan(
@@ -797,7 +825,7 @@ export async function createSearchPlan(
 
 export async function createSearchPlanFromEnv(
   input: PlannerInput,
-  options: Omit<CreateSearchPlanOptions, "mode" | "kimiClient" | "signingSecret"> = {},
+  options: CreateSearchPlanFromEnvOptions = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<SearchPlan> {
   const intent = normalizePlannerInput(input);
@@ -822,6 +850,7 @@ export async function createSearchPlanFromEnv(
   const nowMs = (options.now ?? new Date()).getTime();
   const cached = runtimePlanCache.get(runtimeCacheKey);
   if (cached && cached.expiresAtMs > nowMs) {
+    runtimeCacheMetrics.hits += 1;
     runtimePlanCache.delete(runtimeCacheKey);
     runtimePlanCache.set(runtimeCacheKey, cached);
     return {
@@ -830,12 +859,33 @@ export async function createSearchPlanFromEnv(
       confirmation: { ...cached.plan.confirmation },
     };
   }
-  if (cached) runtimePlanCache.delete(runtimeCacheKey);
+  runtimeCacheMetrics.misses += 1;
+  if (cached) {
+    runtimePlanCache.delete(runtimeCacheKey);
+    runtimeCacheMetrics.evictions += 1;
+  }
 
+  const scheduler = options.scheduler ?? runtimeSchedulerFromEnv(env);
+  const scheduledKimiClient = kimiClient
+    ? {
+        modelId: kimiClient.modelId,
+        encode: (request: Parameters<PlannerKimiClient["encode"]>[0]) =>
+          scheduler.run(() => kimiClient.encode(request), {
+            signal: request.signal,
+          }),
+      }
+    : null;
+  const planOptions = {
+    ...(options.confirmationTtlSeconds === undefined
+      ? {}
+      : { confirmationTtlSeconds: options.confirmationTtlSeconds }),
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.now ? { now: options.now } : {}),
+  };
   const plan = await createSearchPlan(input, {
-    ...options,
+    ...planOptions,
     mode,
-    kimiClient,
+    kimiClient: scheduledKimiClient,
     signingSecret,
   });
   const confirmationExpiresAt = plan.confirmation.expiresAt
@@ -849,13 +899,17 @@ export async function createSearchPlanFromEnv(
   );
   if (expiresAtMs > nowMs) {
     for (const [key, entry] of runtimePlanCache) {
-      if (entry.expiresAtMs <= nowMs) runtimePlanCache.delete(key);
+      if (entry.expiresAtMs <= nowMs) {
+        runtimePlanCache.delete(key);
+        runtimeCacheMetrics.evictions += 1;
+      }
     }
     runtimePlanCache.set(runtimeCacheKey, { plan, expiresAtMs });
     while (runtimePlanCache.size > SEARCH_PLAN_RUNTIME_CACHE_MAX_ENTRIES) {
       const oldestKey = runtimePlanCache.keys().next().value as string | undefined;
       if (!oldestKey) break;
       runtimePlanCache.delete(oldestKey);
+      runtimeCacheMetrics.evictions += 1;
     }
   }
   return plan;
@@ -863,10 +917,65 @@ export async function createSearchPlanFromEnv(
 
 export function clearSearchPlanRuntimeCache(): void {
   runtimePlanCache.clear();
+  runtimeCacheMetrics.hits = 0;
+  runtimeCacheMetrics.misses = 0;
+  runtimeCacheMetrics.evictions = 0;
 }
 
 export function searchPlanRuntimeCacheSize(): number {
   return runtimePlanCache.size;
+}
+
+function schedulerInteger(
+  value: string | undefined,
+  fallback: number,
+  minimum = 0,
+): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= minimum ? parsed : fallback;
+}
+
+function runtimeSchedulerFromEnv(env: NodeJS.ProcessEnv): Tier0KimiScheduler {
+  const config = {
+    minStartIntervalMs: schedulerInteger(
+      env.KIMI_MIN_START_INTERVAL_MS,
+      20_000,
+    ),
+    admissionTimeoutMs: schedulerInteger(
+      env.KIMI_ADMISSION_TIMEOUT_MS,
+      20_000,
+      1,
+    ),
+    circuitFailureThreshold: schedulerInteger(
+      env.KIMI_CIRCUIT_FAILURE_THRESHOLD,
+      3,
+      1,
+    ),
+  };
+  const key = `${config.minStartIntervalMs}:${config.admissionTimeoutMs}:${config.circuitFailureThreshold}`;
+  if (!runtimeKimiScheduler || runtimeKimiSchedulerConfigKey !== key) {
+    runtimeKimiScheduler = createTier0KimiScheduler(config);
+    runtimeKimiSchedulerConfigKey = key;
+  }
+  return runtimeKimiScheduler;
+}
+
+export function searchPlannerRuntimeMetrics(): {
+  cache: {
+    entries: number;
+    hits: number;
+    misses: number;
+    evictions: number;
+  };
+  kimiAdmission: KimiSchedulerMetrics;
+} {
+  return {
+    cache: {
+      entries: runtimePlanCache.size,
+      ...runtimeCacheMetrics,
+    },
+    kimiAdmission: runtimeSchedulerFromEnv(process.env).metrics(),
+  };
 }
 
 export async function confirmSearchPlan(

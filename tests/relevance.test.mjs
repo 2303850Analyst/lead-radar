@@ -320,6 +320,264 @@ test("Geoapify classifies after dedupe and enriches only matched or maybe cards"
   }
 });
 
+test("Geoapify skips optional classifier and Details when the global budget is exhausted", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousClassifierFlag = process.env.KIMI_LEAD_CLASSIFICATION_ENABLED;
+  let detailCalls = 0;
+  let classifierCalls = 0;
+  process.env.KIMI_LEAD_CLASSIFICATION_ENABLED = "true";
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname === "/v2/places") {
+      return Response.json({
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            properties: {
+              place_id: "gym-budget-maybe",
+              name: "CrossFit Бюджет",
+              country_code: "ru",
+              city: "Москва",
+              formatted: "Москва, Центр",
+              categories: [],
+            },
+            geometry: { type: "Point", coordinates: [37.61, 55.76] },
+          },
+          {
+            type: "Feature",
+            properties: {
+              place_id: "gym-budget-matched",
+              name: "Спортивный зал Бюджет",
+              country_code: "ru",
+              city: "Москва",
+              formatted: "Москва, Север",
+              categories: ["sport.fitness.gym"],
+            },
+            geometry: { type: "Point", coordinates: [37.62, 55.77] },
+          },
+        ],
+      });
+    }
+    if (url.pathname === "/v2/place-details") {
+      detailCalls += 1;
+      return Response.json({ type: "FeatureCollection", features: [] });
+    }
+    throw new Error(`Unexpected URL: ${url.pathname}`);
+  };
+
+  try {
+    const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+    const result = await new GeoapifyProvider("test-only-key").search(
+      {
+        description: "спортзал",
+        primaryQuery: "спортивный зал",
+        relatedQueries: [],
+        excludeQueries: [],
+        location: "Москва",
+        center: [37.6176, 55.7558],
+        radiusKm: 5,
+        services: [],
+        locale: "ru-RU",
+        countryCodes: ["RU"],
+      },
+      {
+        semanticIntent,
+        compiledPlan: {
+          ...capabilityPlan,
+          providerCatalogVersion: GEOAPIFY_CAPABILITY_REGISTRY.version,
+          registryChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+        runtime: {
+          signal: new AbortController().signal,
+          deadlineAt: 1_500,
+          remainingMs: () => 1_500,
+          stageTimeoutMs: (maximumMs, reserveMs = 0) =>
+            Math.min(maximumMs, Math.max(0, 1_500 - reserveMs)),
+          beginStage(maximumMs, reserveMs = 0) {
+            const allocatedMs = Math.min(
+              maximumMs,
+              Math.max(0, 1_500 - reserveMs),
+            );
+            return {
+              deadlineAt: allocatedMs,
+              remainingMs: () => allocatedMs,
+              timeoutMs: (perCallMaximumMs) =>
+                Math.min(perCallMaximumMs, allocatedMs),
+            };
+          },
+          throwIfAborted() {},
+          cancel() {},
+          dispose() {},
+        },
+        relevanceClassifier: {
+          async classify() {
+            classifierCalls += 1;
+            return [];
+          },
+        },
+      },
+    );
+
+    assert.equal(classifierCalls, 0);
+    assert.equal(detailCalls, 0);
+    assert.equal(result.provider.coverage.detailsRequested, 0);
+    assert.deepEqual(result.provider.coverage.degradedStages, [
+      {
+        stage: "relevance_classification",
+        reason: "INSUFFICIENT_REMAINING_BUDGET",
+      },
+      {
+        stage: "details",
+        reason: "INSUFFICIENT_REMAINING_BUDGET",
+      },
+    ]);
+    assert.equal(result.leads[0].website.sourceStatus, "not_checked");
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousClassifierFlag === undefined) {
+      delete process.env.KIMI_LEAD_CLASSIFICATION_ENABLED;
+    } else {
+      process.env.KIMI_LEAD_CLASSIFICATION_ENABLED = previousClassifierFlag;
+    }
+  }
+});
+
+test("Geoapify pacing, Places arms and Details waves share their stage budgets", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousDetailsLimit = process.env.GEOAPIFY_DETAILS_LIMIT;
+  const previousClassifierFlag = process.env.KIMI_LEAD_CLASSIFICATION_ENABLED;
+  let placesCalls = 0;
+  let detailCalls = 0;
+  const progress = [];
+  process.env.GEOAPIFY_DETAILS_LIMIT = "10";
+  delete process.env.KIMI_LEAD_CLASSIFICATION_ENABLED;
+
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname === "/v2/places") {
+      placesCalls += 1;
+      return Response.json({
+        type: "FeatureCollection",
+        features: [1, 2, 3].map((index) => ({
+          type: "Feature",
+          properties: {
+            place_id: `gym-stage-budget-${index}`,
+            name: `Спортивный зал ${index}`,
+            country_code: "ru",
+            city: "Москва",
+            formatted: `Москва, адрес ${index}`,
+            categories: ["sport.fitness.gym"],
+          },
+          geometry: {
+            type: "Point",
+            coordinates: [37.61 + index / 100, 55.75 + index / 100],
+          },
+        })),
+      });
+    }
+    if (url.pathname === "/v2/place-details") {
+      detailCalls += 1;
+      return Response.json({
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          properties: { feature_type: "details" },
+        }],
+      });
+    }
+    throw new Error(`Unexpected URL: ${url.pathname}`);
+  };
+
+  const singleCallStageBudget = (maximumMs) => {
+    let timeoutReads = 0;
+    const timeouts = maximumMs === 15_000
+      ? [1_000, 1_000, 0]
+      : [1_000, 25, 0];
+    return {
+      deadlineAt: Date.now() + maximumMs,
+      remainingMs: () => timeouts[Math.min(timeoutReads, timeouts.length - 1)],
+      timeoutMs(perCallMaximumMs) {
+        const timeout = timeouts[Math.min(timeoutReads, timeouts.length - 1)];
+        timeoutReads += 1;
+        return Math.min(timeout, perCallMaximumMs);
+      },
+    };
+  };
+
+  try {
+    const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+    assert.ok(capabilityPlan.batches.length > 1, "fixture needs multiple retrieval arms");
+    const result = await new GeoapifyProvider("test-only-key").search(
+      {
+        description: "спортзал",
+        primaryQuery: "спортивный зал",
+        relatedQueries: [],
+        excludeQueries: [],
+        location: "Москва",
+        center: [37.6176, 55.7558],
+        radiusKm: 5,
+        services: [],
+        locale: "ru-RU",
+        countryCodes: ["RU"],
+      },
+      {
+        semanticIntent,
+        compiledPlan: {
+          ...capabilityPlan,
+          providerCatalogVersion: GEOAPIFY_CAPABILITY_REGISTRY.version,
+          registryChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+        runtime: {
+          signal: new AbortController().signal,
+          deadlineAt: 60_000,
+          remainingMs: () => 60_000,
+          stageTimeoutMs: (maximumMs) => maximumMs,
+          beginStage: singleCallStageBudget,
+          throwIfAborted() {},
+          cancel() {},
+          dispose() {},
+        },
+        onProgress: (event) => progress.push(event),
+      },
+    );
+
+    assert.equal(
+      placesCalls,
+      1,
+      "the second arm must time out during pacing, inside the shared Places budget",
+    );
+    assert.equal(detailCalls, 1, "later detail workers must share the same 15s stage budget");
+    assert.equal(result.provider.coverage.detailsRequested, 1);
+    assert.ok(result.provider.coverage.degradedStages?.some(
+      (stage) => stage.stage === "places" && stage.reason === "STAGE_BUDGET_EXHAUSTED",
+    ));
+    assert.ok(result.provider.coverage.degradedStages?.some(
+      (stage) => stage.stage === "details" && stage.reason === "STAGE_BUDGET_EXHAUSTED",
+    ));
+    const placesCompleted = progress.findLast(
+      (event) => event.stage === "places" && event.status === "completed",
+    );
+    assert.equal(placesCompleted?.completed, 1);
+    assert.ok(placesCompleted?.total > placesCompleted?.completed);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
+    else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
+    if (previousClassifierFlag === undefined) {
+      delete process.env.KIMI_LEAD_CLASSIFICATION_ENABLED;
+    } else {
+      process.env.KIMI_LEAD_CLASSIFICATION_ENABLED = previousClassifierFlag;
+    }
+  }
+});
+
 test("optional classifier failure keeps cards as not_checked without enrichment", { concurrency: false }, async () => {
   const previousFetch = globalThis.fetch;
   const previousDetailsLimit = process.env.GEOAPIFY_DETAILS_LIMIT;

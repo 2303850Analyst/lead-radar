@@ -1,4 +1,5 @@
 import type { SearchProgressCallback } from "./providers/types";
+import type { SearchRuntimeContext } from "./search-runtime";
 import type { SearchPlan } from "./search-planner/types";
 import type {
   SearchPayload,
@@ -11,6 +12,7 @@ export type SearchExecutionProvider = "demo" | "geoapify" | "yandex";
 export type SearchExecutionOptions = {
   onProgress?: SearchProgressCallback;
   signal?: AbortSignal;
+  runtime?: SearchRuntimeContext;
 };
 
 export type PreparedProviderSearch = {
@@ -117,7 +119,9 @@ export function createSearchOrchestrator(
       initialPayload: SearchPayload,
       options: SearchExecutionOptions = {},
     ): Promise<SearchResponse> {
-      const { onProgress, signal } = options;
+      const { onProgress, runtime } = options;
+      const signal = runtime?.signal ?? options.signal;
+      runtime?.throwIfAborted();
 
       await emitProgress(onProgress, {
         stage: "intent_resolution",
@@ -138,6 +142,8 @@ export function createSearchOrchestrator(
         ? await dependencies.confirmPlan(initialPayload)
         : await dependencies.createPlan(initialPayload, signal);
 
+      runtime?.throwIfAborted();
+
       await emitProgress(onProgress, {
         stage: "intent_resolution",
         status: "completed",
@@ -157,6 +163,7 @@ export function createSearchOrchestrator(
       // geography lookup. Ambiguous or tampered requests must not consume map
       // quota before the user selects a signed interpretation.
       const payload = await dependencies.verifyGeography(initialPayload, signal);
+      runtime?.throwIfAborted();
 
       const providerId = dependencies.selectProvider();
       const provider = dependencies.providers[providerId];
@@ -167,6 +174,7 @@ export function createSearchOrchestrator(
       });
 
       const prepared = await provider.prepare(plan);
+      runtime?.throwIfAborted();
 
       await emitProgress(onProgress, {
         stage: "provider_compilation",
@@ -177,7 +185,9 @@ export function createSearchOrchestrator(
       const response = await prepared.execute(payload, {
         onProgress,
         signal,
+        runtime,
       });
+      runtime?.throwIfAborted();
       return { ...response, plan };
     },
   });

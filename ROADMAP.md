@@ -190,8 +190,9 @@ scoring, экспорт и показ на сторонней карте не в
   service;
 - in-process cache ограничен 200 планами и TTL 10 минут вместо целевой
   production-политики;
-- progress показывает реальные этапы, но heartbeat `≤ 2 с` и единый
-  server-side terminal deadline ещё не доказаны.
+- единый 60-секундный server-side deadline, сквозной AbortSignal, terminal
+  guard и heartbeat `≤ 2 с` реализованы; controlled-clock suite подтверждает
+  100/100 long-running simulations, но live p95 ещё требует калибровки.
 
 Не выполнено и блокирует production `v0.4.0`:
 
@@ -199,8 +200,8 @@ scoring, экспорт и показ на сторонней карте не в
   разметчика;
 - 600 размеченных relevance fixtures и измеренный classifier quality gate;
   optional post-search Kimi остаётся за отдельным data-flow gate;
-- scheduler/admission queue, circuit breaker, global Abort/deadline, auth и
-  server-side quota limiter;
+- auth, shared/multi-instance admission и server-side quota limiter; текущие
+  scheduler/circuit breaker/metrics являются только in-process Tier-0;
 - browser E2E, mock load 1000/concurrency 10, 100 live intents на модель,
   stability 30×3 и 30 реальных поисковых задач;
 - официальный MFJS `walle` gate и versioned production evaluation с решением
@@ -219,8 +220,8 @@ Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
 
 ## Следующие шаги до production v0.4.0
 
-1. Довести server orchestration: scheduler, единый deadline/AbortSignal,
-   circuit breaker, auth и quota limiter.
+1. Добавить auth, shared quota/admission limiter и multi-instance telemetry;
+   in-process Tier-0 scheduler, circuit breaker и deadline уже готовы.
 2. Завершить двухфазную provider boundary и измерить качество relevance до
    enrichment на размеченной выборке.
 3. Расширить frozen datasets до 500/600 и добавить hidden/manual annotation.
@@ -301,9 +302,9 @@ Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
 | Дубли и филиалы | Высокий | Объяснимая дедупликация и ручное объединение |
 | Утечка API-ключа | Высокий | Только server-side env, sanitization и secret scan |
 | Kimi неверно понял категорию | Высокий | Strict IntentIR, server registry compiler, confirmation, golden/hidden eval и безопасный fallback |
-| Kimi/provider не уложился во время | Высокий | Kimi timeout 30 с уже есть; единый 60/45-секундный deadline и partial result ещё реализовать |
+| Kimi/provider не уложился во время | Средний | Local deadline 60 с и optional-stage degradation реализованы; production profile 45 с и provider partial-result после hard timeout ещё требуют калибровки |
 | Передача карточек в Kimi нарушает условия источника или privacy policy | Высокий | Post-search AI выключен до country-specific data-flow review; planner не получает лиды |
-| Tier-0 Kimi не выдерживает несколько одновременных пользователей | Высокий | Alpha только для одного владельца; scheduler concurrency 1/queue 1 ещё реализовать, внешняя beta только после Tier-1 |
+| Tier-0 Kimi не выдерживает несколько одновременных пользователей | Высокий | In-process scheduler concurrency 1/queue 1 реализован; внешняя beta только после Tier-1, auth и shared admission limiter |
 | Стоимость AI растёт незаметно | Средний | Usage metadata, cost gate и не более одного planner call |
 | Низкая конверсия | Высокий | Ранний ручной sales-эксперимент |
 | Нежелательные обращения | Высокий | Юридическая проверка и opt-out процесс |

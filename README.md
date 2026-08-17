@@ -369,6 +369,15 @@ alternative hash и версии semantic/compiler contracts. Сервер за�
 использует этот режим для живого индикатора, а JSON-вариант `/api/search`
 остаётся доступным для существующих интеграций.
 
+В local Tier-0 profile весь запрос, включая ожидание Kimi admission, ограничен
+60 секундами. Progress heartbeat отправляется не реже одного раза в 2 секунды,
+пока стадия выполняется. На исчерпании общего бюджета JSON возвращает HTTP 504
+с `SEARCH_DEADLINE_EXCEEDED`, а NDJSON — ровно одну terminal error-строку.
+Client disconnect отменяет общий `AbortSignal`, Kimi SSE, запросы провайдера,
+ожидания и enrichment. Если времени не хватает только на optional classifier
+или Details, базовые карточки сохраняются, а
+`provider.coverage.degradedStages` явно указывает пропущенную стадию.
+
 Для уже запущенного локального сервера есть обезличенный end-to-end smoke:
 
 ```powershell
@@ -460,9 +469,10 @@ scoring, CSV или отображения поверх сторонней ка�
   выключенным, поэтому реальные карточки модели по умолчанию не передаются.
 - RU поддерживается, BY/KZ являются пилотными; остальные страны CIS пока
   возвращают контролируемый unsupported.
-- Нет production scheduler, admission limiter, circuit breaker, единого
-  server-side deadline, auth или multi-tenancy. Live API предназначен только
-  для владельца на `127.0.0.1`.
+- In-process Tier-0 scheduler, admission queue, circuit breaker и единый
+  server-side deadline работают только в одном экземпляре Node.js. Нет auth,
+  shared/distributed limiter, multi-tenancy или межпроцессной координации;
+  live API предназначен только для владельца на `127.0.0.1`.
 - Несколько live canary-вызовов не подтверждают p95: внешний SLA отсутствует.
 - Provider boundary мигрирован частично: retrieval arms уже компилируются из
   открытого intent, а exclusions и дедупликация выполняются до Details, но

@@ -45,6 +45,13 @@ export type SearchProviderMetadata = {
     cardsAccepted?: number;
     detailsRequested: number;
     detailsSucceeded: number;
+    degradedStages?: Array<{
+      stage: "places" | "details" | "relevance_classification";
+      reason:
+        | "STAGE_BUDGET_EXHAUSTED"
+        | "INSUFFICIENT_REMAINING_BUDGET"
+        | "OPTIONAL_STAGE_UNAVAILABLE";
+    }>;
     relevance?: {
       classifier: "disabled" | "completed" | "degraded";
       matched: number;

@@ -22,6 +22,7 @@ import {
   createSearchPlanFromEnv,
   isSearchPlannerInfrastructureFailure,
   plannerModeFromEnv,
+  searchPlannerRuntimeMetrics,
 } from "@/lib/search-planner/planner";
 import { validateKimiSemanticIntent } from "@/lib/search-planner/schema";
 import { notCheckedRelevance } from "@/lib/search-planner/relevance";
@@ -52,6 +53,12 @@ import {
   SearchPlanOutcomeError,
   createSearchOrchestrator,
 } from "@/lib/search-orchestrator";
+import {
+  SearchRuntimeError,
+  createProgressHeartbeat,
+  createSearchRuntime,
+  searchDeadlineMsFromEnv,
+} from "@/lib/search-runtime";
 import packageMetadata from "@/package.json";
 
 const YANDEX_ENDPOINT = "https://search-maps.yandex.ru/v1/";
@@ -487,10 +494,15 @@ function validCoordinates(value: unknown): value is [number, number] {
 async function requestYandex(
   params: Record<string, string>,
   apiKey: string,
+  signal?: AbortSignal,
+  timeoutMs = FETCH_TIMEOUT_MS,
 ): Promise<YandexCollection> {
   const query = new URLSearchParams({ ...params, apikey: apiKey });
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const abortFromParent = () => controller.abort();
+  if (signal?.aborted) abortFromParent();
+  else signal?.addEventListener("abort", abortFromParent, { once: true });
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${YANDEX_ENDPOINT}?${query.toString()}`, {
@@ -541,9 +553,12 @@ async function requestYandex(
     }
   } catch (error) {
     if (error instanceof YandexProviderError) throw error;
+    if (signal?.aborted) {
+      throw new YandexProviderError("Поиск отменён", "SEARCH_ABORTED");
+    }
     if (controller.signal.aborted) {
       throw new YandexProviderError(
-        "Яндекс.Карты не ответили за 15 секунд",
+        `Яндекс.Карты не ответили за ${Math.ceil(timeoutMs / 1_000)} секунд`,
         "YANDEX_TIMEOUT",
       );
     }
@@ -555,16 +570,21 @@ async function requestYandex(
     );
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromParent);
   }
 }
 
 async function resolveSearchCenter(
   location: string,
   apiKey: string,
+  signal?: AbortSignal,
+  timeoutMs = FETCH_TIMEOUT_MS,
 ): Promise<[number, number]> {
   const data = await requestYandex(
     { text: location, type: "geo", lang: "ru_RU", results: "1" },
     apiKey,
+    signal,
+    timeoutMs,
   );
   const coordinates = data.features?.[0]?.geometry?.coordinates;
   if (!validCoordinates(coordinates)) {
@@ -624,7 +644,20 @@ async function yandexSearch(
   payload: SearchPayload,
   apiKey: string,
   onProgress?: SearchProgressCallback,
+  signal?: AbortSignal,
+  runtime?: import("@/lib/search-runtime").SearchRuntimeContext,
 ): Promise<SearchResponse> {
+  const requiredStageTimeout = (maximumMs: number) => {
+    const timeoutMs = runtime?.stageTimeoutMs(maximumMs, 1_000) ?? maximumMs;
+    if (timeoutMs < 1) {
+      runtime?.throwIfAborted();
+      throw new SearchRuntimeError(
+        "SEARCH_DEADLINE_EXCEEDED",
+        "Общий лимит времени поиска исчерпан",
+      );
+    }
+    return timeoutMs;
+  };
   const terms = [
     ...new Set([payload.primaryQuery, ...payload.relatedQueries].map((term) => term.trim())),
   ]
@@ -637,9 +670,17 @@ async function yandexSearch(
       ? "Используем точку, выбранную на карте"
       : "Определяем координаты указанной географии",
   });
+  const geocodingBudget = runtime?.beginStage(5_000, 1_000);
   const center: [number, number] = payload.center
     ? [payload.center[0], payload.center[1]]
-    : await resolveSearchCenter(payload.location, apiKey);
+    : await resolveSearchCenter(
+        payload.location,
+        apiKey,
+        signal,
+        geocodingBudget
+          ? requiredStageTimeout(geocodingBudget.timeoutMs(5_000))
+          : 5_000,
+      );
   await emitProgress(onProgress, {
     stage: "geocoding",
     status: "completed",
@@ -651,6 +692,7 @@ async function yandexSearch(
     { feature: YandexFeature; matchedQueries: string[]; primaryFound: boolean }
   >();
   let cardsFound = 0;
+  const placesBudget = runtime?.beginStage(7_000, 1_000);
 
   await emitProgress(onProgress, {
     stage: "places",
@@ -660,6 +702,7 @@ async function yandexSearch(
     total: terms.length,
   });
   for (const [termIndex, term] of terms.entries()) {
+    const placesTimeoutMs = placesBudget?.timeoutMs(7_000) ?? 7_000;
     const data = await requestYandex({
       text: term,
       type: "biz",
@@ -668,7 +711,7 @@ async function yandexSearch(
       ll: `${center[0]},${center[1]}`,
       spn: `${span[0]},${span[1]}`,
       rspn: "1",
-    }, apiKey);
+    }, apiKey, signal, requiredStageTimeout(placesTimeoutMs));
     for (const feature of data.features ?? []) {
       const company = feature.properties?.CompanyMetaData;
       const coordinates = feature.geometry?.coordinates;
@@ -908,6 +951,11 @@ export async function GET() {
             process.env.KIMI_LEAD_CLASSIFICATION_ENABLED === "true",
           liveLeadCardsSentToKimi: false,
         },
+        runtime: {
+          deadlineMs: searchDeadlineMsFromEnv(),
+          heartbeatMs: 1_500,
+          ...searchPlannerRuntimeMetrics(),
+        },
       },
       geoapifyPlaces: {
         configured: geoapifyConfigured,
@@ -962,6 +1010,7 @@ type PublicSearchError = {
   error: string;
   code: string;
   status: number;
+  retryable: boolean;
   plan?: SearchPlan;
 };
 
@@ -1180,12 +1229,13 @@ const searchOrchestrator = createSearchOrchestrator({
         };
         return {
           completedMessage: `Подготовлено категорий: ${compiledPlan.categoryIds.length}`,
-          async execute(payload, { onProgress, signal }) {
+          async execute(payload, { onProgress, signal, runtime }) {
             const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
             return apiKey
                 ? new GeoapifyProvider(apiKey).search(payload, {
                   onProgress,
                   signal,
+                  runtime,
                   compiledPlan,
                   semanticIntent: plan.semanticIntent,
                 })
@@ -1199,13 +1249,13 @@ const searchOrchestrator = createSearchOrchestrator({
       async prepare() {
         return {
           completedMessage: "Источник yandex выбран без Geoapify compilation",
-          async execute(payload, { onProgress }) {
+          async execute(payload, { onProgress, signal, runtime }) {
             const liveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
             const apiKey = liveUiEnabled
               ? process.env.YANDEX_MAPS_API_KEY?.trim()
               : undefined;
             return apiKey
-              ? yandexSearch(payload, apiKey, onProgress)
+              ? yandexSearch(payload, apiKey, onProgress, signal, runtime)
               : demoSearch(payload, onProgress);
           },
         };
@@ -1215,11 +1265,20 @@ const searchOrchestrator = createSearchOrchestrator({
 });
 
 function publicSearchError(error: unknown): PublicSearchError {
+  if (error instanceof SearchRuntimeError) {
+    return {
+      error: error.message,
+      code: error.code,
+      status: error.code === "SEARCH_DEADLINE_EXCEEDED" ? 504 : 408,
+      retryable: error.retryable,
+    };
+  }
   if (error instanceof SearchPlanOutcomeError) {
     return {
       error: error.message,
       code: error.code,
       status: error.status,
+      retryable: error.code === "SEARCH_PLANNER_UNAVAILABLE",
       ...(error.plan ? { plan: error.plan } : {}),
     };
   }
@@ -1228,22 +1287,43 @@ function publicSearchError(error: unknown): PublicSearchError {
       error: error.message,
       code: error.code,
       status:
-        error.code === "METRO_STATION_MISMATCH"
+        error.code === "SEARCH_DEADLINE_EXCEEDED"
+          ? 504
+          : error.code === "METRO_STATION_MISMATCH"
           ? 400
           : error.code === "GEOAPIFY_UNSUPPORTED_CATEGORY"
             ? 422
             : error.code === "GEOAPIFY_NOT_CONFIGURED"
               ? 503
               : 502,
+      retryable: [
+        "GEOAPIFY_NOT_CONFIGURED",
+        "GEOAPIFY_RATE_LIMIT",
+        "GEOAPIFY_TIMEOUT",
+        "GEOAPIFY_NETWORK_ERROR",
+        "GEOAPIFY_UPSTREAM_ERROR",
+        "SEARCH_DEADLINE_EXCEEDED",
+      ].includes(error.code),
     };
   }
   if (error instanceof YandexProviderError) {
-    return { error: error.message, code: error.code, status: 502 };
+    return {
+      error: error.message,
+      code: error.code,
+      status: 502,
+      retryable: [
+        "YANDEX_RATE_LIMIT",
+        "YANDEX_TIMEOUT",
+        "YANDEX_NETWORK_ERROR",
+        "YANDEX_UPSTREAM_ERROR",
+      ].includes(error.code),
+    };
   }
   return {
     error: "Неизвестная ошибка источника данных",
     code: "SEARCH_UNKNOWN_ERROR",
     status: 502,
+    retryable: false,
   };
 }
 
@@ -1266,31 +1346,39 @@ function streamSearch(
   requestSignal?: AbortSignal,
 ): Response {
   const encoder = new TextEncoder();
-  const searchController = new AbortController();
+  const runtime = createSearchRuntime({
+    deadlineMs: searchDeadlineMsFromEnv(),
+    parentSignal: requestSignal,
+  });
   let closed = false;
-  const abortFromRequest = () => searchController.abort();
-  if (requestSignal?.aborted) abortFromRequest();
-  else requestSignal?.addEventListener("abort", abortFromRequest, { once: true });
-  const detachRequestAbort = () =>
-    requestSignal?.removeEventListener("abort", abortFromRequest);
+  let terminalSent = false;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      const send = (event: unknown) => {
-        if (closed) return;
+      const sendProgress = (event: SearchProgressEvent) => {
+        if (closed || terminalSent) return;
         controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       };
+      const sendTerminal = (event: unknown) => {
+        if (closed || terminalSent) return;
+        terminalSent = true;
+        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      };
+      const heartbeat = createProgressHeartbeat({
+        signal: runtime.signal,
+        onProgress: sendProgress,
+      });
 
       void (async () => {
         try {
-          if (searchController.signal.aborted) return;
-          send({
+          runtime.throwIfAborted();
+          await heartbeat.report({
             type: "progress",
             stage: "validation",
             status: "started",
             message: "Проверяем параметры поиска",
             timestamp: new Date().toISOString(),
           } satisfies SearchProgressEvent);
-          send({
+          await heartbeat.report({
             type: "progress",
             stage: "validation",
             status: "completed",
@@ -1298,22 +1386,26 @@ function streamSearch(
             timestamp: new Date().toISOString(),
           } satisfies SearchProgressEvent);
           const result = await searchOrchestrator.search(payload, {
-            onProgress: (event) => send(event),
-            signal: searchController.signal,
+            onProgress: (event) => heartbeat.report(event),
+            runtime,
           });
-          send({ type: "result", data: result });
+          runtime.throwIfAborted();
+          sendTerminal({ type: "result", data: result });
         } catch (error) {
-          if (!searchController.signal.aborted) {
-            const failure = publicSearchError(error);
-            send({
-              type: "error",
-              error: failure.error,
-              code: failure.code,
-              ...(failure.plan ? { plan: failure.plan } : {}),
-            });
-          }
+          const runtimeReason = runtime.signal.reason;
+          const failure = publicSearchError(
+            runtimeReason instanceof SearchRuntimeError ? runtimeReason : error,
+          );
+          sendTerminal({
+            type: "error",
+            error: failure.error,
+            code: failure.code,
+            retryable: failure.retryable,
+            ...(failure.plan ? { plan: failure.plan } : {}),
+          });
         } finally {
-          detachRequestAbort();
+          heartbeat.stop();
+          runtime.dispose();
           if (!closed) {
             closed = true;
             controller.close();
@@ -1323,8 +1415,8 @@ function streamSearch(
     },
     cancel() {
       closed = true;
-      searchController.abort();
-      detachRequestAbort();
+      runtime.cancel();
+      runtime.dispose();
     },
   });
 
@@ -1369,17 +1461,29 @@ export async function POST(request: Request) {
   const payload = parsed.payload;
   if (streamRequested) return streamSearch(payload, request.signal);
 
+  const runtime = createSearchRuntime({
+    deadlineMs: searchDeadlineMsFromEnv(),
+    parentSignal: request.signal,
+  });
   try {
-    return Response.json(await searchOrchestrator.search(payload));
+    const result = await searchOrchestrator.search(payload, { runtime });
+    runtime.throwIfAborted();
+    return Response.json(result);
   } catch (error) {
-    const failure = publicSearchError(error);
+    const runtimeReason = runtime.signal.reason;
+    const failure = publicSearchError(
+      runtimeReason instanceof SearchRuntimeError ? runtimeReason : error,
+    );
     return Response.json(
       {
         error: failure.error,
         code: failure.code,
+        retryable: failure.retryable,
         ...(failure.plan ? { plan: failure.plan } : {}),
       },
       { status: failure.status },
     );
+  } finally {
+    runtime.dispose();
   }
 }

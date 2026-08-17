@@ -3,6 +3,14 @@ import test from "node:test";
 
 import { createSearchOrchestrator } from "../lib/search-orchestrator.ts";
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 const BASE_PAYLOAD = {
   description: "Фулфилмент",
   primaryQuery: "Фулфилмент",
@@ -192,4 +200,132 @@ test("search orchestrator validates a confirmation before provider-backed geogra
   );
   assert.equal(createPlanCalls, 0);
   assert.equal(geographyCalls, 0);
+});
+
+test("search orchestrator threads one runtime budget and AbortSignal through every external stage", async () => {
+  const controller = new AbortController();
+  const runtime = {
+    signal: controller.signal,
+    deadlineAt: 60_000,
+    remainingMs: () => 42_000,
+    stageTimeoutMs: (maximumMs) => Math.min(maximumMs, 42_000),
+    throwIfAborted() {},
+    cancel() {},
+    dispose() {},
+  };
+  const plan = {
+    status: "ready",
+    resolution: { selectedConceptIds: ["logistics.fulfillment"] },
+    executionPreview: { provider: "demo", batches: 1 },
+  };
+  const response = {
+    mode: "demo",
+    provider: {
+      id: "demo",
+      label: "Demo",
+      queriedAt: "2026-08-17T00:00:00.000Z",
+      policy: {
+        persistence: "synthetic",
+        attributionRequired: false,
+        attribution: [],
+        rawResponsesStored: false,
+      },
+    },
+    query: BASE_PAYLOAD,
+    summary: {
+      cardsFound: 0,
+      uniqueLocations: 0,
+      assumedBusinesses: 0,
+      foundByPrimary: 0,
+      foundOnlyExpanded: 0,
+      digitalGapCandidates: 0,
+      manualReviewCandidates: 0,
+    },
+    leads: [],
+    notice: "Demo",
+    generatedAt: "2026-08-17T00:00:00.000Z",
+  };
+  const seen = [];
+  const adapter = {
+    preparationMessage: "prepare",
+    async prepare() {
+      return {
+        completedMessage: "prepared",
+        async execute(_payload, options) {
+          seen.push(["execute", options.signal, options.runtime]);
+          return response;
+        },
+      };
+    },
+  };
+  const orchestrator = createSearchOrchestrator({
+    async verifyGeography(payload, signal) {
+      seen.push(["geography", signal]);
+      return payload;
+    },
+    async createPlan(_payload, signal) {
+      seen.push(["plan", signal]);
+      return plan;
+    },
+    confirmPlan: async () => plan,
+    isPlannerInfrastructureFailure: () => false,
+    selectProvider: () => "demo",
+    providers: { demo: adapter, geoapify: adapter, yandex: adapter },
+  });
+
+  await orchestrator.search(BASE_PAYLOAD, { runtime });
+  assert.deepEqual(seen, [
+    ["plan", controller.signal],
+    ["geography", controller.signal],
+    ["execute", controller.signal, runtime],
+  ]);
+});
+
+test("client cancellation reaches a running provider through the shared AbortSignal", async () => {
+  const controller = new AbortController();
+  const plan = {
+    status: "ready",
+    resolution: { selectedConceptIds: ["logistics.fulfillment"] },
+    executionPreview: { provider: "demo", batches: 1 },
+  };
+  let providerObservedAbort = false;
+  const providerStarted = deferred();
+  const adapter = {
+    preparationMessage: "prepare",
+    async prepare() {
+      return {
+        completedMessage: "prepared",
+        execute: async (_payload, { signal }) => {
+          providerStarted.resolve();
+          return await new Promise((_resolve, reject) => {
+            if (signal.aborted) {
+              providerObservedAbort = true;
+              reject(signal.reason ?? new Error("aborted"));
+              return;
+            }
+            signal.addEventListener("abort", () => {
+              providerObservedAbort = true;
+              reject(signal.reason ?? new Error("aborted"));
+            }, { once: true });
+          });
+        },
+      };
+    },
+  };
+  const orchestrator = createSearchOrchestrator({
+    verifyGeography: async (payload) => payload,
+    createPlan: async () => plan,
+    confirmPlan: async () => plan,
+    isPlannerInfrastructureFailure: () => false,
+    selectProvider: () => "demo",
+    providers: { demo: adapter, geoapify: adapter, yandex: adapter },
+  });
+  const pending = orchestrator.search(BASE_PAYLOAD, {
+    signal: controller.signal,
+  });
+  await providerStarted.promise;
+  controller.abort(new Error("client disconnected"));
+
+  await assert.rejects(pending, /client disconnected/);
+  assert.equal(providerObservedAbort, true);
 });

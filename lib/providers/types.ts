@@ -9,6 +9,7 @@ import type {
   RelevanceClassifier,
 } from "../search-planner/relevance";
 import type { SemanticIntentV2 } from "../search-planner/types";
+import type { SearchRuntimeContext } from "../search-runtime";
 
 export type CompiledGeoapifyPlan = {
   provider: "geoapify";
@@ -64,6 +65,8 @@ export type SearchProgressCallback = (
 export type SearchProviderOptions = {
   onProgress?: SearchProgressCallback;
   signal?: AbortSignal;
+  /** One request-wide deadline; every provider stage may use only its remainder. */
+  runtime?: SearchRuntimeContext;
   /** Server-compiled selectors. They must never be accepted directly from a client. */
   compiledPlan?: CompiledGeoapifyPlan;
   /** Accepted intent used only by the local relevance layer, never as a URL. */

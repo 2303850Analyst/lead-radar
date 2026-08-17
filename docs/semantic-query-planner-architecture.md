@@ -29,7 +29,7 @@
 | RU + pilot BY/KZ contract | Реализовано, coverage ещё недостаточен для production |
 | Двухфазный search service и полное отделение provider | Частично: adapter сохраняет legacy payload flow |
 | Runtime relevance classifier | Deterministic путь реализован до Details; optional Kimi выключен |
-| Scheduler, admission queue, circuit breaker, global deadline | Не реализовано |
+| Scheduler, admission queue, circuit breaker, global deadline | Реализовано in-process для local Tier-0; distributed coordination отсутствует |
 | Production telemetry, auth, quota limiter | Не реализовано |
 
 ## 1. Решение
@@ -555,7 +555,7 @@ retry для network/429/5xx, если в stage и global budget остаётс�
 `needs_confirmation`, а не продолжает spinner. Один интерактивный поиск делает
 не более одного Kimi-call; post-search AI выключен. Пределы задаются server-side
 конфигурацией по фактическому tier и никогда не повышаются автоматически.
-Circuit breaker открывается на 60 с после пяти transient failures за 60 с и
+Circuit breaker открывается на 60 с после трёх transient failures за 60 с и
 допускает один half-open probe.
 
 Переполнение внутренней Kimi-очереди не возвращает HTTP 429: job уже принят и

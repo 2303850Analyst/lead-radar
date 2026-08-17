@@ -36,6 +36,7 @@ const PLACES_ENDPOINT = "https://api.geoapify.com/v2/places";
 const PLACE_DETAILS_ENDPOINT = "https://api.geoapify.com/v2/place-details";
 const FETCH_TIMEOUT_MS = 15_000;
 const DETAILS_FETCH_TIMEOUT_MS = 8_000;
+const DETAILS_STAGE_BUDGET_MS = 15_000;
 const MIN_REQUEST_INTERVAL_MS = 225;
 const MAX_GEOAPIFY_RESPONSE_BYTES = 8 * 1024 * 1024;
 
@@ -49,6 +50,8 @@ const MAX_RETRIEVAL_CARDS = 200;
 const MAX_CANDIDATE_CATEGORY_IDS = 32;
 const MAX_RELEVANCE_CLASSIFIER_CANDIDATES = 20;
 const DEFAULT_RELEVANCE_CLASSIFIER_TIMEOUT_MS = 8_000;
+const NORMALIZATION_RESERVE_MS = 1_000;
+const MIN_OPTIONAL_STAGE_BUDGET_MS = 1_000;
 const ORGANIZATION_IDENTITY_MAX_DISTANCE_METERS = 100;
 const DETAILS_CONCURRENCY = 3;
 const METRO_STATION_CATEGORY = "public_transport.subway";
@@ -428,19 +431,21 @@ async function requestGeoapify(
   signal?: AbortSignal,
 ): Promise<GeoapifyCollection> {
   throwIfSearchAborted(signal);
-  const now = Date.now();
-  const requestAt = Math.max(now, nextGeoapifyRequestAt);
-  nextGeoapifyRequestAt = requestAt + MIN_REQUEST_INTERVAL_MS;
-  await abortableDelay(requestAt - now, signal);
   const query = new URLSearchParams(params);
   query.set("apiKey", apiKey);
   const controller = new AbortController();
   const abortRequest = () => controller.abort();
   if (signal?.aborted) abortRequest();
   else signal?.addEventListener("abort", abortRequest, { once: true });
+  // Start the deadline before rate pacing so the wait and the upstream fetch
+  // consume one shared per-call/stage budget.
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const now = Date.now();
+  const requestAt = Math.max(now, nextGeoapifyRequestAt);
+  nextGeoapifyRequestAt = requestAt + MIN_REQUEST_INTERVAL_MS;
 
   try {
+    await abortableDelay(requestAt - now, controller.signal);
     const response = await fetch(`${endpoint}?${query.toString()}`, {
       headers: { Accept: "application/json" },
       signal: controller.signal,
@@ -508,7 +513,6 @@ async function requestGeoapify(
       );
     }
   } catch (error) {
-    if (error instanceof SearchProviderError) throw error;
     if (signal?.aborted) throw abortedSearchError();
     if (controller.signal.aborted) {
       throw new SearchProviderError(
@@ -516,6 +520,7 @@ async function requestGeoapify(
         "GEOAPIFY_TIMEOUT",
       );
     }
+    if (error instanceof SearchProviderError) throw error;
     // Native fetch errors may include the full request URL and API key. Never
     // forward their messages to callers or logs.
     throw new SearchProviderError(
@@ -534,6 +539,7 @@ export async function geocodeGeoapifyLocation(
   signal?: AbortSignal,
   countryCode = "RU",
   language: "ru" | "be" | "kk" = "ru",
+  timeoutMs = FETCH_TIMEOUT_MS,
 ): Promise<[number, number]> {
   const normalizedLocation = location.trim();
   if (!normalizedLocation) {
@@ -559,7 +565,7 @@ export async function geocodeGeoapifyLocation(
       limit: "1",
     },
     normalizedApiKey,
-    FETCH_TIMEOUT_MS,
+    timeoutMs,
     signal,
   );
   const feature = data.features?.[0];
@@ -1337,6 +1343,7 @@ async function runRelevanceClassifier(
   classifier: NonNullable<SearchProviderOptions["relevanceClassifier"]>,
   input: RelevanceClassifierInput,
   parentSignal?: AbortSignal,
+  timeoutMs = relevanceClassifierTimeoutMs(),
 ): Promise<unknown> {
   throwIfSearchAborted(parentSignal);
   const controller = new AbortController();
@@ -1344,7 +1351,7 @@ async function runRelevanceClassifier(
   parentSignal?.addEventListener("abort", onParentAbort, { once: true });
   const timeout = setTimeout(
     () => controller.abort(),
-    relevanceClassifierTimeoutMs(),
+    timeoutMs,
   );
   const aborted = new Promise<never>((_, reject) => {
     controller.signal.addEventListener(
@@ -1399,6 +1406,7 @@ async function enrichPlace(
   observation: PlaceObservation,
   apiKey: string,
   signal?: AbortSignal,
+  timeoutMs = DETAILS_FETCH_TIMEOUT_MS,
 ): Promise<DetailEnrichment> {
   throwIfSearchAborted(signal);
   if (!observation.placeId) {
@@ -1413,7 +1421,7 @@ async function enrichPlace(
         lang: "ru",
       },
       apiKey,
-      DETAILS_FETCH_TIMEOUT_MS,
+      timeoutMs,
       signal,
     );
     const detailFeature = collection.features?.find(
@@ -1684,6 +1692,28 @@ export class GeoapifyProvider implements SearchProvider {
     };
     const apiKey = this.apiKey.trim();
     const observedAt = new Date().toISOString();
+    const degradedStages: NonNullable<
+      NonNullable<SearchResponse["provider"]["coverage"]>["degradedStages"]
+    > = [];
+    const markDegraded = (
+      stage: (typeof degradedStages)[number]["stage"],
+      reason: (typeof degradedStages)[number]["reason"],
+    ) => {
+      if (!degradedStages.some((item) => item.stage === stage && item.reason === reason)) {
+        degradedStages.push({ stage, reason });
+      }
+    };
+    const requiredStageTimeout = (maximumMs: number, reserveMs = 0) => {
+      const timeoutMs = options.runtime?.stageTimeoutMs(maximumMs, reserveMs) ?? maximumMs;
+      if (timeoutMs < 1) {
+        options.runtime?.throwIfAborted();
+        throw new SearchProviderError(
+          "Общий лимит времени поиска исчерпан",
+          "SEARCH_DEADLINE_EXCEEDED",
+        );
+      }
+      return timeoutMs;
+    };
     const compiledPlan = options.compiledPlan;
     if (compiledPlan && !compiledPlanHasReadableShape(compiledPlan)) {
       throw new SearchProviderError(
@@ -1765,6 +1795,10 @@ export class GeoapifyProvider implements SearchProvider {
         message: "Используем точку, выбранную на карте",
       });
     } else {
+      const geocodingBudget = options.runtime?.beginStage(
+        5_000,
+        NORMALIZATION_RESERVE_MS,
+      );
       await reportProgress({
         stage: "geocoding",
         status: "started",
@@ -1776,6 +1810,9 @@ export class GeoapifyProvider implements SearchProvider {
         options.signal,
         countryCode,
         language,
+        geocodingBudget
+          ? requiredStageTimeout(geocodingBudget.timeoutMs(5_000))
+          : 5_000,
       );
       await reportProgress({
         stage: "geocoding",
@@ -1794,20 +1831,24 @@ export class GeoapifyProvider implements SearchProvider {
       ].map((term) => term.trim()).filter(Boolean)),
     ];
 
-    await reportProgress({
-      stage: "places",
-      status: "started",
-      message: "Ищем организации по категориям Geoapify",
-      completed: 0,
-      total: categoryPlan.batches.length,
-    });
-
     // Retrieval arms are sequential to remain friendly to the free-plan rate
     // and are capped again here even after server-side compilation.
     const retrievalArms = categoryPlan.batches
       .slice(0, Math.min(categoryPlan.limits.maxArms, MAX_RETRIEVAL_ARMS))
       .sort((left, right) => left.priority - right.priority);
-    for (const [batchIndex, categoryBatch] of retrievalArms.entries()) {
+    let completedRetrievalArms = 0;
+    await reportProgress({
+      stage: "places",
+      status: "started",
+      message: "Ищем организации по категориям Geoapify",
+      completed: 0,
+      total: retrievalArms.length,
+    });
+    const placesBudget = options.runtime?.beginStage(
+      7_000,
+      NORMALIZATION_RESERVE_MS,
+    );
+    for (const categoryBatch of retrievalArms) {
       if (
         upstreamRequests >=
           Math.min(categoryPlan.limits.maxUpstreamRequests, MAX_RETRIEVAL_REQUESTS) ||
@@ -1836,13 +1877,37 @@ export class GeoapifyProvider implements SearchProvider {
       if (categoryBatch.type === "fallback" && categoryBatch.nameQuery) {
         requestParameters.name = categoryBatch.nameQuery;
       }
-      const collection = await requestGeoapify(
-        PLACES_ENDPOINT,
-        requestParameters,
-        apiKey,
-        FETCH_TIMEOUT_MS,
-        options.signal,
-      );
+      const placesTimeoutMs = placesBudget
+        ? placesBudget.timeoutMs(7_000)
+        : 7_000;
+      if (placesTimeoutMs < 1) {
+        if (observations.size > 0) {
+          markDegraded("places", "STAGE_BUDGET_EXHAUSTED");
+          break;
+        }
+        requiredStageTimeout(placesTimeoutMs);
+      }
+      let collection: GeoapifyCollection;
+      try {
+        collection = await requestGeoapify(
+          PLACES_ENDPOINT,
+          requestParameters,
+          apiKey,
+          placesTimeoutMs,
+          options.signal,
+        );
+      } catch (error) {
+        if (
+          options.runtime &&
+          observations.size > 0 &&
+          error instanceof SearchProviderError &&
+          error.code === "GEOAPIFY_TIMEOUT"
+        ) {
+          markDegraded("places", "STAGE_BUDGET_EXHAUSTED");
+          break;
+        }
+        throw error;
+      }
       upstreamRequests += 1;
       const receivedFeatures = (collection.features ?? []).slice(0, requestLimit);
       cardsFound += receivedFeatures.length;
@@ -1921,11 +1986,12 @@ export class GeoapifyProvider implements SearchProvider {
           }
         }
       }
+      completedRetrievalArms += 1;
       await reportProgress({
         stage: "places",
         status: "running",
         message: `Получено карточек: ${cardsFound}`,
-        completed: batchIndex + 1,
+        completed: completedRetrievalArms,
         total: retrievalArms.length,
       });
     }
@@ -1934,7 +2000,7 @@ export class GeoapifyProvider implements SearchProvider {
       stage: "places",
       status: "completed",
       message: `Поиск организаций завершён: ${observations.size}`,
-      completed: categoryPlan.batches.length,
+      completed: completedRetrievalArms,
       total: retrievalArms.length,
     });
 
@@ -1998,11 +2064,37 @@ export class GeoapifyProvider implements SearchProvider {
         .filter(Boolean);
       if (candidates.length) {
         if (options.relevanceClassifier) {
-          try {
+          const classifierBudget = options.runtime?.beginStage(
+            relevanceClassifierTimeoutMs(),
+            NORMALIZATION_RESERVE_MS,
+          );
+          const classifierTimeoutMs = classifierBudget?.timeoutMs(
+            relevanceClassifierTimeoutMs(),
+          ) ?? relevanceClassifierTimeoutMs();
+          if (
+            options.runtime &&
+            classifierTimeoutMs < MIN_OPTIONAL_STAGE_BUDGET_MS
+          ) {
+            for (const evidence of candidates) {
+              relevanceById.set(
+                externalIdByCandidateId.get(evidence.candidateId)!,
+                notCheckedRelevance(
+                  evidence.candidateId,
+                  "OPTIONAL_CLASSIFIER_UNAVAILABLE",
+                ),
+              );
+            }
+            classifierState = "degraded";
+            markDegraded(
+              "relevance_classification",
+              "INSUFFICIENT_REMAINING_BUDGET",
+            );
+          } else try {
             const raw = await runRelevanceClassifier(
               options.relevanceClassifier,
               { semanticIntent: acceptedIntent, candidates },
               options.signal,
+              classifierTimeoutMs,
             );
             if (!Array.isArray(raw) || raw.length !== candidates.length) {
               throw new Error("Classifier result count is invalid");
@@ -2083,7 +2175,7 @@ export class GeoapifyProvider implements SearchProvider {
       total: namedPlaces.length,
     });
 
-    const detailTargets = namedPlaces
+    const plannedDetailTargets = namedPlaces
       .filter(
         (observation) =>
           observation.placeId &&
@@ -2099,6 +2191,21 @@ export class GeoapifyProvider implements SearchProvider {
           MAX_DETAILS_LIMIT,
         ),
       );
+    const detailsBudget = options.runtime?.beginStage(
+      DETAILS_STAGE_BUDGET_MS,
+      NORMALIZATION_RESERVE_MS,
+    );
+    const detailStageTimeoutMs = detailsBudget?.timeoutMs(
+      DETAILS_FETCH_TIMEOUT_MS,
+    ) ?? DETAILS_FETCH_TIMEOUT_MS;
+    const skipDetailsForBudget =
+      Boolean(options.runtime) &&
+      plannedDetailTargets.length > 0 &&
+      detailStageTimeoutMs < MIN_OPTIONAL_STAGE_BUDGET_MS;
+    if (skipDetailsForBudget) {
+      markDegraded("details", "INSUFFICIENT_REMAINING_BUDGET");
+    }
+    const detailTargets = skipDetailsForBudget ? [] : plannedDetailTargets;
     let detailCircuitOpen = false;
     let detailsRequested = 0;
     let detailsCompleted = 0;
@@ -2123,9 +2230,35 @@ export class GeoapifyProvider implements SearchProvider {
             temporaryFailure: true,
           };
         } else {
-          detailsRequested += 1;
-          enrichment = await enrichPlace(observation, apiKey, options.signal);
-          if (enrichment.temporaryFailure) detailCircuitOpen = true;
+          const detailCallTimeoutMs = detailsBudget?.timeoutMs(
+            DETAILS_FETCH_TIMEOUT_MS,
+          ) ?? DETAILS_FETCH_TIMEOUT_MS;
+          if (detailCallTimeoutMs < MIN_OPTIONAL_STAGE_BUDGET_MS) {
+            markDegraded("details", "STAGE_BUDGET_EXHAUSTED");
+            detailCircuitOpen = true;
+            enrichment = {
+              properties: null,
+              succeeded: false,
+              temporaryFailure: true,
+            };
+          } else {
+            detailsRequested += 1;
+            enrichment = await enrichPlace(
+              observation,
+              apiKey,
+              options.signal,
+              detailCallTimeoutMs,
+            );
+            if (enrichment.temporaryFailure) {
+              detailCircuitOpen = true;
+              if (
+                detailsBudget &&
+                detailsBudget.remainingMs() < MIN_OPTIONAL_STAGE_BUDGET_MS
+              ) {
+                markDegraded("details", "STAGE_BUDGET_EXHAUSTED");
+              }
+            }
+          }
         }
         detailsCompleted += 1;
         await reportProgress({
@@ -2200,6 +2333,9 @@ export class GeoapifyProvider implements SearchProvider {
           cardsAccepted: observations.size,
           detailsRequested,
           detailsSucceeded,
+          ...(degradedStages.length
+            ? { degradedStages: degradedStages.map((stage) => ({ ...stage })) }
+            : {}),
           relevance: {
             classifier: classifierState,
             ...classifiedCounts,
