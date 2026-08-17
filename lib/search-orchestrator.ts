@@ -1,7 +1,4 @@
-import type {
-  CompiledGeoapifyPlan,
-  SearchProgressCallback,
-} from "./providers/types";
+import type { SearchProgressCallback } from "./providers/types";
 import type { SearchPlan } from "./search-planner/types";
 import type {
   SearchPayload,
@@ -16,16 +13,17 @@ export type SearchExecutionOptions = {
   signal?: AbortSignal;
 };
 
-type ProviderExecutionOptions = SearchExecutionOptions & {
-  plan: SearchPlan;
-  compiledPlan?: CompiledGeoapifyPlan;
+export type PreparedProviderSearch = {
+  completedMessage: string;
+  execute(
+    payload: SearchPayload,
+    options: SearchExecutionOptions,
+  ): Promise<SearchResponse>;
 };
 
 export type SearchExecutionAdapter = {
-  search(
-    payload: SearchPayload,
-    options: ProviderExecutionOptions,
-  ): Promise<SearchResponse>;
+  preparationMessage: string;
+  prepare(plan: SearchPlan): Promise<PreparedProviderSearch>;
 };
 
 export type SearchOrchestratorDependencies = {
@@ -37,7 +35,6 @@ export type SearchOrchestratorDependencies = {
   confirmPlan(payload: SearchPayload): Promise<SearchPlan>;
   isPlannerInfrastructureFailure(plan: SearchPlan): boolean;
   selectProvider(): SearchExecutionProvider;
-  compileGeoapifyPlan(plan: SearchPlan): CompiledGeoapifyPlan;
   providers: Record<SearchExecutionProvider, SearchExecutionAdapter>;
 };
 
@@ -151,32 +148,24 @@ export function createSearchOrchestrator(
       ensureExecutablePlan(plan, dependencies.isPlannerInfrastructureFailure);
 
       const providerId = dependencies.selectProvider();
+      const provider = dependencies.providers[providerId];
       await emitProgress(onProgress, {
         stage: "provider_compilation",
         status: "started",
-        message:
-          providerId === "geoapify"
-            ? "Компилируем разрешённые категории источника"
-            : `Источник ${providerId} не требует категорий Geoapify`,
+        message: provider.preparationMessage,
       });
 
-      const compiledPlan = providerId === "geoapify"
-        ? dependencies.compileGeoapifyPlan(plan)
-        : undefined;
+      const prepared = await provider.prepare(plan);
 
       await emitProgress(onProgress, {
         stage: "provider_compilation",
         status: "completed",
-        message: compiledPlan
-          ? `Подготовлено категорий: ${compiledPlan.categoryIds.length}`
-          : `Источник ${providerId} выбран без Geoapify compilation`,
+        message: prepared.completedMessage,
       });
 
-      const response = await dependencies.providers[providerId].search(payload, {
+      const response = await prepared.execute(payload, {
         onProgress,
         signal,
-        plan,
-        ...(compiledPlan ? { compiledPlan } : {}),
       });
       return { ...response, plan };
     },

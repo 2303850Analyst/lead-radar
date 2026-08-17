@@ -1033,50 +1033,66 @@ const searchOrchestrator = createSearchOrchestrator({
   },
   isPlannerInfrastructureFailure: isSearchPlannerInfrastructureFailure,
   selectProvider: selectedProvider,
-  compileGeoapifyPlan(plan): CompiledGeoapifyPlan {
-    const selectors = compileGeoapifySelectors(
-      plan.resolution.selectedConceptIds,
-    );
-    return {
-      provider: "geoapify",
-      providerCatalogVersion: selectors.providerCatalogVersion,
-      categoryIds: [...selectors.categoryIds],
-      batches: [[...selectors.categoryIds]],
-      countryCode: plan.intent.countryCodes[0],
-      language:
-        plan.intent.locale === "be-BY"
-          ? "be"
-          : plan.intent.locale === "kk-KZ"
-            ? "kk"
-            : "ru",
-      conceptIds: [...plan.resolution.selectedConceptIds],
-    };
-  },
   providers: {
     demo: {
-      search: (payload, { onProgress }) => demoSearch(payload, onProgress),
+      preparationMessage: "Источник demo не требует категорий Geoapify",
+      async prepare() {
+        return {
+          completedMessage: "Источник demo выбран без Geoapify compilation",
+          execute: (payload, { onProgress }) => demoSearch(payload, onProgress),
+        };
+      },
     },
     geoapify: {
-      search: async (payload, { onProgress, signal, compiledPlan }) => {
-        const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
-        return apiKey && compiledPlan
-          ? new GeoapifyProvider(apiKey).search(payload, {
-              onProgress,
-              signal,
-              compiledPlan,
-            })
-          : demoSearch(payload, onProgress);
+      preparationMessage: "Компилируем разрешённые категории источника",
+      async prepare(plan) {
+        const selectors = compileGeoapifySelectors(
+          plan.resolution.selectedConceptIds,
+        );
+        const compiledPlan: CompiledGeoapifyPlan = {
+          provider: "geoapify",
+          providerCatalogVersion: selectors.providerCatalogVersion,
+          categoryIds: [...selectors.categoryIds],
+          batches: [[...selectors.categoryIds]],
+          countryCode: plan.intent.countryCodes[0],
+          language:
+            plan.intent.locale === "be-BY"
+              ? "be"
+              : plan.intent.locale === "kk-KZ"
+                ? "kk"
+                : "ru",
+          conceptIds: [...plan.resolution.selectedConceptIds],
+        };
+        return {
+          completedMessage: `Подготовлено категорий: ${compiledPlan.categoryIds.length}`,
+          async execute(payload, { onProgress, signal }) {
+            const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+            return apiKey
+              ? new GeoapifyProvider(apiKey).search(payload, {
+                  onProgress,
+                  signal,
+                  compiledPlan,
+                })
+              : demoSearch(payload, onProgress);
+          },
+        };
       },
     },
     yandex: {
-      search: async (payload, { onProgress }) => {
-        const liveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
-        const apiKey = liveUiEnabled
-          ? process.env.YANDEX_MAPS_API_KEY?.trim()
-          : undefined;
-        return apiKey
-          ? yandexSearch(payload, apiKey, onProgress)
-          : demoSearch(payload, onProgress);
+      preparationMessage: "Источник yandex не требует категорий Geoapify",
+      async prepare() {
+        return {
+          completedMessage: "Источник yandex выбран без Geoapify compilation",
+          async execute(payload, { onProgress }) {
+            const liveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
+            const apiKey = liveUiEnabled
+              ? process.env.YANDEX_MAPS_API_KEY?.trim()
+              : undefined;
+            return apiKey
+              ? yandexSearch(payload, apiKey, onProgress)
+              : demoSearch(payload, onProgress);
+          },
+        };
       },
     },
   },
