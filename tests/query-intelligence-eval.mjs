@@ -110,14 +110,14 @@ async function evaluate() {
   const correctSemanticOutcomes = expectedSemanticOutcomes.filter(
     (entry) => entry.statusCorrect,
   );
-  const fullCatalogCalls = mock.calls.filter(
-    (entry) => entry.candidateMode === "full_catalog",
+  const openVocabularyCalls = mock.calls.filter(
+    (entry) => entry.mode === "open_vocabulary",
   );
   const zeroOverlapIds = new Set(
     plannerFixture.zeroOverlapCases.map((entry) => entry.id),
   );
-  const zeroOverlapFullCatalog = new Set(
-    fullCatalogCalls
+  const zeroOverlapSemanticEncodings = new Set(
+    openVocabularyCalls
       .filter((entry) => zeroOverlapIds.has(entry.caseId))
       .map((entry) => entry.caseId),
   );
@@ -167,8 +167,8 @@ async function evaluate() {
         entry.expectedStatus === "needs_confirmation" &&
         entry.actualStatus === "ready",
     ).length,
-    missingZeroOverlapFullCatalogPaths:
-      plannerFixture.zeroOverlapCases.length - zeroOverlapFullCatalog.size,
+    missingZeroOverlapSemanticEncodings:
+      plannerFixture.zeroOverlapCases.length - zeroOverlapSemanticEncodings.size,
   };
   const qualityErrors = {
     statusMismatches: results.filter((entry) => !entry.statusCorrect).length,

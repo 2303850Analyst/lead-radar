@@ -22,17 +22,16 @@ import {
   createSearchPlan,
 } from "../lib/search-planner/planner.ts";
 import {
-  buildKimiCandidates,
   lexicalSimilarity,
   normalizePlannerInput,
   normalizeSearchText,
   resolveDeterministically,
 } from "../lib/search-planner/resolver.ts";
 import {
-  assertSchemaTaxonomyParity,
-  createKimiResolutionSchema,
-  validateKimiResolution,
+  KIMI_SEMANTIC_INTENT_SCHEMA,
+  validateKimiSemanticIntent,
 } from "../lib/search-planner/schema.ts";
+import { isSearchPlan } from "../lib/search-planner/guards.ts";
 import {
   CANONICAL_CONCEPT_IDS,
   CANONICAL_TAXONOMY,
@@ -58,23 +57,36 @@ function plannerInput(query, locale = "ru-RU", countryCode = "RU") {
   };
 }
 
-function selectedResolution(conceptId) {
-  return {
-    status: "selected",
-    selectedConceptIds: [conceptId],
-    alternatives: [],
-    confidenceBand: "high",
-    clarificationReasonCode: null,
-  };
-}
-
 function kimiRequestFor(query) {
   const intent = normalizePlannerInput(plannerInput(query));
-  const deterministic = resolveDeterministically(intent);
+  return { intent };
+}
+
+function semanticIntentFor(coreBusinessType = "барбершоп") {
   return {
-    intent,
-    candidates: buildKimiCandidates(deterministic, intent.locale),
-    candidateMode: deterministic.fullCatalog ? "full_catalog" : "shortlist",
+    schemaVersion: "2.0",
+    normalizedGoal: `найти ${coreBusinessType}`,
+    entityKind: "physical_business",
+    physicalLocationRequirement: "required",
+    industries: ["услуги"],
+    coreBusinessTypes: [coreBusinessType],
+    adjacentBusinessTypes: [],
+    excludedBusinessTypes: [],
+    productsAndServices: [],
+    includeSignals: [coreBusinessType],
+    excludeSignals: [],
+    retrievalTerms: {
+      precision: [coreBusinessType],
+      recall: [coreBusinessType],
+      exclude: [],
+    },
+    brandSearch: "include",
+    confidence: "high",
+    ambiguity: {
+      isAmbiguous: false,
+      reason: null,
+      clarificationQuestion: null,
+    },
   };
 }
 
@@ -109,30 +121,122 @@ test("taxonomy and Geoapify catalog have complete allowlisted coverage", async (
   );
 });
 
-test("Kimi schema is strict, taxonomy-bound, and candidate-narrowed", () => {
-  assert.doesNotThrow(() => assertSchemaTaxonomyParity());
-  const allowed = ["personal_care.barbershop", "personal_care.beauty_salon"];
-  const schema = createKimiResolutionSchema(allowed);
-  assert.deepEqual(schema.definitions.conceptId.enum, allowed);
-  assert.deepEqual(
-    validateKimiResolution(selectedResolution(allowed[0]), allowed),
-    selectedResolution(allowed[0]),
+test("SemanticIntentV2 schema is strict, bounded, and open vocabulary", () => {
+  const customIntent = semanticIntentFor("студия ухода за редкими растениями");
+  assert.deepEqual(validateKimiSemanticIntent(customIntent), customIntent);
+  const serializedSchema = JSON.stringify(KIMI_SEMANTIC_INTENT_SCHEMA);
+  assert.equal(serializedSchema.includes("conceptId"), false);
+  assert.equal(serializedSchema.includes("personal_care.barbershop"), false);
+  assert.equal(KIMI_SEMANTIC_INTENT_SCHEMA.additionalProperties, false);
+  assert.throws(
+    () =>
+      validateKimiSemanticIntent({
+        ...customIntent,
+        coreBusinessTypes: ["x".repeat(121)],
+      }),
+    /more than 120 characters/i,
   );
   assert.throws(
     () =>
-      validateKimiResolution(
-        selectedResolution("automotive.fuel_station"),
-        allowed,
-      ),
-    /outside the supplied candidate set/i,
-  );
-  assert.throws(
-    () =>
-      validateKimiResolution(
-        { ...selectedResolution(allowed[0]), providerUrl: "https://evil.invalid" },
-        allowed,
-      ),
+      validateKimiSemanticIntent({
+        ...customIntent,
+        providerUrl: "https://evil.invalid",
+      }),
     /additional properties/i,
+  );
+  assert.throws(
+    () => validateKimiSemanticIntent(semanticIntentFor("https://evil.invalid")),
+    /must not contain URLs/i,
+  );
+  for (const executableValue of [
+    "55.7558 37.6176",
+    "55.75 37.61",
+    "geo:55.75,37.61",
+    "GET /v2/places?type=amenity",
+    "filter: place=city",
+    "javascript:alert(1)",
+    "mailto:user@example.com",
+    "file:C:/tmp/x",
+    "ftp://evil.invalid",
+    "//evil.invalid/path",
+  ]) {
+    assert.throws(
+      () => validateKimiSemanticIntent(semanticIntentFor(executableValue)),
+      /provider parameters/i,
+      executableValue,
+    );
+  }
+});
+
+test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering", () => {
+  assert.equal(isSearchPlan(null), false);
+  assert.equal(
+    isSearchPlan({
+      status: "ready",
+      semanticIntent: { schemaVersion: "2.0" },
+      resolution: { selectedConceptIds: [], alternatives: [] },
+    }),
+    false,
+  );
+  const renderablePlan = {
+    schemaVersion: "2.0",
+    taxonomyVersion: "test-taxonomy",
+    providerCatalogVersion: "test-provider",
+    decisionPolicyVersion: "test-policy",
+    promptVersion: "test-prompt",
+    requestCacheKey: "test-request",
+    planHash: "test-plan",
+    parentPlanHash: null,
+    status: "ready",
+    intent: {
+      description: "",
+      primaryQuery: "барбершоп",
+      relatedQueries: [],
+      excludeQueries: [],
+      locale: "ru-RU",
+      countryCodes: ["RU"],
+    },
+    semanticIntent: semanticIntentFor(),
+    confidence: { intent: "high", providerCoverage: "medium" },
+    resolution: {
+      method: "kimi",
+      selectedConceptIds: [],
+      alternatives: [],
+      confidenceBand: "high",
+      reasonCodes: [],
+      clarificationQuestion: null,
+    },
+    executionPreview: null,
+    ai: {
+      used: true,
+      modelId: "kimi-k3",
+      latencyMs: 100,
+      inputTokens: 10,
+      outputTokens: 20,
+      finishReason: "stop",
+      validation: "passed",
+      cacheHit: false,
+    },
+    confirmation: { token: null, expiresAt: null },
+  };
+  assert.equal(isSearchPlan(renderablePlan), true);
+  const withoutPlanHash = { ...renderablePlan };
+  delete withoutPlanHash.planHash;
+  assert.equal(isSearchPlan(withoutPlanHash), false);
+  assert.equal(isSearchPlan({ ...renderablePlan, executionPreview: {} }), false);
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: { ...renderablePlan.semanticIntent, coreBusinessTypes: null },
+    }),
+    false,
+  );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: { ...renderablePlan.semanticIntent, confidence: "unknown" },
+    }),
+    false,
   );
 });
 
@@ -169,7 +273,7 @@ test("fuzzy retrieval shortlists a typo without unsafe auto-run", () => {
   assert.ok(resolution.candidates[0].score >= 0.35);
 });
 
-test("all 30 zero-token-overlap cases take the complete compact catalog path", async () => {
+test("all 30 zero-token-overlap cases stay non-executable in the legacy resolver", async () => {
   const fixture = await loadPlannerFixture();
   for (const entry of fixture.zeroOverlapCases) {
     const intent = normalizePlannerInput(
@@ -178,12 +282,8 @@ test("all 30 zero-token-overlap cases take the complete compact catalog path", a
     const resolution = resolveDeterministically(intent);
     assert.equal(resolution.fullCatalog, true, entry.id);
     assert.equal(resolution.method, "full_catalog", entry.id);
-    const candidates = buildKimiCandidates(resolution, entry.locale);
-    assert.equal(candidates.length, CANONICAL_TAXONOMY.length, entry.id);
     assert.ok(
-      candidates.some(
-        (candidate) => candidate.conceptId === entry.expectedConceptId,
-      ),
+      CANONICAL_TAXONOMY.some((concept) => concept.id === entry.expectedConceptId),
       entry.id,
     );
   }
@@ -340,22 +440,20 @@ test("Kimi client accepts a strict response and performs no hidden retry", async
       // Kimi K3 currently accepts only its default temperature. Omitting the
       // field keeps the request compatible across the supported model family.
       assert.equal(Object.hasOwn(body, "temperature"), false);
-      assert.equal(body.max_completion_tokens, 300);
+      assert.equal(body.max_completion_tokens, 1200);
       assert.equal(body.stream, true);
       assert.equal(body.response_format.type, "json_schema");
-      assert.deepEqual(
-        body.response_format.json_schema.schema.definitions.conceptId.enum,
-        request.candidates.map((candidate) => candidate.conceptId),
-      );
+      const serializedBody = JSON.stringify(body);
+      assert.equal(serializedBody.includes("conceptId"), false);
+      assert.equal(serializedBody.includes("candidates"), false);
+      assert.equal(serializedBody.includes("personal_care.barbershop"), false);
       return kimiSseResponse({
-        content: JSON.stringify(
-          selectedResolution("personal_care.barbershop"),
-        ),
+        content: JSON.stringify(semanticIntentFor("барбершоп")),
       });
     },
   });
-  const result = await client.resolve(request);
-  assert.equal(result.resolution.selectedConceptIds[0], "personal_care.barbershop");
+  const result = await client.encode(request);
+  assert.equal(result.semanticIntent.coreBusinessTypes[0], "барбершоп");
   assert.deepEqual(result.usage, {
     inputTokens: 100,
     outputTokens: 30,
@@ -369,16 +467,19 @@ for (const fault of [
     name: "429",
     fetchImpl: async () => new Response("rate limited", { status: 429 }),
     expectedCode: "KIMI_RATE_LIMITED",
+    expectedRetryable: true,
   },
   {
     name: "500",
     fetchImpl: async () => new Response("failure", { status: 500 }),
     expectedCode: "KIMI_HTTP_ERROR",
+    expectedRetryable: true,
   },
   {
     name: "401 authentication failure",
     fetchImpl: async () => new Response("unauthorized", { status: 401 }),
     expectedCode: "KIMI_AUTH_ERROR",
+    expectedRetryable: false,
   },
   {
     name: "malformed SSE JSON",
@@ -388,62 +489,83 @@ for (const fault of [
         headers: { "Content-Type": "text/event-stream" },
       }),
     expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
   },
   {
     name: "truncated structured output",
     fetchImpl: async () =>
-      kimiSseResponse({ content: "{\"status\":" }),
+      kimiSseResponse({ content: "{\"schemaVersion\":" }),
     expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
   },
   {
     name: "stream without DONE",
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify(
-          selectedResolution("personal_care.barbershop"),
+          semanticIntentFor("барбершоп"),
         ),
         done: false,
       }),
     expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
   },
   {
     name: "length finish reason",
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify(
-          selectedResolution("personal_care.barbershop"),
+          semanticIntentFor("барбершоп"),
         ),
         finishReason: "length",
       }),
     expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
   },
   {
     name: "empty choices",
     fetchImpl: async () =>
       kimiSseResponse({ firstChunk: { choices: [] } }),
     expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
   },
   {
     name: "structured output with an extra property",
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify({
-          ...selectedResolution("personal_care.barbershop"),
+          ...semanticIntentFor("барбершоп"),
           providerUrl: "https://evil.invalid",
         }),
       }),
     expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
   },
   {
-    name: "out-of-candidate concept",
+    name: "executable URL in an open-vocabulary field",
     query: "супермаркетт",
     fetchImpl: async () =>
       kimiSseResponse({
-        content: JSON.stringify(
-          selectedResolution("automotive.fuel_station"),
-        ),
+        content: JSON.stringify(semanticIntentFor("https://evil.invalid")),
       }),
     expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
+  },
+  {
+    name: "inconsistent ambiguity fields",
+    fetchImpl: async () =>
+      kimiSseResponse({
+        content: JSON.stringify({
+          ...semanticIntentFor("склад"),
+          ambiguity: {
+            isAmbiguous: false,
+            reason: "Есть разные трактовки",
+            clarificationQuestion: null,
+          },
+        }),
+      }),
+    expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
   },
 ]) {
   test(`Kimi client safely rejects ${fault.name}`, async () => {
@@ -457,11 +579,13 @@ for (const fault of [
       },
     });
     await assert.rejects(
-      client.resolve(
+      client.encode(
         kimiRequestFor(fault.query ?? "привести бороду в порядок"),
       ),
       (error) =>
-        error instanceof KimiClientError && error.code === fault.expectedCode,
+        error instanceof KimiClientError &&
+        error.code === fault.expectedCode &&
+        error.retryable === fault.expectedRetryable,
     );
     assert.equal(calls, 1);
   });
@@ -481,7 +605,7 @@ test("Kimi client turns its bounded timeout into KIMI_TIMEOUT", async () => {
       }),
   });
   await assert.rejects(
-    client.resolve(kimiRequestFor("привести бороду в порядок")),
+    client.encode(kimiRequestFor("привести бороду в порядок")),
     (error) => error instanceof KimiClientError && error.code === "KIMI_TIMEOUT",
   );
 });
@@ -519,7 +643,7 @@ test("Kimi timeout remains active until the SSE terminal marker", async () => {
       ),
   });
   await assert.rejects(
-    client.resolve(kimiRequestFor("привести бороду в порядок")),
+    client.encode(kimiRequestFor("привести бороду в порядок")),
     (error) => error instanceof KimiClientError && error.code === "KIMI_TIMEOUT",
   );
 });
@@ -536,7 +660,7 @@ test("Kimi client propagates caller cancellation without dispatching fetch", asy
     },
   });
   await assert.rejects(
-    client.resolve({
+    client.encode({
       ...kimiRequestFor("привести бороду в порядок"),
       signal: controller.signal,
     }),
@@ -575,7 +699,7 @@ test("planner turns Kimi failure into a safe non-executable semantic outcome", a
   const zeroOverlap = fixture.zeroOverlapCases[0];
   const failingClient = {
     modelId: "mock-kimi-failure",
-    async resolve() {
+    async encode() {
       throw new KimiClientError("KIMI_RATE_LIMITED", "mock 429", {
         status: 429,
         retryable: true,
@@ -607,12 +731,108 @@ test("ambiguous warehouse intent never becomes executable before confirmation", 
   assert.equal(plan.executionPreview, null);
 });
 
+test("open ambiguity without legacy options remains honest and editable", async () => {
+  const client = {
+    modelId: "mock-open-ambiguity",
+    async encode() {
+      return {
+        semanticIntent: {
+          ...semanticIntentFor("абракадабра зюзя"),
+          confidence: "medium",
+          ambiguity: {
+            isAmbiguous: true,
+            reason: "Это может быть площадка для мероприятий или мастерская",
+            clarificationQuestion: "Вам нужна площадка или мастерская?",
+          },
+        },
+        modelId: this.modelId,
+        finishReason: "stop",
+        latencyMs: 1,
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      };
+    },
+  };
+  const plan = await createSearchPlan(plannerInput("абракадабра зюзя"), {
+    mode: "kimi",
+    kimiClient: client,
+    signingSecret,
+  });
+  assert.equal(plan.status, "needs_confirmation");
+  assert.deepEqual(plan.resolution.alternatives, []);
+  assert.equal(plan.confirmation.token, null);
+  assert.match(plan.semanticIntent.ambiguity.reason, /площадка/);
+  assert.match(plan.resolution.clarificationQuestion, /площадка/);
+});
+
+test("semantic compatibility never executes a conflicting original category", async () => {
+  const client = {
+    modelId: "mock-conflicting-meaning",
+    async encode() {
+      return {
+        semanticIntent: semanticIntentFor("студия ухода за редкими растениями"),
+        modelId: this.modelId,
+        finishReason: "stop",
+        latencyMs: 1,
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      };
+    },
+  };
+  const plan = await createSearchPlan(plannerInput("Аптека"), {
+    mode: "kimi",
+    kimiClient: client,
+  });
+  assert.equal(plan.status, "unsupported");
+  assert.deepEqual(plan.resolution.selectedConceptIds, []);
+  assert.deepEqual(plan.resolution.reasonCodes, ["PROVIDER_COVERAGE_GAP"]);
+  assert.equal(plan.executionPreview, null);
+});
+
+test("bounded semantic arrays cannot overflow legacy compatibility input", async () => {
+  const terms = Array.from({ length: 16 }, (_, index) => `смежный формат ${index}`);
+  const client = {
+    modelId: "mock-bounded-open-intent",
+    async encode() {
+      return {
+        semanticIntent: {
+          ...semanticIntentFor("барбершоп"),
+          adjacentBusinessTypes: terms,
+          productsAndServices: terms.map((term) => `услуга ${term}`),
+          retrievalTerms: {
+            precision: ["барбершоп"],
+            recall: terms.map((term) => `синоним ${term}`),
+            exclude: [],
+          },
+        },
+        modelId: this.modelId,
+        finishReason: "stop",
+        latencyMs: 1,
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      };
+    },
+  };
+  const plan = await createSearchPlan(plannerInput("место для ухода за бородой"), {
+    mode: "kimi",
+    kimiClient: client,
+  });
+  assert.equal(plan.status, "ready");
+  assert.equal(plan.ai.validation, "passed");
+  assert.deepEqual(plan.resolution.selectedConceptIds, ["personal_care.barbershop"]);
+});
+
 test("generic warehouse policy overrides an overconfident Kimi selection", async () => {
   const overconfidentClient = {
     modelId: "mock-overconfident-kimi",
-    async resolve() {
+    async encode() {
       return {
-        resolution: selectedResolution("logistics.warehouse"),
+        semanticIntent: {
+          ...semanticIntentFor("склад"),
+          confidence: "high",
+          ambiguity: {
+            isAmbiguous: false,
+            reason: null,
+            clarificationQuestion: null,
+          },
+        },
         modelId: "mock-overconfident-kimi",
         finishReason: "stop",
         latencyMs: 1,

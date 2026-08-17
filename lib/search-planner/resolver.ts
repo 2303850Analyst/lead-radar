@@ -8,7 +8,6 @@ import {
   SUPPORTED_LOCALES,
   type ConceptCandidate,
   type DeterministicResolution,
-  type KimiCandidate,
   type NormalizedSearchIntent,
   type PlannerInput,
   type SupportedCountryCode,
@@ -18,7 +17,7 @@ import {
 export const FUZZY_SHORTLIST_THRESHOLD = 0.35;
 export const FUZZY_READY_THRESHOLD = 0.92;
 export const FUZZY_READY_MARGIN = 0.15;
-export const MAX_KIMI_SHORTLIST_SIZE = 20;
+export const MAX_LEGACY_SHORTLIST_SIZE = 20;
 
 const MAX_DESCRIPTION_LENGTH = 1_000;
 const MAX_PRIMARY_QUERY_LENGTH = 200;
@@ -384,7 +383,7 @@ export function resolveDeterministically(
       decision: "ready",
       method: "exact",
       selectedConceptId: viablePrimaryExact[0].conceptId,
-      candidates: exactMatches.slice(0, MAX_KIMI_SHORTLIST_SIZE),
+      candidates: exactMatches.slice(0, MAX_LEGACY_SHORTLIST_SIZE),
       fullCatalog: false,
     };
   }
@@ -393,7 +392,7 @@ export function resolveDeterministically(
       decision: "semantic_required",
       method: "exact",
       selectedConceptId: null,
-      candidates: primaryExactMatches.slice(0, MAX_KIMI_SHORTLIST_SIZE),
+      candidates: primaryExactMatches.slice(0, MAX_LEGACY_SHORTLIST_SIZE),
       fullCatalog: false,
     };
   }
@@ -404,7 +403,7 @@ export function resolveDeterministically(
       decision: "ready",
       method: "exact",
       selectedConceptId: viableExact[0].conceptId,
-      candidates: exactMatches.slice(0, MAX_KIMI_SHORTLIST_SIZE),
+      candidates: exactMatches.slice(0, MAX_LEGACY_SHORTLIST_SIZE),
       fullCatalog: false,
     };
   }
@@ -413,12 +412,12 @@ export function resolveDeterministically(
       decision: "semantic_required",
       method: "exact",
       selectedConceptId: null,
-      candidates: exactMatches.slice(0, MAX_KIMI_SHORTLIST_SIZE),
+      candidates: exactMatches.slice(0, MAX_LEGACY_SHORTLIST_SIZE),
       fullCatalog: false,
     };
   }
 
-  const shortlist = fuzzyCandidates.slice(0, MAX_KIMI_SHORTLIST_SIZE);
+  const shortlist = fuzzyCandidates.slice(0, MAX_LEGACY_SHORTLIST_SIZE);
   const first = shortlist.find((candidate) => !candidate.negativeConflict);
   const second = shortlist.find(
     (candidate) =>
@@ -455,25 +454,6 @@ export function resolveDeterministically(
     candidates: [],
     fullCatalog: true,
   };
-}
-
-export function buildKimiCandidates(
-  resolution: DeterministicResolution,
-  locale: SupportedLocale,
-): KimiCandidate[] {
-  const ids: readonly string[] = resolution.fullCatalog
-    ? CANONICAL_TAXONOMY.map((concept) => concept.id)
-    : resolution.candidates.map((candidate) => candidate.conceptId);
-  const allowed = new Set(ids);
-  return CANONICAL_TAXONOMY.filter((concept) => allowed.has(concept.id)).map(
-    (concept) => ({
-      conceptId: concept.id,
-      label: canonicalConceptLabel(concept.id, locale),
-      aliases: conceptTerms(concept, locale).aliases,
-      negativeAliases: conceptTerms(concept, locale).negativeAliases,
-      physicalPlace: concept.physicalPlace,
-    }),
-  );
 }
 
 export function asCanonicalConceptIds(

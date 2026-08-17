@@ -1,15 +1,18 @@
-import Ajv, { type ErrorObject, type ValidateFunction } from "ajv";
+import Ajv, { type ErrorObject } from "ajv";
 
-import schemaArtifact from "./kimi-resolution.schema.json";
-import { CANONICAL_CONCEPT_IDS, isCanonicalConceptId } from "./taxonomy";
-import type { KimiResolution } from "./types";
+import semanticIntentSchemaArtifact from "./kimi-semantic-intent.schema.json";
+import type { SemanticIntentV2 } from "./types";
 
 type JsonSchema = Record<string, unknown>;
 
-export const KIMI_RESOLUTION_SCHEMA = schemaArtifact as JsonSchema;
+export const KIMI_SEMANTIC_INTENT_SCHEMA = semanticIntentSchemaArtifact as JsonSchema;
 
 const ajv = new Ajv({ allErrors: true, strict: true });
-const validateArtifact = ajv.compile(KIMI_RESOLUTION_SCHEMA);
+const validateSemanticIntentArtifact = ajv.compile(KIMI_SEMANTIC_INTENT_SCHEMA);
+
+const MAX_SEMANTIC_INTENT_JSON_CHARS = 30_000;
+const FORBIDDEN_EXECUTABLE_VALUE =
+  /(?:(?:https?|ftp|file|mailto|geo|tel|javascript|data|ws|wss):|\/\/[a-z0-9]|www\.|(?:^|\s)(?:GET|POST|PUT|PATCH|DELETE)\s+\/|\/v\d+\/[a-z0-9/_-]*\?|(?:^|[?&\s])(?:api_?key|filter|bias|categories?|type|lat|lon|radius)\s*[:=]|[-+]?\d{1,3}\.\d+\s*[,;\s]\s*[-+]?\d{1,3}\.\d+)/i;
 
 export class KimiSchemaValidationError extends Error {
   readonly code = "KIMI_SCHEMA_VALIDATION_FAILED";
@@ -22,113 +25,58 @@ export class KimiSchemaValidationError extends Error {
   }
 }
 
+function semanticIntentStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(semanticIntentStrings);
+  if (value && typeof value === "object") {
+    return Object.values(value).flatMap(semanticIntentStrings);
+  }
+  return [];
+}
+
+export function validateKimiSemanticIntent(value: unknown): SemanticIntentV2 {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (error) {
+    throw new KimiSchemaValidationError([`response cannot be serialized: ${String(error)}`]);
+  }
+  if (serialized.length > MAX_SEMANTIC_INTENT_JSON_CHARS) {
+    throw new KimiSchemaValidationError(["response exceeds the semantic intent size limit"]);
+  }
+  if (!validateSemanticIntentArtifact(value)) {
+    throw new KimiSchemaValidationError(
+      formatAjvErrors(validateSemanticIntentArtifact.errors),
+    );
+  }
+  const intent = value as SemanticIntentV2;
+  const issues: string[] = [];
+  if (
+    (intent.ambiguity.isAmbiguous &&
+      (!intent.ambiguity.reason || !intent.ambiguity.clarificationQuestion)) ||
+    (!intent.ambiguity.isAmbiguous &&
+      (intent.ambiguity.reason !== null ||
+        intent.ambiguity.clarificationQuestion !== null))
+  ) {
+    issues.push(
+      "ambiguity requires both a reason and clarificationQuestion, or neither",
+    );
+  }
+  if (
+    intent.entityKind === "non_physical" &&
+    intent.physicalLocationRequirement !== "not_applicable"
+  ) {
+    issues.push("non_physical intent must use not_applicable location requirement");
+  }
+  if (semanticIntentStrings(intent).some((item) => FORBIDDEN_EXECUTABLE_VALUE.test(item))) {
+    issues.push("semantic intent must not contain URLs, coordinates, or provider parameters");
+  }
+  if (issues.length) throw new KimiSchemaValidationError(issues);
+  return intent;
+}
+
 function formatAjvErrors(errors: readonly ErrorObject[] | null | undefined): string[] {
   return (errors ?? []).map(
     (error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`,
-  );
-}
-
-function conceptEnum(schema: JsonSchema): string[] {
-  const definitions = schema.definitions as Record<string, unknown> | undefined;
-  const conceptId = definitions?.conceptId as Record<string, unknown> | undefined;
-  return Array.isArray(conceptId?.enum)
-    ? conceptId.enum.filter((value): value is string => typeof value === "string")
-    : [];
-}
-
-export function assertSchemaTaxonomyParity(): void {
-  const taxonomyIds = [...CANONICAL_CONCEPT_IDS].sort();
-  const schemaIds = conceptEnum(KIMI_RESOLUTION_SCHEMA).sort();
-  if (
-    taxonomyIds.length !== schemaIds.length ||
-    taxonomyIds.some((conceptId, index) => conceptId !== schemaIds[index])
-  ) {
-    throw new Error("Kimi JSON Schema concept enum is out of sync with the taxonomy");
-  }
-}
-
-assertSchemaTaxonomyParity();
-
-/**
- * Returns a schema whose concept enum is narrowed to the candidates sent in
- * this exact model call. The checked-in JSON artifact remains the source of
- * truth for shape and the complete taxonomy enum.
- */
-export function createKimiResolutionSchema(
-  allowedConceptIds: readonly string[],
-): JsonSchema {
-  const uniqueIds = [...new Set(allowedConceptIds)];
-  if (!uniqueIds.length || uniqueIds.some((conceptId) => !isCanonicalConceptId(conceptId))) {
-    throw new Error("Kimi candidate IDs must be a non-empty canonical subset");
-  }
-  const narrowed = JSON.parse(JSON.stringify(KIMI_RESOLUTION_SCHEMA)) as JsonSchema;
-  delete narrowed.$id;
-  const definitions = narrowed.definitions as Record<string, JsonSchema>;
-  definitions.conceptId.enum = uniqueIds;
-  return narrowed;
-}
-
-function semanticIssues(
-  resolution: KimiResolution,
-  allowedConceptIds: ReadonlySet<string>,
-): string[] {
-  const issues: string[] = [];
-  const referencedIds = [
-    ...resolution.selectedConceptIds,
-    ...resolution.alternatives.map((alternative) => alternative.conceptId),
-  ];
-  if (referencedIds.some((conceptId) => !allowedConceptIds.has(conceptId))) {
-    issues.push("response references a concept outside the supplied candidate set");
-  }
-
-  const alternativeIds = resolution.alternatives.map(
-    (alternative) => alternative.conceptId,
-  );
-  if (new Set(alternativeIds).size !== alternativeIds.length) {
-    issues.push("alternatives must not repeat a concept");
-  }
-  if (
-    resolution.selectedConceptIds.some((conceptId) => alternativeIds.includes(conceptId))
-  ) {
-    issues.push("selected concept must not also appear in alternatives");
-  }
-
-  if (resolution.status === "selected" && resolution.selectedConceptIds.length !== 1) {
-    issues.push("selected status requires exactly one selectedConceptId");
-  }
-  if (resolution.status !== "selected" && resolution.selectedConceptIds.length !== 0) {
-    issues.push(`${resolution.status} status requires an empty selectedConceptIds array`);
-  }
-  if (resolution.status === "ambiguous" && resolution.alternatives.length < 2) {
-    issues.push("ambiguous status requires at least two alternatives");
-  }
-  if (
-    resolution.status === "unsupported" &&
-    !resolution.clarificationReasonCode
-  ) {
-    issues.push("unsupported status requires a clarificationReasonCode");
-  }
-  return issues;
-}
-
-export function validateKimiResolution(
-  value: unknown,
-  allowedConceptIds: readonly string[],
-): KimiResolution {
-  if (!validateArtifact(value)) {
-    throw new KimiSchemaValidationError(formatAjvErrors(validateArtifact.errors));
-  }
-  const resolution = value as KimiResolution;
-  const issues = semanticIssues(resolution, new Set(allowedConceptIds));
-  if (issues.length) throw new KimiSchemaValidationError(issues);
-  return resolution;
-}
-
-export function compileKimiResolutionValidator(
-  allowedConceptIds: readonly string[],
-): ValidateFunction<KimiResolution> {
-  const localAjv = new Ajv({ allErrors: true, strict: true });
-  return localAjv.compile<KimiResolution>(
-    createKimiResolutionSchema(allowedConceptIds),
   );
 }

@@ -82,6 +82,15 @@ test("planner outage UI never presents an infrastructure failure as an unsupport
     source,
     /failure\.code === "SEARCH_PLANNER_UNAVAILABLE"[\s\S]*?setSearchPlan\(null\)[\s\S]*?повторите поиск/i,
   );
+  const panelSource = await readFile(
+    new URL("../components/SearchIntentPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panelSource, /Как сервис понял задачу/);
+  assert.match(panelSource, /Основные типы/);
+  assert.match(panelSource, /Смежные типы/);
+  assert.match(panelSource, /Исключаем/);
+  assert.doesNotMatch(panelSource, /Для этой ниши пока нет безопасной категории/);
 });
 
 test("search API exposes health and deterministic demo results", async () => {
@@ -1091,6 +1100,258 @@ test("search APIs expose a retryable error when Kimi is unavailable", { concurre
     assert.equal(searchFailure.code, "SEARCH_PLANNER_UNAVAILABLE");
     assert.equal(searchFailure.plan.status, "unsupported");
     assert.equal(JSON.stringify(searchFailure).includes("fake-kimi-test-key"), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("search plan encodes an unseen business intent without canonical candidates", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEnv = {
+    QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
+    MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+    KIMI_API_KEY: process.env.KIMI_API_KEY,
+    KIMI_MODEL: process.env.KIMI_MODEL,
+  };
+  let capturedRequest = null;
+  const semanticIntent = {
+    schemaVersion: "2.0",
+    normalizedGoal: "найти спортивные залы и фитнес-клубы",
+    entityKind: "physical_business",
+    physicalLocationRequirement: "required",
+    industries: ["фитнес", "спорт"],
+    coreBusinessTypes: ["фитнес-клуб", "тренажёрный зал"],
+    adjacentBusinessTypes: ["спортивный клуб"],
+    excludedBusinessTypes: ["магазин спортивных товаров"],
+    productsAndServices: ["фитнес-тренировки", "тренажёрный зал"],
+    includeSignals: ["спортзал", "фитнес-клуб", "тренажёрный зал"],
+    excludeSignals: ["интернет-магазин"],
+    retrievalTerms: {
+      precision: ["фитнес-клуб", "тренажёрный зал"],
+      recall: ["спортзал", "спортивный зал"],
+      exclude: ["магазин спортивных товаров"],
+    },
+    brandSearch: "include",
+    confidence: "high",
+    ambiguity: {
+      isAmbiguous: false,
+      reason: null,
+      clarificationQuestion: null,
+    },
+  };
+
+  process.env.QUERY_INTELLIGENCE_MODE = "kimi";
+  process.env.MOONSHOT_API_KEY = "fake-kimi-open-vocabulary-key";
+  delete process.env.KIMI_API_KEY;
+  process.env.KIMI_MODEL = "kimi-k3";
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.hostname, "api.moonshot.ai");
+    assert.equal(url.pathname, "/v1/chat/completions");
+    capturedRequest = JSON.parse(String(init?.body));
+    const serializedRequest = JSON.stringify(capturedRequest);
+    for (const forbidden of [
+      '"candidates"',
+      '"candidateMode"',
+      '"conceptId"',
+      "food.restaurant",
+      "logistics.fulfillment",
+    ]) {
+      assert.equal(serializedRequest.includes(forbidden), false, forbidden);
+    }
+    const userMessage = capturedRequest.messages.find(
+      (message) => message.role === "user",
+    );
+    const modelInput = JSON.parse(userMessage.content);
+    assert.deepEqual(Object.keys(modelInput).sort(), [
+      "countryCodes",
+      "description",
+      "excludeQueries",
+      "locale",
+      "primaryQuery",
+      "relatedQueries",
+    ]);
+    assert.equal(Object.hasOwn(modelInput, "location"), false);
+    assert.equal(Object.hasOwn(modelInput, "center"), false);
+    const responseSchema = capturedRequest.response_format.json_schema.schema;
+    assert.equal(responseSchema.additionalProperties, false);
+    assert.equal(responseSchema.properties.coreBusinessTypes.maxItems, 8);
+    assert.equal(responseSchema.definitions.term.maxLength, 120);
+    const events = [
+      {
+        model: "kimi-k3",
+        choices: [{ index: 0, delta: { content: JSON.stringify(semanticIntent) }, finish_reason: null }],
+      },
+      {
+        model: "kimi-k3",
+        choices: [{
+          index: 0,
+          delta: {},
+          finish_reason: "stop",
+          usage: { prompt_tokens: 420, completion_tokens: 180, total_tokens: 600 },
+        }],
+      },
+    ].map((event) => `data: ${JSON.stringify(event)}\n\n`);
+    events.push("data: [DONE]\n\n");
+    return new Response(events.join(""), {
+      status: 200,
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+    });
+  };
+
+  try {
+    const worker = await getWorker();
+    const response = await worker.fetch(
+      new Request("http://localhost/api/search/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          description: "Спортзалы",
+          primaryQuery: "Спортивный зал",
+          relatedQueries: ["Фитнес-клуб"],
+          excludeQueries: ["Магазины спорттоваров"],
+          locale: "ru-RU",
+          countryCodes: ["RU"],
+          location: "Москва",
+          center: [37.6176, 55.7558],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+
+    assert.equal(response.status, 200);
+    assert.ok(capturedRequest);
+    const plan = await response.json();
+    assert.equal(plan.schemaVersion, "2.0");
+    assert.equal(plan.semanticIntent.schemaVersion, "2.0");
+    assert.equal(plan.semanticIntent.normalizedGoal, semanticIntent.normalizedGoal);
+    assert.deepEqual(plan.semanticIntent.coreBusinessTypes, semanticIntent.coreBusinessTypes);
+    assert.deepEqual(plan.semanticIntent.adjacentBusinessTypes, semanticIntent.adjacentBusinessTypes);
+    assert.deepEqual(plan.semanticIntent.excludedBusinessTypes, semanticIntent.excludedBusinessTypes);
+    assert.equal(plan.confidence.intent, "high");
+    assert.equal(plan.confidence.providerCoverage, "unknown");
+    assert.equal(plan.ai.used, true);
+    assert.equal(plan.ai.modelId, "kimi-k3");
+    assert.equal(plan.ai.inputTokens, 420);
+    assert.equal(plan.ai.outputTokens, 180);
+    assert.ok(plan.ai.latencyMs >= 0);
+    assert.match(plan.promptVersion, /^semantic-intent-v2\//);
+    assert.match(plan.requestCacheKey, /^[a-f0-9]{64}$/);
+    assert.match(plan.planHash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(plan).includes("fake-kimi-open-vocabulary-key"), false);
+    assert.equal(JSON.stringify(plan).includes("37.6176"), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("SemanticIntentV2 executes through the production search orchestrator", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEnv = {
+    QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
+    SEARCH_PROVIDER: process.env.SEARCH_PROVIDER,
+    MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+    KIMI_API_KEY: process.env.KIMI_API_KEY,
+  };
+  let kimiCalls = 0;
+  process.env.QUERY_INTELLIGENCE_MODE = "kimi";
+  process.env.SEARCH_PROVIDER = "demo";
+  process.env.MOONSHOT_API_KEY = "fake-kimi-orchestrator-key";
+  delete process.env.KIMI_API_KEY;
+  globalThis.fetch = async (_input, init) => {
+    kimiCalls += 1;
+    const body = JSON.parse(String(init?.body));
+    assert.equal(JSON.stringify(body).includes('"candidates"'), false);
+    const encoded = {
+      schemaVersion: "2.0",
+      normalizedGoal: "найти барбершопы и мужские парикмахерские",
+      entityKind: "physical_business",
+      physicalLocationRequirement: "required",
+      industries: ["уход за внешностью"],
+      coreBusinessTypes: ["барбершоп"],
+      adjacentBusinessTypes: ["мужская парикмахерская"],
+      excludedBusinessTypes: ["груминг животных"],
+      productsAndServices: ["стрижка бороды"],
+      includeSignals: ["барбершоп", "стрижка бороды"],
+      excludeSignals: ["груминг животных"],
+      retrievalTerms: {
+        precision: ["барбершоп"],
+        recall: ["мужская парикмахерская", "стрижка бороды"],
+        exclude: ["груминг животных"],
+      },
+      brandSearch: "include",
+      confidence: "high",
+      ambiguity: {
+        isAmbiguous: false,
+        reason: null,
+        clarificationQuestion: null,
+      },
+    };
+    return new Response(
+      [
+        `data: ${JSON.stringify({
+          model: "kimi-k3",
+          choices: [{ index: 0, delta: { content: JSON.stringify(encoded) }, finish_reason: null }],
+        })}\n\n`,
+        `data: ${JSON.stringify({
+          model: "kimi-k3",
+          choices: [{
+            index: 0,
+            delta: {},
+            finish_reason: "stop",
+            usage: { prompt_tokens: 300, completion_tokens: 150, total_tokens: 450 },
+          }],
+        })}\n\n`,
+        "data: [DONE]\n\n",
+      ].join(""),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  };
+
+  try {
+    const worker = await getWorker();
+    const response = await worker.fetch(
+      new Request("http://localhost/api/search?stream=1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          description: "Нужны места для ухода за бородой",
+          primaryQuery: "где приводят бороду в порядок",
+          excludeQueries: ["груминг животных"],
+          location: "Москва",
+          radiusKm: 5,
+          locale: "ru-RU",
+          countryCodes: ["RU"],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(response.status, 200);
+    const records = (await response.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const result = records.find((record) => record.type === "result")?.data;
+    assert.ok(result);
+    assert.equal(result.mode, "demo");
+    assert.equal(result.plan.schemaVersion, "2.0");
+    assert.equal(result.plan.semanticIntent.coreBusinessTypes[0], "барбершоп");
+    assert.equal(result.plan.ai.validation, "passed");
+    assert.ok(records.some(
+      (record) => record.type === "progress" && record.stage === "provider_compilation",
+    ));
+    assert.equal(kimiCalls, 1);
+    assert.equal(JSON.stringify(result).includes("fake-kimi-orchestrator-key"), false);
   } finally {
     globalThis.fetch = previousFetch;
     for (const [name, value] of Object.entries(previousEnv)) {

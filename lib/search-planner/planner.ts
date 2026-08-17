@@ -16,7 +16,6 @@ import {
   type KimiClient,
 } from "./kimi-client";
 import {
-  buildKimiCandidates,
   normalizePlannerInput,
   resolveDeterministically,
 } from "./resolver";
@@ -27,7 +26,9 @@ import {
 } from "./taxonomy";
 import {
   SEARCH_PLAN_SCHEMA_VERSION,
-  type KimiResolveResult,
+  SEMANTIC_INTENT_SCHEMA_VERSION,
+  type ConfidenceBand,
+  type KimiEncodeResult,
   type NormalizedSearchIntent,
   type PlannerInput,
   type PlannerMode,
@@ -35,14 +36,15 @@ import {
   type SearchPlan,
   type SearchPlanAiMetadata,
   type SearchPlanAlternative,
+  type SemanticIntentV2,
 } from "./types";
 
-export const DECISION_POLICY_VERSION = "2026-08-16.1";
-export const KIMI_PROMPT_VERSION = "2026-08-16.1";
+export const DECISION_POLICY_VERSION = "2026-08-17.1";
+export const KIMI_PROMPT_VERSION = "semantic-intent-v2/2026-08-17.1";
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;
 export const SEARCH_PLAN_RUNTIME_CACHE_MAX_ENTRIES = 200;
 
-export type PlannerKimiClient = Pick<KimiClient, "modelId" | "resolve">;
+export type PlannerKimiClient = Pick<KimiClient, "modelId" | "encode">;
 
 export type CreateSearchPlanOptions = {
   mode?: PlannerMode;
@@ -159,7 +161,7 @@ function executionPreview(selectedConceptIds: readonly string[]): SearchPlan["ex
   };
 }
 
-function aiMetadata(result: KimiResolveResult): SearchPlanAiMetadata {
+function aiMetadata(result: KimiEncodeResult): SearchPlanAiMetadata {
   return {
     used: true,
     modelId: result.modelId,
@@ -204,6 +206,8 @@ function planHashMaterial(draft: PlanDraft): CanonicalJsonValue {
     parentPlanHash: draft.parentPlanHash,
     status: draft.status,
     intent: draft.intent as unknown as CanonicalJsonValue,
+    semanticIntent: draft.semanticIntent as unknown as CanonicalJsonValue,
+    confidence: draft.confidence as unknown as CanonicalJsonValue,
     resolution: draft.resolution as unknown as CanonicalJsonValue,
     executionPreview: draft.executionPreview as unknown as CanonicalJsonValue,
     ai: {
@@ -258,6 +262,8 @@ async function finalizePlan(
 function baseDraft(
   intent: NormalizedSearchIntent,
   requestCacheKey: string,
+  semanticIntent: SemanticIntentV2,
+  providerCoverage: ConfidenceBand | "unknown" = "unknown",
 ): Pick<
   PlanDraft,
   | "schemaVersion"
@@ -268,6 +274,8 @@ function baseDraft(
   | "requestCacheKey"
   | "parentPlanHash"
   | "intent"
+  | "semanticIntent"
+  | "confidence"
 > {
   return {
     schemaVersion: SEARCH_PLAN_SCHEMA_VERSION,
@@ -278,7 +286,68 @@ function baseDraft(
     requestCacheKey,
     parentPlanHash: null,
     intent,
+    semanticIntent,
+    confidence: {
+      intent: semanticIntent.confidence,
+      providerCoverage,
+    },
   };
+}
+
+function synthesizedSemanticIntent(
+  intent: NormalizedSearchIntent,
+  confidence: ConfidenceBand = "low",
+): SemanticIntentV2 {
+  return {
+    schemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
+    normalizedGoal: intent.description || intent.primaryQuery,
+    entityKind: "physical_business",
+    physicalLocationRequirement: "required",
+    industries: [],
+    coreBusinessTypes: [intent.primaryQuery],
+    adjacentBusinessTypes: [...intent.relatedQueries],
+    excludedBusinessTypes: [...intent.excludeQueries],
+    productsAndServices: [],
+    includeSignals: [intent.primaryQuery, ...intent.relatedQueries],
+    excludeSignals: [...intent.excludeQueries],
+    retrievalTerms: {
+      precision: [intent.primaryQuery],
+      recall: [...new Set([intent.primaryQuery, ...intent.relatedQueries])],
+      exclude: [...intent.excludeQueries],
+    },
+    brandSearch: "include",
+    confidence,
+    ambiguity: {
+      isAmbiguous: false,
+      reason: null,
+      clarificationQuestion: null,
+    },
+  };
+}
+
+function compatibilityIntent(
+  source: NormalizedSearchIntent,
+  semantic: SemanticIntentV2,
+): NormalizedSearchIntent {
+  const core = semantic.coreBusinessTypes[0] ?? source.primaryQuery;
+  return normalizePlannerInput({
+    ...source,
+    description: semantic.normalizedGoal,
+    primaryQuery: core,
+    relatedQueries: [...new Set([
+        ...semantic.coreBusinessTypes.slice(1),
+        ...semantic.adjacentBusinessTypes,
+        ...semantic.productsAndServices,
+        ...semantic.retrievalTerms.precision,
+        ...semantic.retrievalTerms.recall,
+      ])].slice(0, 20),
+    excludeQueries: [...new Set([
+        ...source.excludeQueries,
+        ...semantic.excludedBusinessTypes,
+        ...semantic.excludeSignals,
+        ...semantic.retrievalTerms.exclude,
+      ])].slice(0, 20),
+  });
 }
 
 function clarificationQuestion(locale: NormalizedSearchIntent["locale"]): string {
@@ -294,14 +363,27 @@ export async function createSearchPlan(
   const intent = normalizePlannerInput(input);
   const requestCacheKey = await createRequestCacheKey(intent);
   const deterministic = resolveDeterministically(intent);
-  const common = baseDraft(intent, requestCacheKey);
+  const mode = options.mode ?? "deterministic";
+  const common = baseDraft(
+    intent,
+    requestCacheKey,
+    synthesizedSemanticIntent(
+      intent,
+      deterministic.decision === "ready" ? "high" : "low",
+    ),
+    deterministic.decision === "ready" ? "high" : "unknown",
+  );
   const signingOptions = {
     signingSecret: options.signingSecret,
     confirmationTtlSeconds: options.confirmationTtlSeconds,
     now: options.now,
   };
 
-  if (deterministic.decision === "ready" && deterministic.selectedConceptId) {
+  if (
+    mode === "deterministic" &&
+    deterministic.decision === "ready" &&
+    deterministic.selectedConceptId
+  ) {
     const selectedConceptIds = [deterministic.selectedConceptId];
     return finalizePlan(
       {
@@ -332,7 +414,6 @@ export async function createSearchPlan(
       label: candidate.label,
       reasonCodes: candidate.reasonCodes,
     }));
-  const mode = options.mode ?? "deterministic";
   if (mode === "deterministic") {
     const hasAlternatives = deterministicAlternatives.length > 0;
     return finalizePlan(
@@ -360,20 +441,37 @@ export async function createSearchPlan(
 
   const kimiClient = options.kimiClient;
   if (!kimiClient) {
-    const hasAlternatives = deterministicAlternatives.length > 0;
+    if (deterministic.decision === "ready" && deterministic.selectedConceptId) {
+      const selectedConceptIds = [deterministic.selectedConceptId];
+      return finalizePlan(
+        {
+          ...common,
+          status: "degraded",
+          resolution: {
+            method: "fallback",
+            selectedConceptIds,
+            alternatives: [],
+            confidenceBand: "high",
+            reasonCodes: ["KIMI_UNAVAILABLE"],
+            clarificationQuestion: null,
+          },
+          executionPreview: executionPreview(selectedConceptIds),
+          ai: failedAiMetadata(null),
+        },
+        signingOptions,
+      );
+    }
     return finalizePlan(
       {
         ...common,
-        status: hasAlternatives ? "needs_confirmation" : "unsupported",
+        status: "unsupported",
         resolution: {
           method: "fallback",
           selectedConceptIds: [],
-          alternatives: deterministicAlternatives,
+          alternatives: [],
           confidenceBand: "unknown",
           reasonCodes: ["KIMI_UNAVAILABLE"],
-          clarificationQuestion: hasAlternatives
-            ? clarificationQuestion(intent.locale)
-            : null,
+          clarificationQuestion: null,
         },
         executionPreview: null,
         ai: failedAiMetadata(null),
@@ -382,27 +480,58 @@ export async function createSearchPlan(
     );
   }
 
-  const candidates = buildKimiCandidates(deterministic, intent.locale);
   try {
-    const result = await kimiClient.resolve({
+    const result = await kimiClient.encode({
       intent,
-      candidates,
-      candidateMode: deterministic.fullCatalog ? "full_catalog" : "shortlist",
       signal: options.signal,
     });
-    const kimi = result.resolution;
-    const policyRequiresConfirmation = deterministic.candidates.some(
+    const semanticIntent = result.semanticIntent;
+    const semanticResolution = resolveDeterministically(
+      compatibilityIntent(intent, semanticIntent),
+    );
+    const policyRequiresConfirmation = semanticIntent.ambiguity.isAmbiguous || deterministic.candidates.some(
       (candidate) => candidate.reasonCodes.includes("AMBIGUOUS_SCOPE"),
     );
+    const semanticCommon = baseDraft(
+      intent,
+      requestCacheKey,
+      semanticIntent,
+      semanticResolution.decision === "ready"
+        ? semanticResolution.method === "exact" ? "high" : "medium"
+        : "unknown",
+    );
+
+    if (
+      semanticIntent.entityKind === "non_physical" ||
+      semanticIntent.physicalLocationRequirement === "not_applicable"
+    ) {
+      return finalizePlan(
+        {
+          ...semanticCommon,
+          status: "unsupported",
+          resolution: {
+            method: "kimi",
+            selectedConceptIds: [],
+            alternatives: [],
+            confidenceBand: semanticIntent.confidence,
+            reasonCodes: ["PHYSICAL_PLACE_UNCLEAR"],
+            clarificationQuestion: semanticIntent.ambiguity.clarificationQuestion,
+          },
+          executionPreview: null,
+          ai: aiMetadata(result),
+        },
+        signingOptions,
+      );
+    }
+
     if (policyRequiresConfirmation) {
       const candidateIds = [
         ...deterministic.candidates.map((candidate) => candidate.conceptId),
-        ...kimi.selectedConceptIds,
-        ...kimi.alternatives.map((alternative) => alternative.conceptId),
+        ...semanticResolution.candidates.map((candidate) => candidate.conceptId),
       ];
       return finalizePlan(
         {
-          ...common,
+          ...semanticCommon,
           status: "needs_confirmation",
           resolution: {
             method: "kimi",
@@ -412,51 +541,11 @@ export async function createSearchPlan(
               intent.locale,
               ["AMBIGUOUS_SCOPE"],
             ),
-            confidenceBand: kimi.confidenceBand,
+            confidenceBand: semanticIntent.confidence,
             reasonCodes: ["AMBIGUOUS_SCOPE"],
-            clarificationQuestion: clarificationQuestion(intent.locale),
-          },
-          executionPreview: null,
-          ai: aiMetadata(result),
-        },
-        signingOptions,
-      );
-    }
-    if (
-      kimi.status === "selected" &&
-      kimi.confidenceBand === "high" &&
-      kimi.selectedConceptIds.length === 1
-    ) {
-      return finalizePlan(
-        {
-          ...common,
-          status: "ready",
-          resolution: {
-            method: "kimi",
-            selectedConceptIds: kimi.selectedConceptIds,
-            alternatives: [],
-            confidenceBand: kimi.confidenceBand,
-            reasonCodes: ["SEMANTIC_MATCH"],
-            clarificationQuestion: null,
-          },
-          executionPreview: executionPreview(kimi.selectedConceptIds),
-          ai: aiMetadata(result),
-        },
-        signingOptions,
-      );
-    }
-    if (kimi.status === "unsupported") {
-      return finalizePlan(
-        {
-          ...common,
-          status: "unsupported",
-          resolution: {
-            method: "kimi",
-            selectedConceptIds: [],
-            alternatives: [],
-            confidenceBand: kimi.confidenceBand,
-            reasonCodes: [kimi.clarificationReasonCode ?? "NO_SUPPORTED_CONCEPT"],
-            clarificationQuestion: null,
+            clarificationQuestion:
+              semanticIntent.ambiguity.clarificationQuestion ??
+              clarificationQuestion(intent.locale),
           },
           executionPreview: null,
           ai: aiMetadata(result),
@@ -465,24 +554,49 @@ export async function createSearchPlan(
       );
     }
 
-    const candidateIds = [
-      ...kimi.selectedConceptIds,
-      ...kimi.alternatives.map((alternative) => alternative.conceptId),
-    ];
-    const reasonCodes = kimi.clarificationReasonCode
-      ? [kimi.clarificationReasonCode]
-      : (["AMBIGUOUS_SCOPE"] as const);
+    const executableResolution =
+      semanticResolution.decision === "ready" && semanticResolution.selectedConceptId
+        ? semanticResolution
+        : null;
+    if (
+      executableResolution?.selectedConceptId
+    ) {
+      const selectedConceptIds = [executableResolution.selectedConceptId];
+      const executableCommon = baseDraft(
+        intent,
+        requestCacheKey,
+        semanticIntent,
+        executableResolution.method === "exact" ? "high" : "medium",
+      );
+      return finalizePlan(
+        {
+          ...executableCommon,
+          status: "ready",
+          resolution: {
+            method: "kimi",
+            selectedConceptIds,
+            alternatives: [],
+            confidenceBand: semanticIntent.confidence,
+            reasonCodes: ["SEMANTIC_MATCH"],
+            clarificationQuestion: null,
+          },
+          executionPreview: executionPreview(selectedConceptIds),
+          ai: aiMetadata(result),
+        },
+        signingOptions,
+      );
+    }
     return finalizePlan(
       {
-        ...common,
-        status: "needs_confirmation",
+        ...semanticCommon,
+        status: "unsupported",
         resolution: {
           method: "kimi",
           selectedConceptIds: [],
-          alternatives: alternativesFromIds(candidateIds, intent.locale, reasonCodes),
-          confidenceBand: kimi.confidenceBand,
-          reasonCodes: [...reasonCodes],
-          clarificationQuestion: clarificationQuestion(intent.locale),
+          alternatives: [],
+          confidenceBand: semanticIntent.confidence,
+          reasonCodes: ["PROVIDER_COVERAGE_GAP"],
+          clarificationQuestion: null,
         },
         executionPreview: null,
         ai: aiMetadata(result),
@@ -491,20 +605,37 @@ export async function createSearchPlan(
     );
   } catch (error) {
     if (error instanceof KimiClientError && error.code === "KIMI_ABORTED") throw error;
-    const hasAlternatives = deterministicAlternatives.length > 0;
+    if (deterministic.decision === "ready" && deterministic.selectedConceptId) {
+      const selectedConceptIds = [deterministic.selectedConceptId];
+      return finalizePlan(
+        {
+          ...common,
+          status: "degraded",
+          resolution: {
+            method: "fallback",
+            selectedConceptIds,
+            alternatives: [],
+            confidenceBand: "high",
+            reasonCodes: [reasonForKimiFailure(error)],
+            clarificationQuestion: null,
+          },
+          executionPreview: executionPreview(selectedConceptIds),
+          ai: failedAiMetadata(kimiClient.modelId),
+        },
+        signingOptions,
+      );
+    }
     return finalizePlan(
       {
         ...common,
-        status: hasAlternatives ? "needs_confirmation" : "unsupported",
+        status: "unsupported",
         resolution: {
           method: "fallback",
           selectedConceptIds: [],
-          alternatives: deterministicAlternatives,
+          alternatives: [],
           confidenceBand: "unknown",
           reasonCodes: [reasonForKimiFailure(error)],
-          clarificationQuestion: hasAlternatives
-            ? clarificationQuestion(intent.locale)
-            : null,
+          clarificationQuestion: null,
         },
         executionPreview: null,
         ai: failedAiMetadata(kimiClient.modelId),
@@ -609,7 +740,12 @@ export async function confirmSearchPlan(
       "Exactly one concept allowed by the confirmation token is required",
     );
   }
-  const common = baseDraft(intent, requestCacheKey);
+  const common = baseDraft(
+    intent,
+    requestCacheKey,
+    synthesizedSemanticIntent(intent, "high"),
+    "high",
+  );
   return finalizePlan(
     {
       ...common,

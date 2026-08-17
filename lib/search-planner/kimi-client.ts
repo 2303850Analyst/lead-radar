@@ -1,9 +1,12 @@
 import "server-only";
 
-import { createKimiResolutionSchema, validateKimiResolution } from "./schema";
+import {
+  KIMI_SEMANTIC_INTENT_SCHEMA,
+  validateKimiSemanticIntent,
+} from "./schema";
 import type {
-  KimiResolveRequest,
-  KimiResolveResult,
+  KimiEncodeRequest,
+  KimiEncodeResult,
   KimiUsage,
 } from "./types";
 
@@ -12,7 +15,6 @@ export const DEFAULT_KIMI_MODEL = "kimi-k3";
 export const DEFAULT_KIMI_TIMEOUT_MS = 30_000;
 
 const ALLOWED_KIMI_HOSTS = new Set(["api.moonshot.ai", "api.moonshot.cn"]);
-const MAX_KIMI_CANDIDATES = 60;
 const MAX_KIMI_STREAM_BYTES = 256_000;
 
 export type KimiReasoningEffort = "low" | "medium" | "high";
@@ -37,7 +39,7 @@ export type KimiModelsCanaryResult = {
 export type KimiClient = {
   readonly modelId: string;
   readonly baseUrl: string;
-  resolve(request: KimiResolveRequest): Promise<KimiResolveResult>;
+  encode(request: KimiEncodeRequest): Promise<KimiEncodeResult>;
   listModels(signal?: AbortSignal): Promise<KimiModelsCanaryResult>;
 };
 
@@ -218,18 +220,20 @@ async function timedFetch<T>(
   }
 }
 
-function plannerPrompt(request: KimiResolveRequest): {
+function plannerPrompt(request: KimiEncodeRequest): {
   system: string;
   user: string;
 } {
   return {
     system: [
-      "You are the LeadRadar category resolver for physical businesses in CIS countries.",
-      "Use only conceptId values present in candidates. Never invent categories.",
-      "Select exactly one concept only when the user's intent is clear.",
-      "Return ambiguous with 2-3 alternatives when clarification is required.",
-      "Return unsupported when no candidate represents a physical place matching the intent.",
-      "Negative aliases are exclusion evidence. Output only the required JSON object.",
+      "You are the LeadRadar semantic encoder for business-place discovery in CIS countries.",
+      "Interpret the user's ordinary language into open-vocabulary business semantics.",
+      "Use concise natural-language business types, industries, services, synonyms, and retrieval terms.",
+      "Preserve include and exclude intent. Separate the core business from adjacent businesses.",
+      "Do not output category IDs, provider names, URLs, coordinates, HTTP parameters, map filters, or API instructions.",
+      "Locale and country are trusted context only; never repeat or modify geography in the output.",
+      "Mark ambiguity only when materially different physical-business interpretations remain.",
+      "Output only the required JSON object.",
     ].join(" "),
     user: JSON.stringify({
       locale: request.intent.locale,
@@ -238,8 +242,6 @@ function plannerPrompt(request: KimiResolveRequest): {
       relatedQueries: request.intent.relatedQueries,
       excludeQueries: request.intent.excludeQueries,
       description: request.intent.description,
-      candidateMode: request.candidateMode,
-      candidates: request.candidates,
     }),
   };
 }
@@ -252,7 +254,10 @@ type ParsedKimiStream = {
 };
 
 function invalidStream(message: string, cause?: unknown): KimiClientError {
-  return new KimiClientError("KIMI_INVALID_RESPONSE", message, { cause });
+  return new KimiClientError("KIMI_INVALID_RESPONSE", message, {
+    cause,
+    retryable: true,
+  });
 }
 
 async function readKimiSse(response: Response): Promise<ParsedKimiStream> {
@@ -378,18 +383,7 @@ export function createKimiClient(config: KimiClientConfig): KimiClient {
   return Object.freeze({
     modelId,
     baseUrl,
-    async resolve(request: KimiResolveRequest): Promise<KimiResolveResult> {
-      const candidateIds = request.candidates.map((candidate) => candidate.conceptId);
-      if (
-        candidateIds.length < 1 ||
-        candidateIds.length > MAX_KIMI_CANDIDATES ||
-        new Set(candidateIds).size !== candidateIds.length
-      ) {
-        throw new KimiClientError(
-          "KIMI_CONFIGURATION_ERROR",
-          `Kimi requires 1-${MAX_KIMI_CANDIDATES} unique candidates`,
-        );
-      }
+    async encode(request: KimiEncodeRequest): Promise<KimiEncodeResult> {
       const prompt = plannerPrompt(request);
       const startedAt = Date.now();
       const streamed = await timedFetch(
@@ -407,13 +401,13 @@ export function createKimiClient(config: KimiClientConfig): KimiClient {
             response_format: {
               type: "json_schema",
               json_schema: {
-                name: "lead_radar_category_resolution",
+                name: "lead_radar_semantic_intent_v2",
                 strict: true,
-                schema: createKimiResolutionSchema(candidateIds),
+                schema: KIMI_SEMANTIC_INTENT_SCHEMA,
               },
             },
             reasoning_effort: reasoningEffort,
-            max_completion_tokens: 300,
+            max_completion_tokens: 1_200,
             stream: true,
           }),
         },
@@ -429,21 +423,21 @@ export function createKimiClient(config: KimiClientConfig): KimiClient {
         throw new KimiClientError(
           "KIMI_INVALID_RESPONSE",
           "Kimi structured response is not valid JSON",
-          { cause: error },
+          { cause: error, retryable: true },
         );
       }
-      let resolution;
+      let semanticIntent;
       try {
-        resolution = validateKimiResolution(parsed, candidateIds);
+        semanticIntent = validateKimiSemanticIntent(parsed);
       } catch (error) {
         throw new KimiClientError(
           "KIMI_INVALID_RESPONSE",
           "Kimi structured response failed local validation",
-          { cause: error },
+          { cause: error, retryable: true },
         );
       }
       return {
-        resolution,
+        semanticIntent,
         modelId: streamed.modelId ?? modelId,
         finishReason: streamed.finishReason,
         latencyMs,

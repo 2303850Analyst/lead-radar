@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://lead-radar.local/schemas/kimi-semantic-intent.schema.json",
+  "title": "LeadRadar SemanticIntentV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "normalizedGoal",
+    "entityKind",
+    "physicalLocationRequirement",
+    "industries",
+    "coreBusinessTypes",
+    "adjacentBusinessTypes",
+    "excludedBusinessTypes",
+    "productsAndServices",
+    "includeSignals",
+    "excludeSignals",
+    "retrievalTerms",
+    "brandSearch",
+    "confidence",
+    "ambiguity"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "2.0" },
+    "normalizedGoal": { "$ref": "#/definitions/longText" },
+    "entityKind": {
+      "type": "string",
+      "enum": ["physical_business", "service_location", "mixed", "non_physical", "unclear"]
+    },
+    "physicalLocationRequirement": {
+      "type": "string",
+      "enum": ["required", "optional", "not_applicable"]
+    },
+    "industries": { "$ref": "#/definitions/terms" },
+    "coreBusinessTypes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/term" }
+    },
+    "adjacentBusinessTypes": { "$ref": "#/definitions/terms" },
+    "excludedBusinessTypes": { "$ref": "#/definitions/terms" },
+    "productsAndServices": { "$ref": "#/definitions/terms" },
+    "includeSignals": { "$ref": "#/definitions/terms" },
+    "excludeSignals": { "$ref": "#/definitions/terms" },
+    "retrievalTerms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["precision", "recall", "exclude"],
+      "properties": {
+        "precision": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/term" }
+        },
+        "recall": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/term" }
+        },
+        "exclude": { "$ref": "#/definitions/terms" }
+      }
+    },
+    "brandSearch": { "type": "string", "enum": ["include", "exclude", "only"] },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "ambiguity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["isAmbiguous", "reason", "clarificationQuestion"],
+      "properties": {
+        "isAmbiguous": { "type": "boolean" },
+        "reason": { "anyOf": [{ "$ref": "#/definitions/longText" }, { "type": "null" }] },
+        "clarificationQuestion": { "anyOf": [{ "$ref": "#/definitions/longText" }, { "type": "null" }] }
+      }
+    }
+  },
+  "definitions": {
+    "term": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "longText": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "terms": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/term" }
+    }
+  }
+}

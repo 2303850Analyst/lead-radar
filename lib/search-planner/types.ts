@@ -1,4 +1,5 @@
-export const SEARCH_PLAN_SCHEMA_VERSION = "1.0" as const;
+export const SEARCH_PLAN_SCHEMA_VERSION = "2.0" as const;
+export const SEMANTIC_INTENT_SCHEMA_VERSION = "2.0" as const;
 
 export const SUPPORTED_COUNTRY_CODES = ["RU", "BY", "KZ"] as const;
 export type SupportedCountryCode = (typeof SUPPORTED_COUNTRY_CODES)[number];
@@ -66,6 +67,7 @@ export type ResolutionReasonCode =
   | "AMBIGUOUS_SCOPE"
   | "NEGATIVE_CONFLICT"
   | "NO_SUPPORTED_CONCEPT"
+  | "PROVIDER_COVERAGE_GAP"
   | "PHYSICAL_PLACE_UNCLEAR"
   | "LOCALE_UNCERTAIN"
   | "KIMI_UNAVAILABLE"
@@ -90,18 +92,39 @@ export type DeterministicResolution = {
   fullCatalog: boolean;
 };
 
-export type KimiResolutionStatus = "selected" | "ambiguous" | "unsupported";
 export type ConfidenceBand = "high" | "medium" | "low";
 
-export type KimiResolution = {
-  status: KimiResolutionStatus;
-  selectedConceptIds: string[];
-  alternatives: Array<{
-    conceptId: string;
-    reasonCodes: ResolutionReasonCode[];
-  }>;
-  confidenceBand: ConfidenceBand;
-  clarificationReasonCode: ResolutionReasonCode | null;
+export type SemanticEntityKind =
+  | "physical_business"
+  | "service_location"
+  | "mixed"
+  | "non_physical"
+  | "unclear";
+
+export type SemanticIntentV2 = {
+  schemaVersion: typeof SEMANTIC_INTENT_SCHEMA_VERSION;
+  normalizedGoal: string;
+  entityKind: SemanticEntityKind;
+  physicalLocationRequirement: PhysicalPlaceRequirement;
+  industries: string[];
+  coreBusinessTypes: string[];
+  adjacentBusinessTypes: string[];
+  excludedBusinessTypes: string[];
+  productsAndServices: string[];
+  includeSignals: string[];
+  excludeSignals: string[];
+  retrievalTerms: {
+    precision: string[];
+    recall: string[];
+    exclude: string[];
+  };
+  brandSearch: "include" | "exclude" | "only";
+  confidence: ConfidenceBand;
+  ambiguity: {
+    isAmbiguous: boolean;
+    reason: string | null;
+    clarificationQuestion: string | null;
+  };
 };
 
 export type SearchPlanAlternative = {
@@ -132,6 +155,11 @@ export type SearchPlan = {
   parentPlanHash: string | null;
   status: PlanStatus;
   intent: NormalizedSearchIntent;
+  semanticIntent: SemanticIntentV2;
+  confidence: {
+    intent: ConfidenceBand | "unknown";
+    providerCoverage: ConfidenceBand | "unknown";
+  };
   resolution: {
     method: "exact" | "semantic" | "kimi" | "user_confirmed" | "fallback";
     selectedConceptIds: string[];
@@ -152,29 +180,19 @@ export type SearchPlan = {
   };
 };
 
-export type KimiCandidate = {
-  conceptId: string;
-  label: string;
-  aliases: string[];
-  negativeAliases: string[];
-  physicalPlace: PhysicalPlaceRequirement;
-};
-
-export type KimiResolveRequest = {
-  intent: NormalizedSearchIntent;
-  candidates: readonly KimiCandidate[];
-  candidateMode: "shortlist" | "full_catalog";
-  signal?: AbortSignal;
-};
-
 export type KimiUsage = {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
 };
 
-export type KimiResolveResult = {
-  resolution: KimiResolution;
+export type KimiEncodeRequest = {
+  intent: NormalizedSearchIntent;
+  signal?: AbortSignal;
+};
+
+export type KimiEncodeResult = {
+  semanticIntent: SemanticIntentV2;
   modelId: string;
   finishReason: "stop";
   latencyMs: number;

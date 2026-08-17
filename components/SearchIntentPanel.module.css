@@ -120,6 +120,43 @@
   font-size: 8px;
 }
 
+.semanticGroups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 7px;
+}
+
+.semanticGroup {
+  min-width: 0;
+}
+
+.semanticGroup > small {
+  display: block;
+  margin-bottom: 5px;
+  color: #74839a;
+  font-weight: 680;
+}
+
+.semanticGroup > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.semanticGroup span {
+  max-width: 100%;
+  padding: 3px 6px;
+  overflow: hidden;
+  border: 1px solid #d8e4f3;
+  border-radius: 999px;
+  color: #405d82;
+  background: #f4f8fe;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .alternatives {
   display: grid;
   gap: 7px;
@@ -265,12 +302,24 @@
   line-height: 1.4;
 }
 
+.clarificationNote {
+  margin: 11px 0 0;
+  padding: 9px 10px;
+  border-left: 3px solid #7aa7e7;
+  border-radius: 6px;
+  color: #4d6482;
+  background: rgba(235, 243, 255, 0.72);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
 @media (max-width: 720px) {
   .panel { padding: 13px; }
   .heading { grid-template-columns: auto 1fr; }
   .confidence { grid-column: 1 / -1; justify-self: start; }
   .footer { align-items: stretch; flex-direction: column; }
   .actions { display: grid; grid-template-columns: 1fr; }
+  .semanticGroups { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

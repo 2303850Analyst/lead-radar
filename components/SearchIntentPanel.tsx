@@ -9,7 +9,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import type { PlanStatus, SearchPlan } from "@/lib/search-planner/types";
 
@@ -22,7 +22,7 @@ const STATUS_COPY: Record<
   ready: {
     label: "Трактовка готова",
     title: "Запрос понятен",
-    description: "Категория проверена — можно переходить к поиску на карте.",
+    description: "Смысл запроса проверен — можно переходить к поиску на карте.",
   },
   needs_confirmation: {
     label: "Нужно уточнение",
@@ -30,10 +30,10 @@ const STATUS_COPY: Record<
     description: "Выберите трактовку. До подтверждения запрос к карте не отправляется.",
   },
   unsupported: {
-    label: "Нужно переформулировать",
-    title: "Для этой ниши пока нет безопасной категории",
+    label: "Пока нельзя запустить",
+    title: "Трактовка готова, стратегия источника — нет",
     description:
-      "Уточните вид бизнеса или добавьте более конкретное название услуги — поиск наугад не запускается.",
+      "Мы поняли ваш запрос, но ещё не собрали для него исполняемые параметры карты. Это ограничение текущего компилятора, а не вашей формулировки.",
   },
   degraded: {
     label: "Без AI-проверки",
@@ -42,6 +42,28 @@ const STATUS_COPY: Record<
       "Интеллектуальная проверка временно недоступна, но категория однозначно найдена локальными правилами.",
   },
 };
+
+function statusCopyForPlan(plan: SearchPlan) {
+  if (
+    plan.status === "unsupported" &&
+    plan.resolution.reasonCodes.includes("PHYSICAL_PLACE_UNCLEAR")
+  ) {
+    return {
+      label: "Не подходит для поиска мест",
+      title: "Запрос не описывает физические организации",
+      description:
+        "LeadRadar ищет компании и точки на карте. Уточните, какой тип физического бизнеса нужно найти.",
+    };
+  }
+  if (plan.status === "needs_confirmation" && plan.semanticIntent.ambiguity.reason) {
+    return {
+      ...STATUS_COPY.needs_confirmation,
+      title: "Запрос допускает несколько трактовок",
+      description: plan.semanticIntent.ambiguity.reason,
+    };
+  }
+  return STATUS_COPY[plan.status];
+}
 
 function confidenceLabel(confidence: SearchPlan["resolution"]["confidenceBand"]) {
   if (confidence === "high") return "Высокая уверенность";
@@ -66,33 +88,6 @@ function readableConceptId(conceptId: string) {
     .replace(/(^|\s)\S/g, (letter) => letter.toLocaleUpperCase("ru-RU")) ?? conceptId;
 }
 
-function selectedLabels(plan: SearchPlan) {
-  const alternativeLabels = new Map(
-    plan.resolution.alternatives.map((item) => [item.conceptId, item.label]),
-  );
-
-  return plan.resolution.selectedConceptIds.map(
-    (conceptId, index) =>
-      alternativeLabels.get(conceptId) ??
-      plan.executionPreview?.categoryLabels[index] ??
-      readableConceptId(conceptId),
-  );
-}
-
-export function isSearchPlan(value: unknown): value is SearchPlan {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<SearchPlan>;
-  return (
-    typeof candidate.status === "string" &&
-    ["ready", "needs_confirmation", "unsupported", "degraded"].includes(
-      candidate.status,
-    ) &&
-    Boolean(candidate.resolution) &&
-    Array.isArray(candidate.resolution?.selectedConceptIds) &&
-    Array.isArray(candidate.resolution?.alternatives)
-  );
-}
-
 export default function SearchIntentPanel({
   plan,
   busy,
@@ -105,8 +100,7 @@ export default function SearchIntentPanel({
   onRevise: () => void;
 }) {
   const [selectedConceptId, setSelectedConceptId] = useState("");
-  const statusCopy = STATUS_COPY[plan.status];
-  const canonicalLabels = useMemo(() => selectedLabels(plan), [plan]);
+  const statusCopy = statusCopyForPlan(plan);
 
   const alternatives = plan.resolution.alternatives.slice(0, 3);
   const confirmationToken = plan.confirmation?.token ?? null;
@@ -132,19 +126,30 @@ export default function SearchIntentPanel({
           <h2 id="intent-panel-title">{statusCopy.title}</h2>
         </div>
         <span className={styles.confidence}>
-          {confidenceLabel(plan.resolution.confidenceBand)}
+          {confidenceLabel(plan.confidence.intent)}
         </span>
       </div>
 
       <p className={styles.description}>{statusCopy.description}</p>
 
-      {canonicalLabels.length > 0 && (
-        <div className={styles.interpretation}>
-          <span>Каноническая категория</span>
-          <strong>{canonicalLabels.join(", ")}</strong>
-          <small>{plan.resolution.selectedConceptIds.join(" · ")}</small>
+      <div className={styles.interpretation}>
+        <span>Как сервис понял задачу</span>
+        <strong>{plan.semanticIntent.normalizedGoal}</strong>
+        <div className={styles.semanticGroups}>
+          <SemanticTerms
+            label="Основные типы"
+            terms={plan.semanticIntent.coreBusinessTypes}
+          />
+          <SemanticTerms
+            label="Смежные типы"
+            terms={plan.semanticIntent.adjacentBusinessTypes}
+          />
+          <SemanticTerms
+            label="Исключаем"
+            terms={plan.semanticIntent.excludedBusinessTypes}
+          />
         </div>
-      )}
+      </div>
 
       {plan.status === "needs_confirmation" && alternatives.length > 0 && (
         <fieldset className={styles.alternatives}>
@@ -176,6 +181,13 @@ export default function SearchIntentPanel({
         </fieldset>
       )}
 
+      {plan.status === "needs_confirmation" && alternatives.length === 0 && (
+        <p className={styles.clarificationNote}>
+          {plan.semanticIntent.ambiguity.clarificationQuestion ??
+            "Уточните формулировку запроса, чтобы выбрать одну трактовку."}
+        </p>
+      )}
+
       {plan.executionPreview && (
         <div className={styles.preview}>
           <Sparkles size={15} aria-hidden="true" />
@@ -195,7 +207,7 @@ export default function SearchIntentPanel({
           {plan.ai.cacheHit ? " · из кэша" : ""}
         </span>
 
-        {plan.status === "needs_confirmation" ? (
+        {plan.status === "needs_confirmation" && alternatives.length > 0 ? (
           <div className={styles.actions}>
             <button type="button" className="button" onClick={onRevise} disabled={busy}>
               Изменить запрос
@@ -213,24 +225,42 @@ export default function SearchIntentPanel({
               <Check size={15} /> Подтвердить и искать
             </button>
           </div>
+        ) : plan.status === "needs_confirmation" ? (
+          <button type="button" className="button" onClick={onRevise} disabled={busy}>
+            Уточнить запрос
+          </button>
         ) : plan.status === "unsupported" ? (
           <button type="button" className="button" onClick={onRevise} disabled={busy}>
-            Уточнить формулировку
+            Изменить запрос
           </button>
         ) : (
           <span className={styles.safeNote}>
             <Info size={13} aria-hidden="true" />
-            В карту передаются только разрешённые категории
+            Карта получает только параметры, проверенные сервером
           </span>
         )}
       </div>
 
-      {plan.status === "needs_confirmation" && !confirmationToken && (
+      {plan.status === "needs_confirmation" && alternatives.length > 0 && !confirmationToken && (
         <p className={styles.tokenWarning} role="alert">
           Сервер не выдал безопасный токен подтверждения. Измените запрос и повторите
           планирование.
         </p>
       )}
     </section>
+  );
+}
+
+function SemanticTerms({ label, terms }: { label: string; terms: string[] }) {
+  if (terms.length === 0) return null;
+  return (
+    <div className={styles.semanticGroup}>
+      <small>{label}</small>
+      <div>
+        {terms.map((term) => (
+          <span key={`${label}:${term}`}>{term}</span>
+        ))}
+      </div>
+    </div>
   );
 }

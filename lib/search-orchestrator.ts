@@ -93,7 +93,7 @@ function ensureExecutablePlan(
   }
   if (plan.status === "unsupported") {
     throw new SearchPlanOutcomeError(
-      "Для запроса пока нет безопасной категории поиска",
+      "Смысл запроса понятен, но исполняемая стратегия источника пока не готова",
       "SEARCH_PLAN_UNSUPPORTED",
       422,
       plan,
@@ -125,7 +125,7 @@ export function createSearchOrchestrator(
         status: "started",
         message: payload.confirmedConceptIds?.length
           ? "Проверяем выбранную трактовку"
-          : "Сопоставляем запрос с бизнес-категориями",
+          : "Систематизируем бизнес-намерение пользователя",
       });
 
       const plan = payload.confirmedConceptIds?.length && payload.confirmationToken
@@ -137,12 +137,12 @@ export function createSearchOrchestrator(
         status: "completed",
         message:
           plan.status === "ready"
-            ? "Категория поиска определена"
+            ? "Смысл запроса и стратегия поиска определены"
             : plan.status === "degraded"
               ? "Используем безопасную локальную трактовку"
               : plan.status === "needs_confirmation"
                 ? "Требуется выбор трактовки"
-                : "Поддерживаемая категория не найдена",
+                : "Смысл понятен, но исполняемая стратегия пока не готова",
       });
 
       ensureExecutablePlan(plan, dependencies.isPlannerInfrastructureFailure);

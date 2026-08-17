@@ -54,7 +54,9 @@ import type { SearchPlan } from "@/lib/search-planner/types";
 
 import LeadMap from "./LeadMap";
 import LocationSelector from "./LocationSelector";
-import SearchIntentPanel, { isSearchPlan } from "./SearchIntentPanel";
+import { isSearchPlan } from "@/lib/search-planner/guards";
+
+import SearchIntentPanel from "./SearchIntentPanel";
 import SearchProgressPanel, {
   type SearchProgressPanelEvent,
 } from "./SearchProgressPanel";
@@ -767,7 +769,7 @@ export default function LeadRadarApp() {
         type: "progress",
         stage: "intent_resolution",
         status: "started",
-        message: "Сопоставляем формулировку с бизнес-категориями",
+        message: "Систематизируем бизнес-намерение",
         timestamp: new Date().toISOString(),
       },
     ]);
@@ -821,7 +823,7 @@ export default function LeadRadarApp() {
             planPayload.status === "needs_confirmation"
               ? "Найдены несколько возможных трактовок"
               : planPayload.status === "unsupported"
-                ? "Безопасная категория пока не найдена"
+                ? "Смысл понятен, но стратегия источника пока не готова"
                 : "Трактовка запроса готова",
           timestamp: new Date().toISOString(),
         },

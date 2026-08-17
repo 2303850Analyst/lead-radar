@@ -1,14 +1,15 @@
 # LeadRadar Roadmap
 
-Актуально на: 2026-08-16
+Актуально на: 2026-08-17
 
 Текущая версия: `0.4.0-alpha.1`
 
-Статус: локальный alpha переводит свободный запрос в проверяемый `SearchPlan`,
-использует constrained Kimi для сложных формулировок и только после безопасной
-компиляции обращается к Geoapify. Реальные RU/BY/KZ canary и полный
-Kimi → Geoapify поток пройдены, но production release и внешний SLA имеют
-решение `NO-GO` до закрытия quality, reliability и security gates.
+Статус: локальный alpha переводит свободный запрос в open-vocabulary
+`SemanticIntentV2` через Kimi и только после server-side compilation обращается
+к Geoapify. Provider compiler пока сохраняет legacy-покрытие 40 ниш, поэтому
+системная компиляция полного каталога — следующий P0. Production release и
+внешний SLA имеют решение `NO-GO` до закрытия quality, reliability и security
+gates.
 
 ## Цель продукта
 
@@ -136,9 +137,14 @@ scoring, экспорт и показ на сторонней карте не в
 Выполнено в alpha:
 
 - 40 canonical concepts, независимых от конкретного картографического API;
-- exact/synonym/fuzzy resolver и full-catalog Kimi path для слабого lexical
-  совпадения;
-- strict Kimi SSE с `[DONE]`, AJV validation и выбором только allowlisted IDs;
+- exact/synonym/fuzzy resolver сохранён как временный server-side compatibility
+  compiler для уже исполняемых ниш; Kimi больше не получает его кандидатов;
+- strict Kimi SSE с `[DONE]`, AJV validation, bounded open-vocabulary schema и
+  запретом исполняемых provider-параметров;
+- open-vocabulary `SemanticIntentV2`: Kimi получает свободную формулировку без
+  taxonomy/candidate list и возвращает bounded отрасли, типы бизнеса, услуги,
+  include/exclude signals и retrieval terms; URL, координаты и provider filters
+  запрещены контрактом и локальной валидацией;
 - `POST /api/search/plan`, новый `SearchPlan` в search response и визуальная
   трактовка запроса до обращения к картам;
 - stateless HMAC confirmation token с TTL, `requestCacheKey`, `planHash` и
@@ -149,8 +155,10 @@ scoring, экспорт и показ на сторонней карте не в
 - 222 planner cases, 30 zero-token-overlap cases, 60 synthetic classifier
   fixtures и fault suite; initial offline metrics равны `1.0000`, hard
   violations — `0`;
-- реальные Kimi canary для барбершопа, аптеки и автомойки, end-to-end
-  Kimi → Geoapify и остановка неоднозначного «склад» до provider.
+- open-vocabulary encoder проверен реальным `kimi-k3` на барбершопе,
+  спортивном зале и ремонте телефонов: валидные ответы заняли 13,8–30,3 с;
+  прежний V1 Kimi → Geoapify canary не считается доказательством нового
+  end-to-end пути и будет повторён после capability compiler;
 - география переключается между городом, районом, метро, областью и ручным
   радиусом; для метро доступны все семь действующих систем России, поиск
   конкретной станции, 1,5 км по умолчанию и server-side Geoapify fallback;
@@ -159,6 +167,9 @@ scoring, экспорт и показ на сторонней карте не в
 
 Частично выполнено:
 
+- semantic encoder отвязан от 40 canonical concepts, но Geoapify execution
+  пока использует прежний server-side compatibility compiler; следующий этап —
+  полный versioned provider capability catalog и системная компиляция новых ниш;
 - provider adapter принимает скомпилированные категории, но geocoding,
   exclusions/dedupe и Details ещё не вынесены в отдельный двухфазный search
   service;

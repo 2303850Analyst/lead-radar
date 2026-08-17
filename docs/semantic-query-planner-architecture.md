@@ -1,5 +1,10 @@
 # LeadRadar Semantic Query Planner
 
+> Исторический документ V1. Закрытый candidate/allowlist flow больше не
+> используется Kimi: актуальный runtime-контракт — open-vocabulary
+> `SemanticIntentV2`, описанный в README и GitHub Issue #1. Полная переработка
+> архитектурного документа входит в release-cleanup Issue #12.
+
 Статус решения: **локальный alpha реализован; production-архитектура завершена
 частично**
 
