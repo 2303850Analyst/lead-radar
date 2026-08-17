@@ -30,3 +30,21 @@
   database writes or CSV export.
 - Do not enable storage, enrichment, reordering, scoring, export or display on a
   third-party map until the applicable license is confirmed in writing.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specifications are tracked in GitHub Issues for
+`2303850Analyst/lead-radar`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The repository uses the canonical triage labels `needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, and `wontfix`. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+The repository uses a single-context domain documentation layout. See
+`docs/agents/domain.md`.
