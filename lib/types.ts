@@ -39,6 +39,9 @@ export type SearchProviderMetadata = {
   };
   coverage?: {
     categories: string[];
+    retrievalArms?: number;
+    upstreamRequests?: number;
+    cardsAccepted?: number;
     detailsRequested: number;
     detailsSucceeded: number;
   };
@@ -48,6 +51,21 @@ export type LeadSourceObservation = {
   provider: SearchProviderId;
   externalId: string;
   observedAt: string;
+};
+
+export type LeadRetrievalArm = {
+  id: string;
+  type: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
+  role: "primary" | "adjacent" | "fallback";
+  priority: number;
+  categoryIds: string[];
+  provenance: Array<{
+    semanticField: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
+    semanticTerm: string;
+    origin: string;
+    match: "exact_leaf" | "exact_path" | "parent" | "name_fallback" | "legacy_binding";
+    categoryId: string;
+  }>;
 };
 
 export type SearchProgressStage =
@@ -132,6 +150,8 @@ export type Lead = {
     observedAt: string;
     source: SearchProviderId;
     primaryFound: boolean;
+    /** Every bounded retrieval strategy that independently found this card. */
+    retrievalArms?: LeadRetrievalArm[];
   };
   sources: LeadSourceObservation[];
   scores: {

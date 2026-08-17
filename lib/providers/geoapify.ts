@@ -1,5 +1,6 @@
 import type {
   Lead,
+  LeadRetrievalArm,
   SearchPayload,
   SearchProgressEvent,
   SearchResponse,
@@ -16,6 +17,7 @@ import {
 } from "../search-planner/catalogs/geoapify";
 import {
   SearchProviderError,
+  type CompiledGeoapifyPlan,
   type SearchProvider,
   type SearchProviderOptions,
 } from "./types";
@@ -26,11 +28,16 @@ const PLACE_DETAILS_ENDPOINT = "https://api.geoapify.com/v2/place-details";
 const FETCH_TIMEOUT_MS = 15_000;
 const DETAILS_FETCH_TIMEOUT_MS = 8_000;
 const MIN_REQUEST_INTERVAL_MS = 225;
+const MAX_GEOAPIFY_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 const DEFAULT_PLACES_LIMIT = 100;
 const MAX_PLACES_LIMIT = 500;
 const DEFAULT_DETAILS_LIMIT = 20;
 const MAX_DETAILS_LIMIT = 50;
+const MAX_RETRIEVAL_ARMS = 4;
+const MAX_RETRIEVAL_REQUESTS = 4;
+const MAX_RETRIEVAL_CARDS = 200;
+const ORGANIZATION_IDENTITY_MAX_DISTANCE_METERS = 100;
 const DETAILS_CONCURRENCY = 3;
 const METRO_STATION_CATEGORY = "public_transport.subway";
 const METRO_STATION_ENTRANCE_CATEGORY = "public_transport.subway.entrance";
@@ -101,13 +108,17 @@ export type GeoapifyMetroStationDirectory = {
 
 type CategoryPlan = {
   categories: string[];
-  batches: string[][];
+  batches: CompiledGeoapifyPlan["batches"];
+  limits: CompiledGeoapifyPlan["limits"];
+  exclusionTerms: string[];
 };
 
 type PlaceObservation = {
   feature: GeoapifyFeature;
   externalId: string;
+  externalIds: string[];
   placeId: string | null;
+  retrievalArms: LeadRetrievalArm[];
 };
 
 type DetailEnrichment = {
@@ -265,7 +276,33 @@ export function resolveGeoapifyCategories(payload: SearchPayload): CategoryPlan 
   }
 
   const all = [...categories];
-  return { categories: all, batches: [all] };
+  return {
+    categories: all,
+    batches: [{
+      id: "arm-legacy-00000000",
+      type: "legacy",
+      mode: "precision",
+      role: "primary",
+      priority: 1,
+      resultBudget: Math.min(DEFAULT_PLACES_LIMIT, MAX_RETRIEVAL_CARDS),
+      categoryIds: all,
+      nameQuery: null,
+      provenance: all.map((categoryId) => ({
+        semanticField: "legacy",
+        semanticTerm: payload.primaryQuery,
+        origin: "legacy",
+        match: "legacy_binding",
+        categoryId,
+      })),
+    }],
+    limits: {
+      maxArms: MAX_RETRIEVAL_ARMS,
+      maxUpstreamRequests: MAX_RETRIEVAL_REQUESTS,
+      maxCards: MAX_RETRIEVAL_CARDS,
+      maxDetails: MAX_DETAILS_LIMIT,
+    },
+    exclusionTerms: [],
+  };
 }
 
 function matchesQueryTerm(searchable: string, term: string): boolean {
@@ -304,6 +341,43 @@ function socialUrl(value: unknown, service: "telegram" | "vk"): string | undefin
   } catch {
     return undefined;
   }
+}
+
+async function readBoundedResponseText(
+  response: Response,
+  maxBytes: number,
+): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new SearchProviderError(
+      "Geoapify вернул слишком большой ответ",
+      "GEOAPIFY_INVALID_RESPONSE",
+    );
+  }
+  if (!response.body) return response.text();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel();
+      throw new SearchProviderError(
+        "Geoapify вернул слишком большой ответ",
+        "GEOAPIFY_INVALID_RESPONSE",
+      );
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
 }
 
 async function requestGeoapify(
@@ -358,7 +432,11 @@ async function requestGeoapify(
     }
 
     try {
-      const data: unknown = await response.json();
+      const responseText = await readBoundedResponseText(
+        response,
+        MAX_GEOAPIFY_RESPONSE_BYTES,
+      );
+      const data: unknown = JSON.parse(responseText);
       if (!isRecord(data)) {
         throw new SearchProviderError(
           "Geoapify вернул ответ неизвестного формата",
@@ -366,13 +444,22 @@ async function requestGeoapify(
         );
       }
       const features = data.features;
-      if (features !== undefined && !Array.isArray(features)) {
+      if (
+        features !== undefined &&
+        (!Array.isArray(features) ||
+          features.some(
+            (feature) =>
+              !isRecord(feature) ||
+              (feature.properties !== undefined && !isRecord(feature.properties)) ||
+              (feature.geometry !== undefined && !isRecord(feature.geometry)),
+          ))
+      ) {
         throw new SearchProviderError(
           "Geoapify вернул ответ неизвестного формата",
           "GEOAPIFY_INVALID_RESPONSE",
         );
       }
-      return data as GeoapifyCollection;
+      return { features: features as GeoapifyFeature[] | undefined };
     } catch (error) {
       if (error instanceof SearchProviderError) throw error;
       throw new SearchProviderError(
@@ -479,27 +566,193 @@ function sameStringSet(left: readonly string[], right: readonly string[]): boole
   );
 }
 
+function compiledPlanHasReadableShape(
+  value: unknown,
+): value is NonNullable<SearchProviderOptions["compiledPlan"]> {
+  if (!isRecord(value) || !isRecord(value.limits)) return false;
+  if (
+    !Array.isArray(value.categoryIds) ||
+    !value.categoryIds.every((item) => typeof item === "string") ||
+    !Array.isArray(value.exclusionTerms) ||
+    !value.exclusionTerms.every((item) => typeof item === "string") ||
+    !Array.isArray(value.batches)
+  ) {
+    return false;
+  }
+  return value.batches.every(
+    (batch) =>
+      isRecord(batch) &&
+      typeof batch.id === "string" &&
+      typeof batch.type === "string" &&
+      typeof batch.mode === "string" &&
+      typeof batch.role === "string" &&
+      typeof batch.priority === "number" &&
+      typeof batch.resultBudget === "number" &&
+      (batch.nameQuery === null || typeof batch.nameQuery === "string") &&
+      Array.isArray(batch.categoryIds) &&
+      batch.categoryIds.every((item) => typeof item === "string") &&
+      Array.isArray(batch.provenance) &&
+      batch.provenance.every(
+        (item) =>
+          isRecord(item) &&
+          typeof item.semanticField === "string" &&
+          typeof item.semanticTerm === "string" &&
+          typeof item.origin === "string" &&
+          typeof item.match === "string" &&
+          typeof item.categoryId === "string",
+      ),
+  );
+}
+
+function provenanceMatchesArm(
+  batch: NonNullable<SearchProviderOptions["compiledPlan"]>["batches"][number],
+  item: NonNullable<SearchProviderOptions["compiledPlan"]>["batches"][number]["provenance"][number],
+): boolean {
+  if (item.semanticField !== batch.type) return false;
+  if (batch.type === "fallback") {
+    return (
+      item.match === "name_fallback" &&
+      [
+        "normalizedGoal",
+        "coreBusinessTypes",
+        "retrievalTerms.precision",
+      ].includes(item.origin)
+    );
+  }
+  if (batch.type === "legacy") {
+    return item.match === "legacy_binding" && item.origin === "legacy";
+  }
+  if (!["exact_leaf", "exact_path", "parent"].includes(item.match)) return false;
+  if (batch.type === "precision") {
+    return [
+      "coreBusinessTypes",
+      "productsAndServices",
+      "retrievalTerms.precision",
+    ].includes(item.origin);
+  }
+  if (batch.type === "recall") {
+    return ["industries", "retrievalTerms.recall"].includes(item.origin);
+  }
+  return batch.type === "adjacent" && item.origin === "adjacentBusinessTypes";
+}
+
 function compiledPlanIsCoherent(
   plan: NonNullable<SearchProviderOptions["compiledPlan"]>,
 ): boolean {
-  if (plan.batches.length < 1 || plan.batches.length > 2) return false;
+  if (
+    !plan.limits ||
+    !Array.isArray(plan.batches) ||
+    !Array.isArray(plan.categoryIds) ||
+    !Array.isArray(plan.exclusionTerms)
+  ) {
+    return false;
+  }
+  const { limits } = plan;
+  if (
+    !Number.isInteger(limits.maxArms) ||
+    limits.maxArms < 1 ||
+    limits.maxArms > MAX_RETRIEVAL_ARMS ||
+    !Number.isInteger(limits.maxUpstreamRequests) ||
+    limits.maxUpstreamRequests < 1 ||
+    limits.maxUpstreamRequests > MAX_RETRIEVAL_REQUESTS ||
+    !Number.isInteger(limits.maxCards) ||
+    limits.maxCards < 1 ||
+    limits.maxCards > MAX_RETRIEVAL_CARDS ||
+    !Number.isInteger(limits.maxDetails) ||
+    limits.maxDetails < 0 ||
+    limits.maxDetails > MAX_DETAILS_LIMIT ||
+    plan.batches.length < 1 ||
+    plan.batches.length > Math.min(limits.maxArms, limits.maxUpstreamRequests)
+  ) {
+    return false;
+  }
+  if (
+    plan.categoryIds.length < 1 ||
+    plan.categoryIds.length > 32 ||
+    plan.exclusionTerms.length > 60 ||
+    plan.exclusionTerms.some(
+      (term) => term.length < 1 || term.length > 120 || term !== term.trim(),
+    ) ||
+    !["RU", "BY", "KZ"].includes(plan.countryCode) ||
+    !["ru", "be", "kk"].includes(plan.language)
+  ) {
+    return false;
+  }
   if (new Set(plan.batches.map((batch) => batch.id)).size !== plan.batches.length) {
+    return false;
+  }
+  if (
+    new Set(plan.batches.map((batch) => batch.priority)).size !== plan.batches.length ||
+    plan.batches.reduce((sum, batch) => sum + batch.resultBudget, 0) > limits.maxCards
+  ) {
     return false;
   }
   const flattened: string[] = [];
   for (const batch of plan.batches) {
-    const expectedMode = batch.id === "broad" ? "broad" : "precision";
-    const expectedField =
-      batch.id === "legacy" ? "legacy" : batch.id === "broad" ? "recall" : "precision";
     if (
+      !["precision", "recall", "adjacent", "fallback", "legacy"].includes(
+        batch.type,
+      )
+    ) {
+      return false;
+    }
+    const expectedMode =
+      batch.type === "precision" || batch.type === "legacy" ? "precision" : "broad";
+    const expectedRole =
+      batch.type === "adjacent"
+        ? "adjacent"
+        : batch.type === "fallback"
+          ? "fallback"
+          : "primary";
+    const expectedField = batch.type;
+    const validNameQuery =
+      batch.type === "fallback"
+        ? typeof batch.nameQuery === "string" &&
+          batch.nameQuery.length >= 2 &&
+          batch.nameQuery.length <= 80 &&
+          /^[\p{L}\p{N}'’ -]+$/u.test(batch.nameQuery)
+        : batch.nameQuery === null;
+    if (
+      !/^arm-[a-z]+-[a-f0-9]{8}$/.test(batch.id) ||
       batch.mode !== expectedMode ||
+      batch.role !== expectedRole ||
+      !Number.isInteger(batch.priority) ||
+      batch.priority < 1 ||
+      !Number.isInteger(batch.resultBudget) ||
+      batch.resultBudget < 1 ||
+      batch.resultBudget > limits.maxCards ||
+      !validNameQuery ||
       batch.categoryIds.length < 1 ||
       batch.categoryIds.length > 8 ||
       !sameStringSet(
         batch.categoryIds,
         batch.provenance.map((item) => item.categoryId),
       ) ||
-      batch.provenance.some((item) => item.semanticField !== expectedField)
+      batch.provenance.some(
+        (item) =>
+          item.semanticField !== expectedField ||
+          !provenanceMatchesArm(batch, item) ||
+          !item.semanticTerm.trim() ||
+          item.semanticTerm.length > 120 ||
+          !item.origin.trim() ||
+          ![
+            "normalizedGoal",
+            "coreBusinessTypes",
+            "productsAndServices",
+            "industries",
+            "adjacentBusinessTypes",
+            "retrievalTerms.precision",
+            "retrievalTerms.recall",
+            "legacy",
+          ].includes(item.origin) ||
+          ![
+            "exact_leaf",
+            "exact_path",
+            "parent",
+            "name_fallback",
+            "legacy_binding",
+          ].includes(item.match),
+      )
     ) {
       return false;
     }
@@ -956,6 +1209,29 @@ function externalId(feature: GeoapifyFeature): string {
   );
 }
 
+function organizationIdentityKey(feature: GeoapifyFeature): string | null {
+  const name = normalizeText(placeName(feature) ?? "");
+  const address = normalizeText(placeAddress(feature.properties ?? {}));
+  if (!name || !address || address === normalizeText("Адрес не указан")) {
+    return null;
+  }
+  return `${name}\u001f${address}`;
+}
+
+function isNearbyIdentityMatch(
+  left: GeoapifyFeature,
+  right: GeoapifyFeature,
+): boolean {
+  const leftCoordinates = featureCoordinates(left);
+  const rightCoordinates = featureCoordinates(right);
+  return Boolean(
+    leftCoordinates &&
+      rightCoordinates &&
+      distanceMeters(leftCoordinates, rightCoordinates) <=
+        ORGANIZATION_IDENTITY_MAX_DISTANCE_METERS,
+  );
+}
+
 function isExcluded(feature: GeoapifyFeature, exclusions: string[]): boolean {
   if (!exclusions.length) return false;
   const properties = feature.properties ?? {};
@@ -1229,14 +1505,17 @@ function normalizeLead(
       observedAt,
       source: "geoapify",
       primaryFound,
+      retrievalArms: observation.retrievalArms.map((arm) => ({
+        ...arm,
+        categoryIds: [...arm.categoryIds],
+        provenance: arm.provenance.map((item) => ({ ...item })),
+      })),
     },
-    sources: [
-      {
+    sources: observation.externalIds.map((externalId) => ({
         provider: "geoapify",
-        externalId: observation.externalId,
+        externalId,
         observedAt,
-      },
-    ],
+      })),
     scores,
     status: detailsChecked && (phone || website) ? "Новый" : "Проверить",
     summary: `Карточка обнаружена через Geoapify на основе открытых данных OpenStreetMap. ${
@@ -1286,6 +1565,12 @@ export class GeoapifyProvider implements SearchProvider {
     const apiKey = this.apiKey.trim();
     const observedAt = new Date().toISOString();
     const compiledPlan = options.compiledPlan;
+    if (compiledPlan && !compiledPlanHasReadableShape(compiledPlan)) {
+      throw new SearchProviderError(
+        "Скомпилированный план Geoapify имеет некорректную структуру",
+        "GEOAPIFY_INVALID_COMPILED_PLAN",
+      );
+    }
     if (
       compiledPlan &&
       (compiledPlan.providerCatalogVersion !== GEOAPIFY_PROVIDER_CATALOG_VERSION ||
@@ -1296,29 +1581,12 @@ export class GeoapifyProvider implements SearchProvider {
         "GEOAPIFY_CATALOG_MISMATCH",
       );
     }
-    const categoryPlan = compiledPlan
-      ? {
-          categories: [...compiledPlan.categoryIds],
-          batches: compiledPlan.batches.map((batch) => ({
-            ...batch,
-            categoryIds: [...batch.categoryIds],
-            provenance: batch.provenance.map((item) => ({ ...item })),
-          })),
-        }
-      : resolveGeoapifyCategories(payload);
-    const batchCategoryIds = categoryPlan.batches.flatMap((batch) =>
-      Array.isArray(batch) ? batch : batch.categoryIds,
-    );
     if (
-      !categoryPlan.categories.length ||
-      !categoryPlan.batches.length ||
-      (compiledPlan &&
-        [...categoryPlan.categories, ...batchCategoryIds].some(
-          (categoryId) => !isGeoapifyCategoryId(categoryId),
-        )) ||
-      categoryPlan.batches.some((batch) =>
-        (Array.isArray(batch) ? batch : batch.categoryIds).length === 0,
-      )
+      compiledPlan &&
+      [
+        ...compiledPlan.categoryIds,
+        ...compiledPlan.batches.flatMap((batch) => batch.categoryIds),
+      ].some((categoryId) => !isGeoapifyCategoryId(categoryId))
     ) {
       throw new SearchProviderError(
         "Сервер не смог подготовить категории Geoapify",
@@ -1329,6 +1597,30 @@ export class GeoapifyProvider implements SearchProvider {
       throw new SearchProviderError(
         "Скомпилированный план Geoapify внутренне противоречив",
         "GEOAPIFY_INVALID_COMPILED_PLAN",
+      );
+    }
+    const categoryPlan = compiledPlan
+      ? {
+          categories: [...compiledPlan.categoryIds],
+          batches: compiledPlan.batches.map((batch) => ({
+            ...batch,
+            categoryIds: [...batch.categoryIds],
+            provenance: batch.provenance.map((item) => ({ ...item })),
+          })),
+          limits: { ...compiledPlan.limits },
+          exclusionTerms: [...compiledPlan.exclusionTerms],
+        }
+      : resolveGeoapifyCategories(payload);
+    if (
+      !categoryPlan.categories.length ||
+      !categoryPlan.batches.length ||
+      categoryPlan.batches.some((batch) =>
+        batch.categoryIds.length === 0,
+      )
+    ) {
+      throw new SearchProviderError(
+        "Сервер не смог подготовить категории Geoapify",
+        "GEOAPIFY_UNSUPPORTED_CATEGORY",
       );
     }
     const countryCode = compiledPlan?.countryCode ?? "RU";
@@ -1372,7 +1664,15 @@ export class GeoapifyProvider implements SearchProvider {
       });
     }
     const observations = new Map<string, PlaceObservation>();
+    const observationIdsByIdentity = new Map<string, string[]>();
     let cardsFound = 0;
+    let upstreamRequests = 0;
+    const effectiveExclusions = [
+      ...new Set([
+        ...payload.excludeQueries,
+        ...categoryPlan.exclusionTerms,
+      ].map((term) => term.trim()).filter(Boolean)),
+    ];
 
     await reportProgress({
       stage: "places",
@@ -1382,45 +1682,110 @@ export class GeoapifyProvider implements SearchProvider {
       total: categoryPlan.batches.length,
     });
 
-    // Category batches are sequential to remain friendly to the free-plan
-    // request rate. The current MVP has one batch; the shape is future-ready.
-    for (const [batchIndex, categoryBatch] of categoryPlan.batches.entries()) {
-      const categoryIds = Array.isArray(categoryBatch)
-        ? categoryBatch
-        : categoryBatch.categoryIds;
+    // Retrieval arms are sequential to remain friendly to the free-plan rate
+    // and are capped again here even after server-side compilation.
+    const retrievalArms = categoryPlan.batches
+      .slice(0, Math.min(categoryPlan.limits.maxArms, MAX_RETRIEVAL_ARMS))
+      .sort((left, right) => left.priority - right.priority);
+    for (const [batchIndex, categoryBatch] of retrievalArms.entries()) {
+      if (
+        upstreamRequests >=
+          Math.min(categoryPlan.limits.maxUpstreamRequests, MAX_RETRIEVAL_REQUESTS) ||
+        cardsFound >= Math.min(categoryPlan.limits.maxCards, MAX_RETRIEVAL_CARDS)
+      ) {
+        break;
+      }
+      const categoryIds = categoryBatch.categoryIds;
+      const remainingCards =
+        Math.min(categoryPlan.limits.maxCards, MAX_RETRIEVAL_CARDS) - cardsFound;
+      const requestLimit = Math.min(
+        geoapifyPlacesLimit(),
+        categoryBatch.resultBudget,
+        remainingCards,
+      );
+      if (requestLimit < 1) break;
+      const requestParameters: Record<string, string> = {
+        categories: categoryIds.join(","),
+        filter: `circle:${center[0]},${center[1]},${Math.round(
+          payload.radiusKm * 1_000,
+        )}`,
+        bias: `proximity:${center[0]},${center[1]}`,
+        lang: language,
+        limit: String(requestLimit),
+      };
+      if (categoryBatch.type === "fallback" && categoryBatch.nameQuery) {
+        requestParameters.name = categoryBatch.nameQuery;
+      }
       const collection = await requestGeoapify(
         PLACES_ENDPOINT,
-        {
-          categories: categoryIds.join(","),
-          filter: `circle:${center[0]},${center[1]},${Math.round(
-            payload.radiusKm * 1_000,
-          )}`,
-          bias: `proximity:${center[0]},${center[1]}`,
-          lang: language,
-          limit: String(geoapifyPlacesLimit()),
-        },
+        requestParameters,
         apiKey,
         FETCH_TIMEOUT_MS,
         options.signal,
       );
-      cardsFound += collection.features?.length ?? 0;
-      for (const feature of collection.features ?? []) {
+      upstreamRequests += 1;
+      const receivedFeatures = (collection.features ?? []).slice(0, requestLimit);
+      cardsFound += receivedFeatures.length;
+      const armObservation: LeadRetrievalArm = {
+        id: categoryBatch.id,
+        type: categoryBatch.type,
+        role: categoryBatch.role,
+        priority: categoryBatch.priority,
+        categoryIds: [...categoryBatch.categoryIds],
+        provenance: categoryBatch.provenance.map((item) => ({ ...item })),
+      };
+      for (const feature of receivedFeatures) {
         // Unnamed industrial footprints are not actionable business leads and
         // usually have no contacts; skip them before spending detail credits.
         if (
           !placeName(feature) ||
           !isCountryPlace(feature, countryCode) ||
-          isExcluded(feature, payload.excludeQueries)
+          isExcluded(feature, effectiveExclusions)
         ) {
           continue;
         }
         const id = externalId(feature);
-        if (!observations.has(id)) {
+        const identityKey = organizationIdentityKey(feature);
+        const existingObservationId = observations.has(id)
+          ? id
+          : identityKey
+            ? observationIdsByIdentity
+                .get(identityKey)
+                ?.find((candidateId) => {
+                  const candidate = observations.get(candidateId);
+                  return Boolean(
+                    candidate &&
+                      isNearbyIdentityMatch(candidate.feature, feature),
+                  );
+                })
+            : undefined;
+        const existing = existingObservationId
+          ? observations.get(existingObservationId)
+          : undefined;
+        if (!existing) {
           observations.set(id, {
             feature,
             externalId: id,
+            externalIds: [id],
             placeId: stringValue(feature.properties?.place_id, 500),
+            retrievalArms: [armObservation],
           });
+          if (identityKey) {
+            const identityIds = observationIdsByIdentity.get(identityKey) ?? [];
+            identityIds.push(id);
+            observationIdsByIdentity.set(identityKey, identityIds);
+          }
+        } else {
+          if (!existing.externalIds.includes(id)) {
+            existing.externalIds.push(id);
+          }
+          if (!existing.placeId) {
+            existing.placeId = stringValue(feature.properties?.place_id, 500);
+          }
+          if (!existing.retrievalArms.some((arm) => arm.id === armObservation.id)) {
+            existing.retrievalArms.push(armObservation);
+            existing.retrievalArms.sort((left, right) => left.priority - right.priority);
+          }
         }
       }
       await reportProgress({
@@ -1428,7 +1793,7 @@ export class GeoapifyProvider implements SearchProvider {
         status: "running",
         message: `Получено карточек: ${cardsFound}`,
         completed: batchIndex + 1,
-        total: categoryPlan.batches.length,
+        total: retrievalArms.length,
       });
     }
 
@@ -1437,13 +1802,20 @@ export class GeoapifyProvider implements SearchProvider {
       status: "completed",
       message: `Поиск организаций завершён: ${observations.size}`,
       completed: categoryPlan.batches.length,
-      total: categoryPlan.batches.length,
+      total: retrievalArms.length,
     });
 
     const namedPlaces = [...observations.values()];
     const detailTargets = namedPlaces
       .filter((observation) => observation.placeId)
-      .slice(0, geoapifyDetailsLimit());
+      .slice(
+        0,
+        Math.min(
+          geoapifyDetailsLimit(),
+          categoryPlan.limits.maxDetails,
+          MAX_DETAILS_LIMIT,
+        ),
+      );
     let detailCircuitOpen = false;
     let detailsRequested = 0;
     let detailsCompleted = 0;
@@ -1538,6 +1910,9 @@ export class GeoapifyProvider implements SearchProvider {
         },
         coverage: {
           categories: categoryPlan.categories,
+          retrievalArms: retrievalArms.length,
+          upstreamRequests,
+          cardsAccepted: observations.size,
           detailsRequested,
           detailsSucceeded,
         },

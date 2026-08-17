@@ -6,10 +6,11 @@
 
 Статус: локальный alpha переводит свободный запрос в open-vocabulary
 `SemanticIntentV2` через Kimi и только после server-side compilation обращается
-к Geoapify. Первый open-world tracer bullet работает на полном versioned
-registry из 813 Geoapify-категорий: «Спортивный зал» проходит Kimi → compiler →
-Geoapify без ручного добавления сегмента. Production release и внешний SLA
-имеют решение `NO-GO` до закрытия quality, reliability и security gates.
+к Geoapify. Полный versioned registry из 813 категорий компилируется в bounded
+precision, recall, adjacent и name-fallback arms; обычные и редкие физические
+ниши больше не требуют ручного добавления сегмента. Production release и
+внешний SLA имеют решение `NO-GO` до закрытия quality, reliability и security
+gates.
 
 ## Цель продукта
 
@@ -150,6 +151,12 @@ scoring, экспорт и показ на сторонней карте не в
 - stateless HMAC confirmation token с TTL, `requestCacheKey`, `planHash` и
   `parentPlanHash`;
 - server-side compilation canonical IDs в категории Geoapify;
+- bounded retrieval: до четырёх arms/Places-запросов и 200 карточек, отдельные
+  arm budgets, стабильные IDs и primary/adjacent/fallback provenance;
+- server-owned name fallback для понятного физического intent без узкой
+  provider category; model-authored categories и filters не исполняются;
+- дедупликация между arms с сохранением всех причин обнаружения и применение
+  exclusions до Details;
 - RU support и пилотные locale/country-контракты BY/KZ, по одной стране на
   поиск;
 - 222 planner cases, 30 zero-token-overlap cases, 60 synthetic classifier
@@ -167,10 +174,9 @@ scoring, экспорт и показ на сторонней карте не в
 
 Частично выполнено:
 
-- полный Geoapify registry зафиксирован с version/checksum, а compiler умеет
-  exact/parent matching и bounded precision/broad batches; дальше требуется
+- полный Geoapify registry и bounded multi-arm compiler готовы; дальше требуется
   расширить unseen-category corpus, relevance filtering и измерить качество по
-  всему provider catalog, а не только на tracer bullet;
+  всему provider catalog, а не только на tracer bullet и regression cases;
 - provider adapter принимает скомпилированные категории, но geocoding,
   exclusions/dedupe и Details ещё не вынесены в отдельный двухфазный search
   service;
@@ -207,7 +213,7 @@ Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
 
 1. Довести server orchestration: scheduler, единый deadline/AbortSignal,
    circuit breaker, auth и quota limiter.
-2. Завершить двухфазную provider boundary и покрыть exclusions-before-Details.
+2. Завершить двухфазную provider boundary и relevance filtering до enrichment.
 3. Расширить frozen datasets до 500/600 и добавить hidden/manual annotation.
 4. Прогнать model comparison, stability, browser E2E, load и 30 реальных
    search tasks с versioned обезличенным отчётом.
@@ -285,7 +291,7 @@ Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
 | Ошибочный вывод «нет сайта» | Высокий | Многоступенчатая проверка и evidence |
 | Дубли и филиалы | Высокий | Объяснимая дедупликация и ручное объединение |
 | Утечка API-ключа | Высокий | Только server-side env, sanitization и secret scan |
-| Kimi неверно понял категорию | Высокий | Allowlist, confirmation, golden/hidden eval и безопасный fallback |
+| Kimi неверно понял категорию | Высокий | Strict IntentIR, server registry compiler, confirmation, golden/hidden eval и безопасный fallback |
 | Kimi/provider не уложился во время | Высокий | Kimi timeout 30 с уже есть; единый 60/45-секундный deadline и partial result ещё реализовать |
 | Передача карточек в Kimi нарушает условия источника или privacy policy | Высокий | Post-search AI выключен до country-specific data-flow review; planner не получает лиды |
 | Tier-0 Kimi не выдерживает несколько одновременных пользователей | Высокий | Alpha только для одного владельца; scheduler concurrency 1/queue 1 ещё реализовать, внешняя beta только после Tier-1 |

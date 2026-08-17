@@ -41,7 +41,7 @@ import {
   type SemanticIntentV2,
 } from "./types";
 
-export const DECISION_POLICY_VERSION = "2026-08-17.2";
+export const DECISION_POLICY_VERSION = "2026-08-17.3";
 export const KIMI_PROMPT_VERSION = "semantic-intent-v2/2026-08-17.2";
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;
 export const SEARCH_PLAN_RUNTIME_CACHE_MAX_ENTRIES = 200;
@@ -160,6 +160,22 @@ function executionPreview(selectedConceptIds: readonly string[]): SearchPlan["ex
     provider: "geoapify",
     categoryLabels: [...selectors.categoryIds],
     batches: selectors.categoryIds.length ? 1 : 0,
+    retrievalArms: [{
+      id: "arm-legacy-00000000",
+      type: "legacy",
+      role: "primary",
+      priority: 1,
+      resultBudget: 80,
+      categoryLabels: [...selectors.categoryIds],
+      usesNameFallback: false,
+      provenance: selectors.categoryIds.map((categoryId) => ({
+        semanticField: "legacy",
+        semanticTerm: categoryId,
+        origin: "legacy",
+        match: "legacy_binding",
+        categoryId,
+      })),
+    }],
   };
 }
 
@@ -171,6 +187,16 @@ function semanticExecutionPreview(
     provider: "geoapify",
     categoryLabels: [...capabilityPlan.categoryIds],
     batches: capabilityPlan.batches.length,
+    retrievalArms: capabilityPlan.batches.map((arm) => ({
+      id: arm.id,
+      type: arm.type,
+      role: arm.role,
+      priority: arm.priority,
+      resultBudget: arm.resultBudget,
+      categoryLabels: [...arm.categoryIds],
+      usesNameFallback: Boolean(arm.nameQuery),
+      provenance: arm.provenance.map((item) => ({ ...item })),
+    })),
   };
 }
 
@@ -704,6 +730,9 @@ export async function createSearchPlanFromEnv(
     requestCacheKey,
     mode,
     kimiClient?.modelId ?? "no-model",
+    SEARCH_PLAN_SCHEMA_VERSION,
+    DECISION_POLICY_VERSION,
+    GEOAPIFY_PROVIDER_CATALOG_VERSION,
     KIMI_PROMPT_VERSION,
     signingKeyId,
     options.confirmationTtlSeconds ?? "default-ttl",

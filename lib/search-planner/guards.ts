@@ -20,6 +20,21 @@ const ENTITY_KINDS = new Set([
 const PHYSICAL_REQUIREMENTS = new Set(["required", "optional", "not_applicable"]);
 const BRAND_SEARCH_VALUES = new Set(["include", "exclude", "only"]);
 const AI_VALIDATION_VALUES = new Set(["passed", "failed", "not_used"]);
+const RETRIEVAL_ARM_TYPES = new Set([
+  "precision",
+  "recall",
+  "adjacent",
+  "fallback",
+  "legacy",
+]);
+const RETRIEVAL_ARM_ROLES = new Set(["primary", "adjacent", "fallback"]);
+const RETRIEVAL_MATCHES = new Set([
+  "exact_leaf",
+  "exact_path",
+  "parent",
+  "name_fallback",
+  "legacy_binding",
+]);
 const SUPPORTED_LOCALES = new Set(["ru-RU", "ru-BY", "be-BY", "ru-KZ", "kk-KZ"]);
 const SUPPORTED_COUNTRIES = new Set(["RU", "BY", "KZ"]);
 const RESOLUTION_REASONS = new Set([
@@ -146,18 +161,116 @@ function isAiMetadata(value: unknown): boolean {
 
 function isExecutionPreview(value: unknown): boolean {
   if (value === null) return true;
-  return (
-    isRecord(value) &&
-    value.provider === "geoapify" &&
-    isStringArray(value.categoryLabels) &&
-    typeof value.batches === "number" &&
-    Number.isFinite(value.batches)
-  );
+  if (
+    !isRecord(value) ||
+    value.provider !== "geoapify" ||
+    !isStringArray(value.categoryLabels) ||
+    value.categoryLabels.length < 1 ||
+    value.categoryLabels.length > 32 ||
+    new Set(value.categoryLabels).size !== value.categoryLabels.length ||
+    typeof value.batches !== "number" ||
+    !Number.isInteger(value.batches) ||
+    value.batches < 1 ||
+    value.batches > 4 ||
+    !Array.isArray(value.retrievalArms) ||
+    value.retrievalArms.length !== value.batches
+  ) {
+    return false;
+  }
+  const ids = new Set<string>();
+  const priorities = new Set<number>();
+  let totalBudget = 0;
+  for (const arm of value.retrievalArms) {
+    if (!isRecord(arm)) return false;
+    if (!isStringArray(arm.categoryLabels) || !Array.isArray(arm.provenance)) {
+      return false;
+    }
+    const armCategoryLabels = arm.categoryLabels;
+    const provenance = arm.provenance;
+    if (
+      typeof arm.id !== "string" ||
+      !/^arm-[a-z]+-[a-f0-9]{8}$/.test(arm.id) ||
+      ids.has(arm.id) ||
+      typeof arm.type !== "string" ||
+      !RETRIEVAL_ARM_TYPES.has(arm.type) ||
+      typeof arm.role !== "string" ||
+      !RETRIEVAL_ARM_ROLES.has(arm.role) ||
+      (arm.type === "adjacent"
+        ? arm.role !== "adjacent"
+        : arm.type === "fallback"
+          ? arm.role !== "fallback"
+          : arm.role !== "primary") ||
+      typeof arm.priority !== "number" ||
+      !Number.isInteger(arm.priority) ||
+      arm.priority < 1 ||
+      arm.priority > 4 ||
+      priorities.has(arm.priority) ||
+      typeof arm.resultBudget !== "number" ||
+      !Number.isInteger(arm.resultBudget) ||
+      arm.resultBudget < 1 ||
+      arm.resultBudget > 200 ||
+      armCategoryLabels.length < 1 ||
+      armCategoryLabels.length > 8 ||
+      new Set(armCategoryLabels).size !== armCategoryLabels.length ||
+      typeof arm.usesNameFallback !== "boolean" ||
+      arm.usesNameFallback !== (arm.type === "fallback") ||
+      provenance.length < 1 ||
+      provenance.length > 8 ||
+      provenance.some(
+        (item) =>
+          !isRecord(item) ||
+          typeof item.semanticField !== "string" ||
+          typeof item.semanticTerm !== "string" ||
+          item.semanticTerm.length < 1 ||
+          item.semanticTerm.length > 120 ||
+          typeof item.origin !== "string" ||
+          item.origin.length < 1 ||
+          item.origin.length > 60 ||
+          typeof item.match !== "string" ||
+          !RETRIEVAL_MATCHES.has(item.match) ||
+          typeof item.categoryId !== "string" ||
+          !armCategoryLabels.includes(item.categoryId) ||
+          item.semanticField !== arm.type ||
+          (arm.type === "fallback"
+            ? item.match !== "name_fallback" ||
+              ![
+                "normalizedGoal",
+                "coreBusinessTypes",
+                "retrievalTerms.precision",
+              ].includes(item.origin)
+            : arm.type === "legacy"
+              ? item.match !== "legacy_binding" || item.origin !== "legacy"
+              : !["exact_leaf", "exact_path", "parent"].includes(item.match) ||
+                (arm.type === "precision"
+                  ? ![
+                      "coreBusinessTypes",
+                      "productsAndServices",
+                      "retrievalTerms.precision",
+                    ].includes(item.origin)
+                  : arm.type === "recall"
+                    ? !["industries", "retrievalTerms.recall"].includes(
+                        item.origin,
+                      )
+                    : item.origin !== "adjacentBusinessTypes")),
+      ) ||
+      new Set(
+        provenance
+          .filter(isRecord)
+          .map((item) => item.categoryId),
+      ).size !== armCategoryLabels.length
+    ) {
+      return false;
+    }
+    ids.add(arm.id);
+    priorities.add(arm.priority);
+    totalBudget += arm.resultBudget;
+  }
+  return totalBudget <= 200;
 }
 
 /** Rejects partial or malformed network payloads before the UI dereferences them. */
 export function isSearchPlan(value: unknown): value is SearchPlan {
-  if (!isRecord(value) || value.schemaVersion !== "2.0") return false;
+  if (!isRecord(value) || value.schemaVersion !== "2.1") return false;
   if (typeof value.status !== "string" || !PLAN_STATUSES.has(value.status)) return false;
   const confidence = value.confidence;
   const confirmation = value.confirmation;

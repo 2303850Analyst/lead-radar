@@ -1,4 +1,4 @@
-export const SEARCH_PLAN_SCHEMA_VERSION = "2.0" as const;
+export const SEARCH_PLAN_SCHEMA_VERSION = "2.1" as const;
 export const SEMANTIC_INTENT_SCHEMA_VERSION = "2.0" as const;
 
 export const SUPPORTED_COUNTRY_CODES = ["RU", "BY", "KZ"] as const;
@@ -172,6 +172,22 @@ export type SearchPlan = {
     provider: "geoapify";
     categoryLabels: string[];
     batches: number;
+    retrievalArms: Array<{
+      id: string;
+      type: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
+      role: "primary" | "adjacent" | "fallback";
+      priority: number;
+      resultBudget: number;
+      categoryLabels: string[];
+      usesNameFallback: boolean;
+      provenance: Array<{
+        semanticField: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
+        semanticTerm: string;
+        origin: string;
+        match: "exact_leaf" | "exact_path" | "parent" | "name_fallback" | "legacy_binding";
+        categoryId: string;
+      }>;
+    }>;
   } | null;
   ai: SearchPlanAiMetadata;
   confirmation: {

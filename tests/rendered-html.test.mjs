@@ -120,6 +120,12 @@ test("search API exposes health and deterministic demo results", async () => {
     health.capabilities.geoapifyPlaces.capabilityRegistry.checksum,
     /^[a-f0-9]{64}$/,
   );
+  assert.deepEqual(health.capabilities.geoapifyPlaces.retrievalLimits, {
+    maxArms: 4,
+    maxUpstreamRequests: 4,
+    maxCards: 200,
+    maxDetails: 50,
+  });
   assert.equal(health.capabilities.metroStations.systems.length, 7);
   assert.equal(health.capabilities.metroStations.typedGeocodeFallback, true);
   assert.equal(health.capabilities.yandexGeosearch.strictRadius, true);
@@ -1233,7 +1239,7 @@ test("search plan encodes an unseen business intent without canonical candidates
     assert.equal(response.status, 200);
     assert.ok(capturedRequest);
     const plan = await response.json();
-    assert.equal(plan.schemaVersion, "2.0");
+    assert.equal(plan.schemaVersion, "2.1");
     assert.equal(plan.semanticIntent.schemaVersion, "2.0");
     assert.equal(plan.semanticIntent.normalizedGoal, semanticIntent.normalizedGoal);
     assert.deepEqual(plan.semanticIntent.coreBusinessTypes, semanticIntent.coreBusinessTypes);
@@ -1409,10 +1415,99 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
     assert.equal(result.leads.length, 1);
     assert.equal(result.leads[0].name, "Фитнес Арена");
     assert.equal(kimiCalls, 1);
-    assert.ok(requestedBatches.length >= 1 && requestedBatches.length <= 2);
+    assert.ok(requestedBatches.length >= 1 && requestedBatches.length <= 4);
     assert.ok(requestedBatches.flat().includes("sport.fitness.gym"));
+    assert.equal(
+      result.plan.executionPreview.retrievalArms.length,
+      requestedBatches.length,
+    );
+    assert.equal(
+      result.leads[0].discovery.retrievalArms.length,
+      requestedBatches.length,
+    );
+    assert.ok(
+      result.leads[0].discovery.retrievalArms.some(
+        (arm) => arm.role === "primary",
+      ),
+    );
     assert.equal(JSON.stringify(result).includes("fake-kimi-sports-key"), false);
     assert.equal(JSON.stringify(result).includes("fake-geoapify-sports-key"), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("known niche keeps its precise legacy categories when Kimi is unavailable", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEnv = {
+    QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
+    SEARCH_PROVIDER: process.env.SEARCH_PROVIDER,
+    MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+    KIMI_API_KEY: process.env.KIMI_API_KEY,
+    GEOAPIFY_API_KEY: process.env.GEOAPIFY_API_KEY,
+    GEOAPIFY_DETAILS_LIMIT: process.env.GEOAPIFY_DETAILS_LIMIT,
+  };
+  const placesCalls = [];
+  let kimiCalls = 0;
+  process.env.QUERY_INTELLIGENCE_MODE = "kimi";
+  process.env.SEARCH_PROVIDER = "geoapify";
+  process.env.MOONSHOT_API_KEY = "fake-kimi-degraded-key";
+  delete process.env.KIMI_API_KEY;
+  process.env.GEOAPIFY_API_KEY = "fake-geoapify-degraded-key";
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.hostname === "api.moonshot.ai") {
+      kimiCalls += 1;
+      return Response.json({ error: { message: "rate limited" } }, { status: 429 });
+    }
+    assert.equal(url.hostname, "api.geoapify.com");
+    assert.equal(url.pathname, "/v2/places");
+    placesCalls.push(url);
+    return Response.json({ type: "FeatureCollection", features: [] });
+  };
+
+  try {
+    const worker = await getWorker();
+    const response = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          description: "degraded legacy regression 2026-08-17",
+          primaryQuery: "Барбершоп",
+          relatedQueries: [],
+          excludeQueries: [],
+          location: "Москва",
+          center: [37.6176, 55.7558],
+          radiusKm: 5,
+          locale: "ru-RU",
+          countryCodes: ["RU"],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.plan.status, "degraded");
+    assert.equal(result.plan.ai.validation, "failed");
+    assert.deepEqual(result.plan.resolution.selectedConceptIds, [
+      "personal_care.barbershop",
+    ]);
+    assert.equal(kimiCalls, 1);
+    assert.equal(placesCalls.length, 1);
+    assert.equal(
+      placesCalls[0].searchParams.get("categories"),
+      "service.beauty.hairdresser",
+    );
+    assert.equal(placesCalls[0].searchParams.has("name"), false);
+    assert.equal(JSON.stringify(result).includes("fake-kimi-degraded-key"), false);
+    assert.equal(JSON.stringify(result).includes("fake-geoapify-degraded-key"), false);
   } finally {
     globalThis.fetch = previousFetch;
     for (const [name, value] of Object.entries(previousEnv)) {
@@ -1512,7 +1607,7 @@ test("SemanticIntentV2 executes through the production search orchestrator", { c
     const result = records.find((record) => record.type === "result")?.data;
     assert.ok(result);
     assert.equal(result.mode, "demo");
-    assert.equal(result.plan.schemaVersion, "2.0");
+    assert.equal(result.plan.schemaVersion, "2.1");
     assert.equal(result.plan.semanticIntent.coreBusinessTypes[0], "барбершоп");
     assert.equal(result.plan.ai.validation, "passed");
     assert.ok(records.some(

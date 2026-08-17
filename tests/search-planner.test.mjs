@@ -95,6 +95,30 @@ function semanticIntentFor(coreBusinessType = "барбершоп") {
   };
 }
 
+function validCompiledGeoapifyPlan() {
+  return {
+    ...compileGeoapifySemanticIntent(semanticIntentFor("sports hall")),
+    countryCode: "RU",
+    language: "ru",
+    conceptIds: [],
+  };
+}
+
+function geoapifySearchPayload() {
+  return {
+    description: "спорт",
+    primaryQuery: "Спортивный зал",
+    relatedQueries: [],
+    excludeQueries: [],
+    location: "Москва",
+    center: [37.6176, 55.7558],
+    radiusKm: 5,
+    services: [],
+    locale: "ru-RU",
+    countryCodes: ["RU"],
+  };
+}
+
 test("taxonomy and Geoapify catalog have complete allowlisted coverage", async () => {
   const fixture = await loadPlannerFixture();
   assert.ok(CANONICAL_TAXONOMY.length >= 30);
@@ -152,7 +176,7 @@ test("Geoapify capability registry is full, versioned, checksummed, and compiles
   assert.ok(plan.categoryIds.includes("sport.fitness.gym"));
   assert.ok(plan.categoryIds.includes("sport.fitness.fitness_centre"));
   assert.equal(plan.categoryIds.some((id) => id.startsWith("catering.")), false);
-  assert.ok(plan.batches.length >= 1 && plan.batches.length <= 2);
+  assert.ok(plan.batches.length >= 1 && plan.batches.length <= 4);
   assert.ok(plan.batches.some((batch) => batch.mode === "precision"));
   assert.ok(plan.batches.every((batch) => batch.provenance.length > 0));
   assert.ok(plan.batches.every((batch) => batch.categoryIds.length <= 8));
@@ -172,10 +196,21 @@ test("Geoapify semantic compiler rejects collapsed infrastructure false positive
       term,
     );
     assert.equal(
-      plan.categoryIds.some((categoryId) => !categoryId.includes(".")),
+      plan.batches
+        .filter((arm) => arm.type !== "fallback")
+        .flatMap((arm) => arm.categoryIds)
+        .some((categoryId) => !categoryId.includes(".")),
       false,
       term,
     );
+    if (plan.categoryIds.some((categoryId) => !categoryId.includes("."))) {
+      assert.ok(
+        plan.batches.some(
+          (arm) => arm.type === "fallback" && arm.nameQuery === term,
+        ),
+        `${term}: broad roots are allowed only behind the bounded name fallback`,
+      );
+    }
   }
 });
 
@@ -196,8 +231,388 @@ test("Geoapify semantic exclusions remove contradictory retrieval categories", (
   assert.equal(plan.categoryIds.includes("catering.restaurant"), false);
 });
 
+test("bounded retrieval arms compile ordinary and rare physical-business intents", () => {
+  const cases = [
+    {
+      label: "где занимаются кроссфитом",
+      core: ["crossfit gym", "gym"],
+      recall: ["fitness centre"],
+      adjacent: ["sports club"],
+    },
+    {
+      label: "студия звукозаписи",
+      core: ["recording studio"],
+      recall: ["audio production studio"],
+      adjacent: ["music venue"],
+      expectsFallback: true,
+    },
+    {
+      label: "питомник растений",
+      core: ["plant nursery", "garden centre"],
+      recall: ["garden"],
+      adjacent: ["florist"],
+    },
+    {
+      label: "прокат строительного инструмента",
+      core: ["construction tool rental", "hardware and tools"],
+      recall: ["tool rental"],
+      adjacent: ["building materials"],
+    },
+  ];
+
+  for (const item of cases) {
+    const semanticIntent = {
+      ...semanticIntentFor(item.label),
+      normalizedGoal: `найти ${item.label}`,
+      industries: ["local services"],
+      coreBusinessTypes: item.core,
+      adjacentBusinessTypes: item.adjacent,
+      productsAndServices: item.core,
+      includeSignals: item.core,
+      retrievalTerms: {
+        precision: item.core,
+        recall: item.recall,
+        exclude: [],
+      },
+    };
+    const first = compileGeoapifySemanticIntent(semanticIntent);
+    const second = compileGeoapifySemanticIntent(semanticIntent);
+
+    assert.deepEqual(second, first, `${item.label}: plan must be stable`);
+    assert.ok(first.categoryIds.length > 0, `${item.label}: executable categories`);
+    assert.ok(first.batches.length >= 1 && first.batches.length <= 4, item.label);
+    assert.ok(first.limits.maxArms <= 4, item.label);
+    assert.ok(first.limits.maxUpstreamRequests <= 4, item.label);
+    assert.ok(first.limits.maxCards <= 200, item.label);
+    assert.ok(first.limits.maxDetails <= 50, item.label);
+    assert.ok(
+      first.batches.reduce((sum, arm) => sum + arm.resultBudget, 0) <=
+        first.limits.maxCards,
+      item.label,
+    );
+    assert.ok(
+      first.batches.every(
+        (arm) =>
+          /^arm-[a-z]+-[a-f0-9]{8}$/.test(arm.id) &&
+          ["precision", "recall", "adjacent", "fallback"].includes(arm.type) &&
+          Number.isInteger(arm.priority) &&
+          arm.priority >= 1 &&
+          arm.resultBudget >= 1 &&
+          arm.categoryIds.length >= 1 &&
+          arm.categoryIds.length <= 8 &&
+          arm.categoryIds.every((categoryId) =>
+            GEOAPIFY_CATEGORY_IDS.includes(categoryId),
+          ),
+      ),
+      item.label,
+    );
+    assert.ok(
+      first.batches.every((arm) =>
+        arm.provenance.every((entry) => entry.origin.length > 0),
+      ),
+      `${item.label}: provenance`,
+    );
+    if (item.expectsFallback) {
+      assert.ok(
+        first.batches.some(
+          (arm) => arm.type === "fallback" && arm.nameQuery === "recording studio",
+        ),
+        item.label,
+      );
+    }
+  }
+});
+
+test("Geoapify merges duplicate organizations across arms before Details", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousDetailsLimit = process.env.GEOAPIFY_DETAILS_LIMIT;
+  const placeCalls = [];
+  const detailIds = [];
+  process.env.GEOAPIFY_DETAILS_LIMIT = "1";
+  const expectedIdentityByProviderId = new Map(
+    Array.from({ length: 20 }, (_, index) => [
+      `same-place-${index + 1}`,
+      `organization-${index + 1}`,
+    ]),
+  );
+  expectedIdentityByProviderId.set("variant-place-1", "organization-1");
+  expectedIdentityByProviderId.set("variant-place-2", "organization-2");
+  expectedIdentityByProviderId.set("distant-place", "organization-distant");
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname === "/v2/places") {
+      placeCalls.push(url);
+      const category = url.searchParams.get("categories");
+      const common = Array.from({ length: 20 }, (_, index) => ({
+        type: "Feature",
+        properties: {
+          place_id: `same-place-${index + 1}`,
+          name: index === 0 ? "Кроссфит Север" : `Кроссфит ${index + 1}`,
+          country_code: "ru",
+          formatted: `Москва, адрес ${index + 1}`,
+          categories: [category],
+        },
+        geometry: {
+          type: "Point",
+          coordinates: [37.62 + index / 10_000, 55.76 + index / 10_000],
+        },
+      }));
+      const excluded = {
+        type: "Feature",
+        properties: {
+          place_id: "excluded-place",
+          name: "Магазин спортивных товаров",
+          country_code: "ru",
+          formatted: "Москва, Россия",
+          categories: [category],
+        },
+        geometry: { type: "Point", coordinates: [37.63, 55.77] },
+      };
+      const distantSameNameAndAddress = {
+        type: "Feature",
+        properties: {
+          place_id: "distant-place",
+          name: "Кроссфит Север",
+          country_code: "ru",
+          formatted: "Москва, адрес 1",
+          categories: [category],
+        },
+        geometry: { type: "Point", coordinates: [37.75, 55.85] },
+      };
+      return Response.json({
+        type: "FeatureCollection",
+        features:
+          category === "sport.sports_centre"
+            ? [
+                excluded,
+                ...common.slice(0, 19).map((feature, index) =>
+                  index < 2
+                    ? {
+                        ...feature,
+                        properties: {
+                          ...feature.properties,
+                          place_id: `variant-place-${index + 1}`,
+                          name:
+                            index === 0 ? "КРОССФИТ—СЕВЕР" : "КРОССФИТ-2",
+                          formatted: `МОСКВА — АДРЕС ${index + 1}`,
+                        },
+                      }
+                    : feature,
+                ),
+                distantSameNameAndAddress,
+              ]
+            : common,
+      });
+    }
+    if (url.pathname === "/v2/place-details") {
+      detailIds.push(url.searchParams.get("id"));
+      return Response.json({
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          properties: {
+            feature_type: "details",
+            contact: { phone: "+7 999 000-00-00" },
+          },
+        }],
+      });
+    }
+    throw new Error(`Unexpected URL: ${url.pathname}`);
+  };
+
+  const arm = (type, priority, categoryId, semanticField) => ({
+    id: `arm-${type}-${type === "precision" ? "11111111" : "22222222"}`,
+    type,
+    mode: type === "precision" ? "precision" : "broad",
+    role: type === "adjacent" ? "adjacent" : "primary",
+    priority,
+    resultBudget: 20,
+    categoryIds: [categoryId],
+    nameQuery: null,
+    provenance: [{
+      semanticField,
+      semanticTerm: type === "precision" ? "crossfit gym" : "sports club",
+      origin: type === "precision" ? "retrievalTerms.precision" : "adjacentBusinessTypes",
+      match: "exact_leaf",
+      categoryId,
+    }],
+  });
+  const batches = [
+    arm("precision", 1, "sport.fitness.gym", "precision"),
+    {
+      ...arm("adjacent", 3, "sport.sports_centre", "adjacent"),
+      resultBudget: 21,
+    },
+  ];
+  const provider = new GeoapifyProvider("test-only-placeholder-key");
+
+  try {
+    const result = await provider.search(
+      {
+        description: "кроссфит без магазинов",
+        primaryQuery: "кроссфит",
+        relatedQueries: ["спортивный клуб"],
+        excludeQueries: ["магазин спортивных товаров"],
+        location: "Москва",
+        center: [37.6176, 55.7558],
+        radiusKm: 5,
+        services: [],
+        locale: "ru-RU",
+        countryCodes: ["RU"],
+      },
+      {
+        compiledPlan: {
+          provider: "geoapify",
+          providerCatalogVersion: GEOAPIFY_CAPABILITY_REGISTRY.version,
+          registryChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+          categoryIds: ["sport.fitness.gym", "sport.sports_centre"],
+          batches,
+          limits: {
+            maxArms: 4,
+            maxUpstreamRequests: 4,
+            maxCards: 200,
+            maxDetails: 50,
+          },
+          exclusionTerms: ["sporting goods store"],
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+      },
+    );
+
+    assert.equal(placeCalls.length, 2);
+    assert.ok(placeCalls.every((url) => Number(url.searchParams.get("limit")) <= 21));
+    assert.equal(result.leads.length, 21);
+    assert.equal(result.leads[0].name, "Кроссфит Север");
+    assert.equal(
+      result.leads.filter(
+        (lead) =>
+          lead.discovery.retrievalArms.map((item) => item.type).join(",") ===
+          "precision,adjacent",
+      ).length,
+      19,
+    );
+    const labelledOrganizations = result.leads.map((lead) => {
+      const labels = new Set(
+        lead.sources
+          .map((source) => expectedIdentityByProviderId.get(source.externalId))
+          .filter(Boolean),
+      );
+      assert.equal(labels.size, 1, `lead ${lead.id} must resolve to one fixture identity`);
+      return [...labels][0];
+    });
+    const unexplainedDuplicateRate =
+      (labelledOrganizations.length - new Set(labelledOrganizations).size) /
+      new Set(expectedIdentityByProviderId.values()).size;
+    assert.ok(unexplainedDuplicateRate <= 0.05);
+    const mergedCrossfit = result.leads.find(
+      (lead) => lead.name === "Кроссфит Север",
+    );
+    assert.ok(mergedCrossfit);
+    assert.deepEqual(
+      mergedCrossfit.sources.map((source) => source.externalId).sort(),
+      ["same-place-1", "variant-place-1"],
+    );
+    assert.deepEqual(
+      mergedCrossfit.discovery.retrievalArms.map((item) => item.type),
+      ["precision", "adjacent"],
+    );
+    assert.equal(
+      result.leads.filter((lead) => lead.name === "Кроссфит Север").length,
+      2,
+      "same coarse identity outside 100 meters must remain two organizations",
+    );
+    assert.deepEqual(detailIds, ["same-place-1"]);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
+    else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
+  }
+});
+
+test("rare physical intent uses a server-owned category scope with bounded name fallback", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousDetailsLimit = process.env.GEOAPIFY_DETAILS_LIMIT;
+  const placeUrls = [];
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  const semanticIntent = {
+    ...semanticIntentFor("recording studio"),
+    normalizedGoal: "найти студии звукозаписи",
+    industries: ["audio production"],
+    coreBusinessTypes: ["recording studio"],
+    adjacentBusinessTypes: ["music venue"],
+    productsAndServices: ["audio recording"],
+    includeSignals: ["recording studio"],
+    retrievalTerms: {
+      precision: ["recording studio"],
+      recall: ["audio production studio"],
+      exclude: [],
+    },
+  };
+  const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.pathname, "/v2/places");
+    placeUrls.push(url);
+    return Response.json({ type: "FeatureCollection", features: [] });
+  };
+
+  try {
+    const provider = new GeoapifyProvider("test-only-placeholder-key");
+    const result = await provider.search(
+      {
+        description: "студии звукозаписи",
+        primaryQuery: "студия звукозаписи",
+        relatedQueries: [],
+        excludeQueries: [],
+        location: "Москва",
+        center: [37.6176, 55.7558],
+        radiusKm: 5,
+        services: [],
+        locale: "ru-RU",
+        countryCodes: ["RU"],
+      },
+      {
+        compiledPlan: {
+          ...capabilityPlan,
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+      },
+    );
+    const fallbackUrl = placeUrls.find(
+      (url) => url.searchParams.get("name") === "recording studio",
+    );
+    assert.ok(fallbackUrl);
+    assert.equal(Number(fallbackUrl.searchParams.get("limit")) <= 30, true);
+    assert.deepEqual(
+      (fallbackUrl.searchParams.get("categories") ?? "").split(","),
+      [
+        "activity",
+        "commercial",
+        "office",
+        "service",
+        "production",
+        "rental",
+        "building",
+        "entertainment",
+      ],
+    );
+    assert.equal(result.provider.coverage.upstreamRequests, placeUrls.length);
+    assert.ok(placeUrls.length <= 4);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
+    else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
+  }
+});
+
 test("Geoapify adapter rejects a category injected into a compiled batch", async () => {
   const provider = new GeoapifyProvider("test-only-placeholder-key");
+  const compiledPlan = validCompiledGeoapifyPlan();
+  const injectedCategory = "model.authored.not_in_registry";
   await assert.rejects(
     provider.search(
       {
@@ -214,24 +629,16 @@ test("Geoapify adapter rejects a category injected into a compiled batch", async
       },
       {
         compiledPlan: {
-          provider: "geoapify",
-          providerCatalogVersion: GEOAPIFY_CAPABILITY_REGISTRY.version,
-          registryChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
-          categoryIds: ["sport.fitness.gym"],
+          ...compiledPlan,
+          categoryIds: [injectedCategory],
           batches: [{
-            id: "precision",
-            mode: "precision",
-            categoryIds: ["model.authored.not_in_registry"],
+            ...compiledPlan.batches[0],
+            categoryIds: [injectedCategory],
             provenance: [{
-              semanticField: "precision",
-              semanticTerm: "gym",
-              match: "exact_leaf",
-              categoryId: "model.authored.not_in_registry",
+              ...compiledPlan.batches[0].provenance[0],
+              categoryId: injectedCategory,
             }],
           }],
-          countryCode: "RU",
-          language: "ru",
-          conceptIds: [],
         },
       },
     ),
@@ -243,6 +650,7 @@ test("Geoapify adapter rejects a category injected into a compiled batch", async
 
 test("Geoapify adapter rejects incoherent category and provenance sets", async () => {
   const provider = new GeoapifyProvider("test-only-placeholder-key");
+  const compiledPlan = validCompiledGeoapifyPlan();
   await assert.rejects(
     provider.search(
       {
@@ -259,24 +667,15 @@ test("Geoapify adapter rejects incoherent category and provenance sets", async (
       },
       {
         compiledPlan: {
-          provider: "geoapify",
-          providerCatalogVersion: GEOAPIFY_CAPABILITY_REGISTRY.version,
-          registryChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
-          categoryIds: ["sport.fitness.gym"],
+          ...compiledPlan,
           batches: [{
-            id: "precision",
-            mode: "precision",
+            ...compiledPlan.batches[0],
             categoryIds: ["catering.restaurant"],
-            provenance: [{
-              semanticField: "precision",
-              semanticTerm: "gym",
-              match: "exact_leaf",
+            provenance: compiledPlan.batches[0].provenance.map((item) => ({
+              ...item,
               categoryId: "sport.fitness.gym",
-            }],
+            })),
           }],
-          countryCode: "RU",
-          language: "ru",
-          conceptIds: [],
         },
       },
     ),
@@ -284,6 +683,92 @@ test("Geoapify adapter rejects incoherent category and provenance sets", async (
       error instanceof SearchProviderError &&
       error.code === "GEOAPIFY_INVALID_COMPILED_PLAN",
   );
+});
+
+test("Geoapify adapter rejects over-budget or malformed retrieval plans before network", async () => {
+  const provider = new GeoapifyProvider("test-only-placeholder-key");
+  const valid = validCompiledGeoapifyPlan();
+  const invalidPlans = [
+    { ...valid, limits: { ...valid.limits, maxArms: 5 } },
+    { ...valid, limits: { ...valid.limits, maxUpstreamRequests: 5 } },
+    { ...valid, limits: { ...valid.limits, maxCards: 201 } },
+    { ...valid, limits: { ...valid.limits, maxDetails: 51 } },
+    {
+      ...valid,
+      batches: [{ ...valid.batches[0], resultBudget: 201 }],
+    },
+    {
+      ...valid,
+      batches: [{ ...valid.batches[0], type: "unknown" }],
+    },
+    {
+      ...valid,
+      batches: [{
+        ...valid.batches[0],
+        id: "arm-fallback-12345678",
+        type: "fallback",
+        mode: "broad",
+        role: "fallback",
+        nameQuery: "https://evil.invalid",
+        provenance: valid.batches[0].categoryIds.map((categoryId) => ({
+          semanticField: "fallback",
+          semanticTerm: "sports hall",
+          origin: "coreBusinessTypes",
+          match: "name_fallback",
+          categoryId,
+        })),
+      }],
+    },
+    {
+      ...valid,
+      batches: [{
+        ...valid.batches[0],
+        provenance: valid.batches[0].provenance.map((item) => {
+          const partial = { ...item };
+          delete partial.origin;
+          return partial;
+        }),
+      }],
+    },
+  ];
+  const previousFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("invalid plans must fail before network");
+  };
+  try {
+    for (const compiledPlan of invalidPlans) {
+      await assert.rejects(
+        provider.search(geoapifySearchPayload(), { compiledPlan }),
+        (error) =>
+          error instanceof SearchProviderError &&
+          error.code === "GEOAPIFY_INVALID_COMPILED_PLAN",
+      );
+    }
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("Geoapify adapter maps malformed feature elements to a controlled provider error", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ type: "FeatureCollection", features: [null] });
+  try {
+    const provider = new GeoapifyProvider("test-only-placeholder-key");
+    await assert.rejects(
+      provider.search(geoapifySearchPayload(), {
+        compiledPlan: validCompiledGeoapifyPlan(),
+      }),
+      (error) =>
+        error instanceof SearchProviderError &&
+        error.code === "GEOAPIFY_INVALID_RESPONSE",
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test("SemanticIntentV2 schema is strict, bounded, and open vocabulary", () => {
@@ -357,7 +842,7 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
     false,
   );
   const renderablePlan = {
-    schemaVersion: "2.0",
+    schemaVersion: "2.1",
     taxonomyVersion: "test-taxonomy",
     providerCatalogVersion: "test-provider",
     decisionPolicyVersion: "test-policy",
@@ -402,6 +887,72 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
   delete withoutPlanHash.planHash;
   assert.equal(isSearchPlan(withoutPlanHash), false);
   assert.equal(isSearchPlan({ ...renderablePlan, executionPreview: {} }), false);
+  const validExecutionPreview = {
+    provider: "geoapify",
+    categoryLabels: ["sport.fitness.gym"],
+    batches: 1,
+    retrievalArms: [{
+      id: "arm-precision-11111111",
+      type: "precision",
+      role: "primary",
+      priority: 1,
+      resultBudget: 20,
+      categoryLabels: ["sport.fitness.gym"],
+      usesNameFallback: false,
+      provenance: [{
+        semanticField: "precision",
+        semanticTerm: "gym",
+        origin: "retrievalTerms.precision",
+        match: "exact_leaf",
+        categoryId: "sport.fitness.gym",
+      }],
+    }],
+  };
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      executionPreview: validExecutionPreview,
+    }),
+    true,
+  );
+  for (const invalidArm of [
+    { ...validExecutionPreview.retrievalArms[0], resultBudget: -1 },
+    { ...validExecutionPreview.retrievalArms[0], provenance: [] },
+    {
+      ...validExecutionPreview.retrievalArms[0],
+      provenance: [{
+        ...validExecutionPreview.retrievalArms[0].provenance[0],
+        semanticField: "evil",
+      }],
+    },
+    {
+      ...validExecutionPreview.retrievalArms[0],
+      provenance: [{
+        ...validExecutionPreview.retrievalArms[0].provenance[0],
+        match: "evil",
+      }],
+    },
+    {
+      ...validExecutionPreview.retrievalArms[0],
+      categoryLabels: ["sport.fitness.gym", "sport.sports_hall"],
+    },
+  ]) {
+    assert.equal(
+      isSearchPlan({
+        ...renderablePlan,
+        executionPreview: {
+          ...validExecutionPreview,
+          retrievalArms: [invalidArm],
+        },
+      }),
+      false,
+    );
+  }
+  assert.equal(
+    isSearchPlan({ ...renderablePlan, schemaVersion: "2.0" }),
+    false,
+    "old SearchPlan v2.0 must not be accepted as the v2.1 arm contract",
+  );
   assert.equal(
     isSearchPlan({
       ...renderablePlan,
@@ -517,6 +1068,16 @@ test("confirmation token rejects tampering, expiry, stale context, and unoffered
       secret: signingSecret,
       now,
       expectedTaxonomyVersion: "stale-taxonomy",
+    }),
+    (error) =>
+      error instanceof ConfirmationTokenError &&
+      error.code === "CONFIRMATION_CONTEXT_MISMATCH",
+  );
+  await assert.rejects(
+    verifyConfirmationToken(plan.confirmation.token, {
+      secret: signingSecret,
+      now,
+      expectedDecisionPolicyVersion: "2026-08-17.2",
     }),
     (error) =>
       error instanceof ConfirmationTokenError &&
@@ -997,10 +1558,19 @@ test("semantic compatibility never executes a conflicting original category", as
     mode: "kimi",
     kimiClient: client,
   });
-  assert.equal(plan.status, "unsupported");
+  assert.equal(plan.status, "ready");
   assert.deepEqual(plan.resolution.selectedConceptIds, []);
-  assert.deepEqual(plan.resolution.reasonCodes, ["PROVIDER_COVERAGE_GAP"]);
-  assert.equal(plan.executionPreview, null);
+  assert.deepEqual(plan.resolution.reasonCodes, ["SEMANTIC_MATCH"]);
+  assert.ok(plan.executionPreview);
+  assert.ok(
+    plan.executionPreview.retrievalArms.some(
+      (arm) => arm.type === "fallback" && arm.usesNameFallback,
+    ),
+  );
+  assert.equal(
+    plan.executionPreview.categoryLabels.includes("healthcare.pharmacy"),
+    false,
+  );
 });
 
 test("bounded semantic arrays cannot overflow legacy compatibility input", async () => {

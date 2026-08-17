@@ -14,6 +14,7 @@ import {
   compileGeoapifySemanticIntent,
   compileGeoapifySelectors,
   GEOAPIFY_CAPABILITY_REGISTRY,
+  GEOAPIFY_RETRIEVAL_LIMITS,
 } from "@/lib/search-planner/catalogs/geoapify";
 import { ConfirmationTokenError } from "@/lib/search-planner/confirmation-token";
 import {
@@ -855,6 +856,7 @@ export async function GET() {
         },
         placesLimit: geoapifyPlacesLimit(),
         detailsLimit: geoapifyDetailsLimit(),
+        retrievalLimits: GEOAPIFY_RETRIEVAL_LIMITS,
         strictRadius: true,
         countryFilter: "ru",
         supportedCountryCodes: SUPPORTED_COUNTRY_CODES,
@@ -1054,32 +1056,49 @@ const searchOrchestrator = createSearchOrchestrator({
     geoapify: {
       preparationMessage: "Компилируем разрешённые категории источника",
       async prepare(plan) {
-        const semanticSelectors = compileGeoapifySemanticIntent(plan.semanticIntent);
-        const legacySelectors = semanticSelectors.categoryIds.length
+        const useSemanticCompiler =
+          plan.ai.validation === "passed" ||
+          plan.resolution.selectedConceptIds.length === 0;
+        const semanticSelectors = useSemanticCompiler
+          ? compileGeoapifySemanticIntent(plan.semanticIntent)
+          : null;
+        const legacySelectors = semanticSelectors
           ? null
           : compileGeoapifySelectors(plan.resolution.selectedConceptIds);
-        const categoryIds = semanticSelectors.categoryIds.length
+        const categoryIds = semanticSelectors
           ? semanticSelectors.categoryIds
           : [...legacySelectors!.categoryIds];
-        const batches: CompiledGeoapifyPlan["batches"] = semanticSelectors.batches.length
+        const batches: CompiledGeoapifyPlan["batches"] = semanticSelectors
           ? semanticSelectors.batches
           : [{
-              id: "legacy",
+              id: "arm-legacy-00000000",
+              type: "legacy",
               mode: "precision",
+              role: "primary",
+              priority: 1,
+              resultBudget: 80,
               categoryIds,
+              nameQuery: null,
               provenance: categoryIds.map((categoryId) => ({
                 semanticField: "legacy" as const,
                 semanticTerm: plan.semanticIntent.normalizedGoal,
+                origin: "legacy" as const,
                 match: "legacy_binding" as const,
                 categoryId,
               })),
             }];
         const compiledPlan: CompiledGeoapifyPlan = {
           provider: "geoapify",
-          providerCatalogVersion: semanticSelectors.providerCatalogVersion,
+          providerCatalogVersion: GEOAPIFY_CAPABILITY_REGISTRY.version,
           registryChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
           categoryIds,
           batches,
+          limits: semanticSelectors
+            ? { ...semanticSelectors.limits }
+            : { ...GEOAPIFY_RETRIEVAL_LIMITS },
+          exclusionTerms: semanticSelectors
+            ? [...semanticSelectors.exclusionTerms]
+            : [...plan.intent.excludeQueries],
           countryCode: plan.intent.countryCodes[0],
           language:
             plan.intent.locale === "be-BY"

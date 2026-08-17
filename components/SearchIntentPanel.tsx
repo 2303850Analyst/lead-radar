@@ -80,6 +80,16 @@ function methodLabel(method: SearchPlan["resolution"]["method"]) {
   return "Безопасный локальный fallback";
 }
 
+function retrievalArmLabel(
+  type: NonNullable<SearchPlan["executionPreview"]>["retrievalArms"][number]["type"],
+) {
+  if (type === "precision") return "точный";
+  if (type === "recall") return "расширенный";
+  if (type === "adjacent") return "смежный";
+  if (type === "fallback") return "по названию";
+  return "совместимый";
+}
+
 function readableConceptId(conceptId: string) {
   return conceptId
     .split(".")
@@ -196,6 +206,14 @@ export default function SearchIntentPanel({
             {plan.executionPreview.categoryLabels.length > 0
               ? plan.executionPreview.categoryLabels.join(", ")
               : `${plan.executionPreview.batches} поисковых пакетов`}
+            <small>
+              Стратегии: {plan.executionPreview.retrievalArms
+                .map(
+                  (arm) =>
+                    `${retrievalArmLabel(arm.type)} · до ${arm.resultBudget}`,
+                )
+                .join("; ")}
+            </small>
           </span>
         </div>
       )}

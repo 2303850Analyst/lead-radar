@@ -261,6 +261,11 @@
   color: #314c70;
 }
 
+.preview small {
+  color: #6d7e95;
+  font-size: 8px;
+}
+
 .footer {
   display: flex;
   align-items: center;

@@ -12,16 +12,42 @@ export type CompiledGeoapifyPlan = {
   categoryIds: string[];
   registryChecksum: string;
   batches: Array<{
-    id: "precision" | "broad" | "legacy";
+    id: string;
+    type: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
     mode: "precision" | "broad";
+    role: "primary" | "adjacent" | "fallback";
+    priority: number;
+    resultBudget: number;
     categoryIds: string[];
+    nameQuery: string | null;
     provenance: Array<{
-      semanticField: "precision" | "recall" | "legacy";
+      semanticField: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
       semanticTerm: string;
-      match: "exact_leaf" | "exact_path" | "parent" | "legacy_binding";
+      origin:
+        | "normalizedGoal"
+        | "coreBusinessTypes"
+        | "productsAndServices"
+        | "industries"
+        | "adjacentBusinessTypes"
+        | "retrievalTerms.precision"
+        | "retrievalTerms.recall"
+        | "legacy";
+      match:
+        | "exact_leaf"
+        | "exact_path"
+        | "parent"
+        | "name_fallback"
+        | "legacy_binding";
       categoryId: string;
     }>;
   }>;
+  limits: {
+    maxArms: number;
+    maxUpstreamRequests: number;
+    maxCards: number;
+    maxDetails: number;
+  };
+  exclusionTerms: string[];
   countryCode: SupportedCountryCode;
   language: "ru" | "be" | "kk";
   conceptIds: string[];
