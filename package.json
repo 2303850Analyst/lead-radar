@@ -9,6 +9,8 @@
     "dev": "vinext dev --hostname 127.0.0.1",
     "build": "vinext build",
     "start": "vinext start --hostname 127.0.0.1",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
     "test": "npm run build && tsx --conditions=react-server --test --test-concurrency=1 tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "eval:offline": "tsx --conditions=react-server tests/query-intelligence-eval.mjs",
@@ -24,7 +26,8 @@
     "lucide-react": "^1.31.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "vinext": "1.0.0-beta.6"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.52.1",
@@ -46,7 +49,6 @@
     "tsx": "^4.23.12",
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
-    "vinext": "1.0.0-beta.6",
     "vite": "8.2.1",
     "wrangler": "4.123.0"
   },

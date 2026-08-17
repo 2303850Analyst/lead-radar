@@ -1,0 +1,45 @@
+name: lead-radar
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: lead-radar:local
+    container_name: lead-radar
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - path: ./.env.local
+        required: false
+      - path: ${KIMI_SECRET_FILE:-./.env.kimi.local}
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      QUERY_INTELLIGENCE_MODE: kimi
+      NODE_OPTIONS: --max-old-space-size=160
+    cpus: "0.50"
+    mem_limit: 256m
+    mem_reservation: 128m
+    pids_limit: 64
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/api/search').then((response)=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 10s
