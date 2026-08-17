@@ -142,6 +142,15 @@ npm run quality
 
 `npm run quality` запускает ESLint, строгий TypeScript, production build,
 автотесты и offline evaluation. Реальный Kimi не вызывается обычными тестами.
+Open-world gate можно воспроизвести отдельно:
+
+```powershell
+npm run eval:open-world
+```
+
+Он проверяет 500 замороженных CIS intent-сценариев через mock Kimi и реальный
+planner/compiler. В stdout попадают только агрегаты, версии и checksum; запросы,
+лиды и ответы провайдеров не записываются.
 
 Опциональный live canary запускается явно, чтобы случайно не расходовать квоту:
 
@@ -458,10 +467,10 @@ scoring, CSV или отображения поверх сторонней ка�
 
 - Это локальный alpha: production release `v0.4.0` ещё имеет решение `NO-GO`.
 - Open-vocabulary semantic encoder и полный registry уже не ограничены 40
-  concepts, но текущий детерминированный matcher опирается на английские
-  provider-neutral retrieval terms от Kimi; системная quality-выборка по всему
-  provider catalog ещё не достигла release gate. Offline release coverage пока
-  составляет 222 из требуемых 500 planner cases и 60 из 600 classifier fixtures.
+  concepts. Frozen planner gate достиг 500/500 CIS intent cases и включает 100
+  типов физических организаций, но использует golden mock Kimi и поэтому не
+  доказывает качество live-модели. Classifier/relevance coverage пока составляет
+  60 из требуемых 600 размеченных карточек.
 - Runtime deterministic relevance уже заполняет `Lead.relevance` до Details по
   названию, provider categories, короткому описанию, географии и исключениям.
   Статусы `matched`, `maybe`, `rejected`, `not_checked` видны в таблице, карте,

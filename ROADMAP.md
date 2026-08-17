@@ -166,9 +166,10 @@ scoring, экспорт и показ на сторонней карте не в
   счётчики без скрытия отклонённых карточек;
 - RU support и пилотные locale/country-контракты BY/KZ, по одной стране на
   поиск;
-- 222 planner cases, 30 zero-token-overlap cases, 60 synthetic classifier
-  fixtures и fault suite; initial offline metrics равны `1.0000`, hard
-  violations — `0`;
+- frozen open-world planner gate: 500 cases, 150 family-level групп, 100 типов
+  физических организаций, split `60/20/20`, две независимые слепые разметки и
+  Cohen's kappa `1.0000`; прежние 222 planner cases сохранены как compatibility
+  suite, 60 synthetic classifier fixtures пока не являются release corpus;
 - open-vocabulary encoder проверен реальным `kimi-k3` на барбершопе,
   спортивном зале и ремонте телефонов: валидные ответы заняли 13,8–30,3 с;
   прежний V1 Kimi → Geoapify canary не считается доказательством нового
@@ -181,10 +182,9 @@ scoring, экспорт и показ на сторонней карте не в
 
 Частично выполнено:
 
-- полный Geoapify registry, bounded multi-arm compiler и deterministic relevance
-  до enrichment готовы; дальше требуется расширить unseen-category/relevance
-  corpus и измерить качество по всему provider catalog, а не только на tracer
-  bullet и regression cases;
+- полный Geoapify registry, bounded multi-arm compiler и open-world intent
+  corpus на 500 сценариев готовы; дальше требуется расширить размеченный
+  relevance corpus и измерить качество post-search классификации;
 - provider adapter принимает скомпилированные категории, но geocoding,
   exclusions/dedupe и Details ещё не вынесены в отдельный двухфазный search
   service;
@@ -196,8 +196,6 @@ scoring, экспорт и показ на сторонней карте не в
 
 Не выполнено и блокирует production `v0.4.0`:
 
-- 500 planner cases, 600 classifier fixtures, hidden split и два независимых
-  разметчика;
 - 600 размеченных relevance fixtures и измеренный classifier quality gate;
   optional post-search Kimi остаётся за отдельным data-flow gate;
 - auth, shared/multi-instance admission и server-side quota limiter; текущие
@@ -224,7 +222,8 @@ Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
    in-process Tier-0 scheduler, circuit breaker и deadline уже готовы.
 2. Завершить двухфазную provider boundary и измерить качество relevance до
    enrichment на размеченной выборке.
-3. Расширить frozen datasets до 500/600 и добавить hidden/manual annotation.
+3. Расширить classifier/relevance dataset с 60 до 600 размеченных карточек;
+   open-world planner corpus 500/500 и две независимые разметки уже готовы.
 4. Прогнать model comparison, stability, browser E2E, load и 30 реальных
    search tasks с versioned обезличенным отчётом.
 5. Оптимизировать prompt до token/cost gate и измерить минимум 100 поисков и

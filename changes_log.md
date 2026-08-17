@@ -29,6 +29,26 @@
 
 ### Добавлено
 
+- Добавлен замороженный open-world quality gate для semantic intent: 500
+  пользовательских CIS-сценариев, 150 непересекающихся семейств и 100 типов
+  физических организаций с family-level split `60/20/20`. Корпус включает
+  400 RU, 50 BY и 50 KZ сценариев, 20 mixed-language, 20 неоднозначных, 15
+  non-place и 15 injection случаев; 450 физических примеров не входят в
+  прежние ручные concept bindings. Две независимые слепые разметки хранят
+  только ID и outcome, дают Cohen's kappa `1.0`; checksum развёрнутого корпуса
+  фиксирован. `npm run eval:open-world` проверяет реальный planner/compiler с
+  mock Kimi, provider executability, false unsupported, безопасность
+  open-vocabulary запроса, владение географией и versioned cache. Отчёт содержит
+  только агрегаты и завершает процесс с ненулевым кодом при нарушении gate.
+  Двадцать hidden-семейств имеют по четыре независимых semantic-описания без
+  token overlap с provider ID: успешность обеспечивается общей bounded
+  compilation/name-fallback стратегией, а не точечным alias или binding.
+  Novelty считается против замороженного baseline
+  `canonical-taxonomy-2026-08-16.1`, поэтому будущие bindings не меняют
+  исторические метрики корпуса. Все 80 holdout-вариантов обязаны пройти
+  grounded provider compilation; порог этой части равен 100%, поэтому
+  единичный alias не закрывает family-level failure.
+
 - Добавлен локальный Docker runtime с multi-stage production-сборкой и тем же
   адресом `127.0.0.1:3000`. Контейнер получает ключи только при запуске из
   исключённых из Git env-файлов; секреты и локальные результаты не входят в
