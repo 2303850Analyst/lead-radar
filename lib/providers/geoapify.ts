@@ -9,7 +9,11 @@ import type {
   RussianMetroSystem,
   RussianMetroSystemId,
 } from "../metro";
-import { isGeoapifyCategoryId } from "../search-planner/catalogs/geoapify";
+import {
+  GEOAPIFY_CAPABILITY_REGISTRY,
+  GEOAPIFY_PROVIDER_CATALOG_VERSION,
+  isGeoapifyCategoryId,
+} from "../search-planner/catalogs/geoapify";
 import {
   SearchProviderError,
   type SearchProvider,
@@ -462,6 +466,46 @@ function isCountryPlace(feature: GeoapifyFeature, expectedCountryCode: string): 
     countryCode.toLocaleLowerCase("en-US") ===
       expectedCountryCode.toLocaleLowerCase("en-US")
   );
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return (
+    leftSet.size === left.length &&
+    rightSet.size === right.length &&
+    right.every((value) => leftSet.has(value))
+  );
+}
+
+function compiledPlanIsCoherent(
+  plan: NonNullable<SearchProviderOptions["compiledPlan"]>,
+): boolean {
+  if (plan.batches.length < 1 || plan.batches.length > 2) return false;
+  if (new Set(plan.batches.map((batch) => batch.id)).size !== plan.batches.length) {
+    return false;
+  }
+  const flattened: string[] = [];
+  for (const batch of plan.batches) {
+    const expectedMode = batch.id === "broad" ? "broad" : "precision";
+    const expectedField =
+      batch.id === "legacy" ? "legacy" : batch.id === "broad" ? "recall" : "precision";
+    if (
+      batch.mode !== expectedMode ||
+      batch.categoryIds.length < 1 ||
+      batch.categoryIds.length > 8 ||
+      !sameStringSet(
+        batch.categoryIds,
+        batch.provenance.map((item) => item.categoryId),
+      ) ||
+      batch.provenance.some((item) => item.semanticField !== expectedField)
+    ) {
+      return false;
+    }
+    flattened.push(...batch.categoryIds);
+  }
+  return sameStringSet(plan.categoryIds, flattened);
 }
 
 type MetroStationObservation = {
@@ -1242,23 +1286,49 @@ export class GeoapifyProvider implements SearchProvider {
     const apiKey = this.apiKey.trim();
     const observedAt = new Date().toISOString();
     const compiledPlan = options.compiledPlan;
+    if (
+      compiledPlan &&
+      (compiledPlan.providerCatalogVersion !== GEOAPIFY_PROVIDER_CATALOG_VERSION ||
+        compiledPlan.registryChecksum !== GEOAPIFY_CAPABILITY_REGISTRY.checksum)
+    ) {
+      throw new SearchProviderError(
+        "Версия каталога Geoapify не совпадает с серверным registry",
+        "GEOAPIFY_CATALOG_MISMATCH",
+      );
+    }
     const categoryPlan = compiledPlan
       ? {
           categories: [...compiledPlan.categoryIds],
-          batches: compiledPlan.batches.map((batch) => [...batch]),
+          batches: compiledPlan.batches.map((batch) => ({
+            ...batch,
+            categoryIds: [...batch.categoryIds],
+            provenance: batch.provenance.map((item) => ({ ...item })),
+          })),
         }
       : resolveGeoapifyCategories(payload);
+    const batchCategoryIds = categoryPlan.batches.flatMap((batch) =>
+      Array.isArray(batch) ? batch : batch.categoryIds,
+    );
     if (
       !categoryPlan.categories.length ||
       !categoryPlan.batches.length ||
       (compiledPlan &&
-        categoryPlan.categories.some(
+        [...categoryPlan.categories, ...batchCategoryIds].some(
           (categoryId) => !isGeoapifyCategoryId(categoryId),
-        ))
+        )) ||
+      categoryPlan.batches.some((batch) =>
+        (Array.isArray(batch) ? batch : batch.categoryIds).length === 0,
+      )
     ) {
       throw new SearchProviderError(
         "Сервер не смог подготовить категории Geoapify",
         "GEOAPIFY_UNSUPPORTED_CATEGORY",
+      );
+    }
+    if (compiledPlan && !compiledPlanIsCoherent(compiledPlan)) {
+      throw new SearchProviderError(
+        "Скомпилированный план Geoapify внутренне противоречив",
+        "GEOAPIFY_INVALID_COMPILED_PLAN",
       );
     }
     const countryCode = compiledPlan?.countryCode ?? "RU";
@@ -1315,10 +1385,13 @@ export class GeoapifyProvider implements SearchProvider {
     // Category batches are sequential to remain friendly to the free-plan
     // request rate. The current MVP has one batch; the shape is future-ready.
     for (const [batchIndex, categoryBatch] of categoryPlan.batches.entries()) {
+      const categoryIds = Array.isArray(categoryBatch)
+        ? categoryBatch
+        : categoryBatch.categoryIds;
       const collection = await requestGeoapify(
         PLACES_ENDPOINT,
         {
-          categories: categoryBatch.join(","),
+          categories: categoryIds.join(","),
           filter: `circle:${center[0]},${center[1]},${Math.round(
             payload.radiusKm * 1_000,
           )}`,

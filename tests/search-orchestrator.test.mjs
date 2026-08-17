@@ -20,6 +20,11 @@ test("search orchestrator prepares and executes only the selected provider adapt
   const plan = {
     status: "ready",
     resolution: { selectedConceptIds: ["logistics.fulfillment"] },
+    executionPreview: {
+      provider: "geoapify",
+      categoryLabels: ["office.logistics"],
+      batches: 1,
+    },
   };
   const response = {
     mode: "demo",

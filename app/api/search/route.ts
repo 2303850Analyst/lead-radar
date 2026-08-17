@@ -11,7 +11,9 @@ import {
   type SearchProgressCallback,
 } from "@/lib/providers/types";
 import {
+  compileGeoapifySemanticIntent,
   compileGeoapifySelectors,
+  GEOAPIFY_CAPABILITY_REGISTRY,
 } from "@/lib/search-planner/catalogs/geoapify";
 import { ConfirmationTokenError } from "@/lib/search-planner/confirmation-token";
 import {
@@ -845,6 +847,12 @@ export async function GET() {
       },
       geoapifyPlaces: {
         configured: geoapifyConfigured,
+        capabilityRegistry: {
+          version: GEOAPIFY_CAPABILITY_REGISTRY.version,
+          checksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+          categoryCount: GEOAPIFY_CAPABILITY_REGISTRY.categories.length,
+          sourceRetrievedAt: GEOAPIFY_CAPABILITY_REGISTRY.sourceRetrievedAt,
+        },
         placesLimit: geoapifyPlacesLimit(),
         detailsLimit: geoapifyDetailsLimit(),
         strictRadius: true,
@@ -1046,14 +1054,32 @@ const searchOrchestrator = createSearchOrchestrator({
     geoapify: {
       preparationMessage: "Компилируем разрешённые категории источника",
       async prepare(plan) {
-        const selectors = compileGeoapifySelectors(
-          plan.resolution.selectedConceptIds,
-        );
+        const semanticSelectors = compileGeoapifySemanticIntent(plan.semanticIntent);
+        const legacySelectors = semanticSelectors.categoryIds.length
+          ? null
+          : compileGeoapifySelectors(plan.resolution.selectedConceptIds);
+        const categoryIds = semanticSelectors.categoryIds.length
+          ? semanticSelectors.categoryIds
+          : [...legacySelectors!.categoryIds];
+        const batches: CompiledGeoapifyPlan["batches"] = semanticSelectors.batches.length
+          ? semanticSelectors.batches
+          : [{
+              id: "legacy",
+              mode: "precision",
+              categoryIds,
+              provenance: categoryIds.map((categoryId) => ({
+                semanticField: "legacy" as const,
+                semanticTerm: plan.semanticIntent.normalizedGoal,
+                match: "legacy_binding" as const,
+                categoryId,
+              })),
+            }];
         const compiledPlan: CompiledGeoapifyPlan = {
           provider: "geoapify",
-          providerCatalogVersion: selectors.providerCatalogVersion,
-          categoryIds: [...selectors.categoryIds],
-          batches: [[...selectors.categoryIds]],
+          providerCatalogVersion: semanticSelectors.providerCatalogVersion,
+          registryChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+          categoryIds,
+          batches,
           countryCode: plan.intent.countryCodes[0],
           language:
             plan.intent.locale === "be-BY"

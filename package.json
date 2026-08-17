@@ -16,6 +16,7 @@
     "eval:offline": "tsx --conditions=react-server tests/query-intelligence-eval.mjs",
     "eval:kimi:live": "tsx --conditions=react-server tests/kimi-live-eval.mjs",
     "smoke:stream": "node scripts/smoke-search-stream.mjs",
+    "smoke:kimi-geoapify:live": "npm run build && node scripts/smoke-kimi-geoapify-live.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "quality": "npm run lint && npm run typecheck && npm test && npm run eval:offline"
   },

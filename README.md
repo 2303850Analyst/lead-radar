@@ -395,18 +395,21 @@ Free plan требует видимую атрибуцию Geoapify и OpenStree
 лексикой; сервер проверяет strict JSON Schema, лимиты, смысловые инварианты и
 отсутствие исполняемых URL/filters.
 
-Текущий alpha после semantic encoding временно использует старый server-side
-словарь только как compatibility-компилятор для уже известных ниш. Поэтому
-Kimi уже понимает новый запрос вроде «спортивный зал», но до следующего этапа
-provider compiler честно вернёт `PROVIDER_COVERAGE_GAP`, а не ошибку
-«неправильная формулировка». Сам список кандидатов в Kimi больше не отправляется.
+После semantic encoding сервер сопоставляет provider-neutral английские
+retrieval terms полному зафиксированному каталогу Geoapify: 813 категорий из
+официальной документации, версия и SHA-256 checksum доступны в health API.
+Компилятор формирует не более двух пакетов — precision и broad — с provenance,
+повторно проверяет каждый category ID по registry и только затем передаёт его
+адаптеру. Старый словарь 40 ниш остаётся временным fallback для обратной
+совместимости, но больше не является вселенной допустимых запросов.
 
 Open-vocabulary encoder проверен на реальном `kimi-k3` для трёх обычных
 формулировок: барбершоп, спортивный зал и ремонт телефонов. Валидные ответы
 заняли 13,8–30,3 с; два промежуточных вызова достигли текущего timeout 30 с.
 Это функциональный canary и аргумент для отдельной калибровки deadline, а не
-доказательство SLA. Полный Kimi → Geoapify canary после замены capability
-compiler будет повторён в рамках Issue #11.
+доказательство SLA. Два успешных live smoke «Спортивный зал» прошли через Kimi
+и Geoapify за 27,4–27,7 с: готовый provider plan, 3–20 обнаруженных карточек и
+3 из 3 запрошенных Details; raw ответы и лиды не сохранялись.
 
 ## Экспериментальный API Яндекса
 
@@ -418,11 +421,11 @@ scoring, CSV или отображения поверх сторонней ка�
 ## Ограничения
 
 - Это локальный alpha: production release `v0.4.0` ещё имеет решение `NO-GO`.
-- Open-vocabulary semantic encoder уже не ограничен 40 concepts, но текущий
-  compatibility-компилятор Geoapify всё ещё покрывает только прежние 40 ниш;
-  его замена полным provider capability catalog — следующий этап. Offline
-  release coverage пока составляет 222 из требуемых 500 planner cases и 60 из
-  600 classifier fixtures.
+- Open-vocabulary semantic encoder и полный registry уже не ограничены 40
+  concepts, но текущий детерминированный matcher опирается на английские
+  provider-neutral retrieval terms от Kimi; системная quality-выборка по всему
+  provider catalog ещё не достигла release gate. Offline release coverage пока
+  составляет 222 из требуемых 500 planner cases и 60 из 600 classifier fixtures.
 - Runtime post-search classifier отсутствует; найденные карточки Kimi не
   получает, а `Lead.relevance` пока не заполняется.
 - RU поддерживается, BY/KZ являются пилотными; остальные страны CIS пока

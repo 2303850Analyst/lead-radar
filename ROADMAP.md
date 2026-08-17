@@ -6,10 +6,10 @@
 
 Статус: локальный alpha переводит свободный запрос в open-vocabulary
 `SemanticIntentV2` через Kimi и только после server-side compilation обращается
-к Geoapify. Provider compiler пока сохраняет legacy-покрытие 40 ниш, поэтому
-системная компиляция полного каталога — следующий P0. Production release и
-внешний SLA имеют решение `NO-GO` до закрытия quality, reliability и security
-gates.
+к Geoapify. Первый open-world tracer bullet работает на полном versioned
+registry из 813 Geoapify-категорий: «Спортивный зал» проходит Kimi → compiler →
+Geoapify без ручного добавления сегмента. Production release и внешний SLA
+имеют решение `NO-GO` до закрытия quality, reliability и security gates.
 
 ## Цель продукта
 
@@ -167,9 +167,10 @@ scoring, экспорт и показ на сторонней карте не в
 
 Частично выполнено:
 
-- semantic encoder отвязан от 40 canonical concepts, но Geoapify execution
-  пока использует прежний server-side compatibility compiler; следующий этап —
-  полный versioned provider capability catalog и системная компиляция новых ниш;
+- полный Geoapify registry зафиксирован с version/checksum, а compiler умеет
+  exact/parent matching и bounded precision/broad batches; дальше требуется
+  расширить unseen-category corpus, relevance filtering и измерить качество по
+  всему provider catalog, а не только на tracer bullet;
 - provider adapter принимает скомпилированные категории, но geocoding,
   exclusions/dedupe и Details ещё не вынесены в отдельный двухфазный search
   service;

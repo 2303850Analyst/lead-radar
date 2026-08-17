@@ -12,7 +12,7 @@ const validateSemanticIntentArtifact = ajv.compile(KIMI_SEMANTIC_INTENT_SCHEMA);
 
 const MAX_SEMANTIC_INTENT_JSON_CHARS = 30_000;
 const FORBIDDEN_EXECUTABLE_VALUE =
-  /(?:(?:https?|ftp|file|mailto|geo|tel|javascript|data|ws|wss):|\/\/[a-z0-9]|www\.|(?:^|\s)(?:GET|POST|PUT|PATCH|DELETE)\s+\/|\/v\d+\/[a-z0-9/_-]*\?|(?:^|[?&\s])(?:api_?key|filter|bias|categories?|type|lat|lon|radius)\s*[:=]|[-+]?\d{1,3}\.\d+\s*[,;\s]\s*[-+]?\d{1,3}\.\d+)/i;
+  /(?:(?:https?|ftp|file|mailto|geo|tel|javascript|data|ws|wss):|\/\/[a-z0-9]|www\.|(?:^|\s)(?:GET|POST|PUT|PATCH|DELETE)\s+\/|\/v\d+\/[a-z0-9/_-]*\?|(?:^|[?&\s])(?:api_?key|filter|bias|categories?|type|lat|lon|radius)\s*[:=]|(?:^|\s)[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+(?:$|\s)|[-+]?\d{1,3}\.\d+\s*[,;\s]\s*[-+]?\d{1,3}\.\d+)/i;
 
 export class KimiSchemaValidationError extends Error {
   readonly code = "KIMI_SCHEMA_VALIDATION_FAILED";
@@ -67,6 +67,16 @@ export function validateKimiSemanticIntent(value: unknown): SemanticIntentV2 {
     intent.physicalLocationRequirement !== "not_applicable"
   ) {
     issues.push("non_physical intent must use not_applicable location requirement");
+  }
+  if (
+    ![
+      ...intent.retrievalTerms.precision,
+      ...intent.retrievalTerms.recall,
+    ].some((term) => /[a-z]/i.test(term))
+  ) {
+    issues.push(
+      "retrieval terms must include at least one provider-neutral English equivalent",
+    );
   }
   if (semanticIntentStrings(intent).some((item) => FORBIDDEN_EXECUTABLE_VALUE.test(item))) {
     issues.push("semantic intent must not contain URLs, coordinates, or provider parameters");

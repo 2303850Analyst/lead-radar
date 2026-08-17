@@ -99,9 +99,9 @@ function ensureExecutablePlan(
       plan,
     );
   }
-  if (!plan.resolution.selectedConceptIds.length) {
+  if (!plan.executionPreview || plan.executionPreview.batches < 1) {
     throw new SearchPlanOutcomeError(
-      "Не удалось безопасно подготовить категорию поиска",
+      "Не удалось безопасно подготовить стратегию поиска",
       "SEARCH_PLAN_UNSUPPORTED",
       422,
       plan,

@@ -57,6 +57,20 @@
 
 ### Бизнес-логика и ограничения
 
+- Добавлен полный versioned capability registry Geoapify: 813 category IDs,
+  извлечённых из официального раздела Supported categories 17.08.2026, с
+  SHA-256 checksum. Прежние 43 IDs/40 bindings остаются только legacy fallback,
+  а не допустимой вселенной поиска.
+- Новый deterministic compiler сопоставляет открытые provider-neutral terms из
+  `SemanticIntentV2` полному registry, формирует bounded precision и broad
+  batches с provenance и повторно проверяет version, checksum и каждый category
+  ID перед upstream-вызовом. Прямые model-authored category IDs дополнительно
+  запрещены semantic validator.
+- «Спортивный зал» теперь получает ready provider plan с категориями
+  `sport.sports_hall`, `sport.fitness.gym` и родственными fitness capabilities,
+  не выбирает ресторан и не требует canonical concept. Ранее поддерживаемые
+  запросы продолжают использовать semantic compiler либо legacy fallback.
+
 - Kimi переведён с выбора одного canonical ID из закрытого списка на
   open-vocabulary `SemanticIntentV2`. Модель теперь систематизирует обычный
   пользовательский запрос в нормализованную цель, отрасли, основные, смежные и
@@ -96,6 +110,14 @@
   канонические координаты подтверждённой станции, а не клиентское утверждение.
 
 ### Проверено
+
+- Два opt-in live smoke на реальных `kimi-k3` и Geoapify прошли за 27,4–27,7 с:
+  `SemanticIntentV2` schema validation — passed, provider plan — ready, найдено
+  3–20 карточек спортивных организаций, Place Details — 3 из 3 в обоих
+  запусках. Ключи, raw provider responses и lead data не сохранялись. Один
+  предыдущий запуск вернул
+  контролируемый retryable `SEARCH_PLANNER_UNAVAILABLE`, поэтому единичный PASS
+  не считается доказательством внешнего SLA.
 
 - Новый encoder проверен реальным `kimi-k3` на трёх обычных формулировках из
   разных ниш. Барбершоп прошёл strict schema за 13,8 с; «Спортивный зал» за

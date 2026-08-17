@@ -6,8 +6,10 @@ import {
   verifyConfirmationToken,
 } from "./confirmation-token";
 import {
+  compileGeoapifySemanticIntent,
   compileGeoapifySelectors,
   GEOAPIFY_PROVIDER_CATALOG_VERSION,
+  type CompiledGeoapifyCapabilityPlan,
 } from "./catalogs/geoapify";
 import { hashCanonicalJson, type CanonicalJsonValue } from "./hashing";
 import {
@@ -39,8 +41,8 @@ import {
   type SemanticIntentV2,
 } from "./types";
 
-export const DECISION_POLICY_VERSION = "2026-08-17.1";
-export const KIMI_PROMPT_VERSION = "semantic-intent-v2/2026-08-17.1";
+export const DECISION_POLICY_VERSION = "2026-08-17.2";
+export const KIMI_PROMPT_VERSION = "semantic-intent-v2/2026-08-17.2";
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;
 export const SEARCH_PLAN_RUNTIME_CACHE_MAX_ENTRIES = 200;
 
@@ -158,6 +160,17 @@ function executionPreview(selectedConceptIds: readonly string[]): SearchPlan["ex
     provider: "geoapify",
     categoryLabels: [...selectors.categoryIds],
     batches: selectors.categoryIds.length ? 1 : 0,
+  };
+}
+
+function semanticExecutionPreview(
+  capabilityPlan: CompiledGeoapifyCapabilityPlan,
+): SearchPlan["executionPreview"] {
+  if (!capabilityPlan.categoryIds.length || !capabilityPlan.batches.length) return null;
+  return {
+    provider: "geoapify",
+    categoryLabels: [...capabilityPlan.categoryIds],
+    batches: capabilityPlan.batches.length,
   };
 }
 
@@ -486,6 +499,7 @@ export async function createSearchPlan(
       signal: options.signal,
     });
     const semanticIntent = result.semanticIntent;
+    const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
     const semanticResolution = resolveDeterministically(
       compatibilityIntent(intent, semanticIntent),
     );
@@ -496,9 +510,13 @@ export async function createSearchPlan(
       intent,
       requestCacheKey,
       semanticIntent,
-      semanticResolution.decision === "ready"
-        ? semanticResolution.method === "exact" ? "high" : "medium"
-        : "unknown",
+      capabilityPlan.batches.some((batch) => batch.mode === "precision")
+        ? "high"
+        : capabilityPlan.categoryIds.length
+          ? "medium"
+          : semanticResolution.decision === "ready"
+            ? semanticResolution.method === "exact" ? "high" : "medium"
+            : "unknown",
     );
 
     if (
@@ -548,6 +566,30 @@ export async function createSearchPlan(
               clarificationQuestion(intent.locale),
           },
           executionPreview: null,
+          ai: aiMetadata(result),
+        },
+        signingOptions,
+      );
+    }
+
+    if (capabilityPlan.categoryIds.length) {
+      const selectedConceptIds =
+        semanticResolution.decision === "ready" && semanticResolution.selectedConceptId
+          ? [semanticResolution.selectedConceptId]
+          : [];
+      return finalizePlan(
+        {
+          ...semanticCommon,
+          status: "ready",
+          resolution: {
+            method: "kimi",
+            selectedConceptIds,
+            alternatives: [],
+            confidenceBand: semanticIntent.confidence,
+            reasonCodes: ["SEMANTIC_MATCH"],
+            clarificationQuestion: null,
+          },
+          executionPreview: semanticExecutionPreview(capabilityPlan),
           ai: aiMetadata(result),
         },
         signingOptions,

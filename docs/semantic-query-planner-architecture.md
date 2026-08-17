@@ -4,6 +4,11 @@
 > используется Kimi: актуальный runtime-контракт — open-vocabulary
 > `SemanticIntentV2`, описанный в README и GitHub Issue #1. Полная переработка
 > архитектурного документа входит в release-cleanup Issue #12.
+>
+> Tracer bullet Issue #4 уже добавил pinned Geoapify registry из 813 категорий
+> и deterministic exact/parent compiler с precision/broad batches. Это
+> исполняемый open-world путь, но ещё не финальная relevance/multi-provider
+> архитектура из этого документа.
 
 Статус решения: **локальный alpha реализован; production-архитектура завершена
 частично**
@@ -19,7 +24,7 @@
 |---|---|
 | Taxonomy 40 concepts, resolver, strict schema/AJV | Реализовано |
 | Kimi SSE, `/api/search/plan`, SearchPlan, HMAC confirmation | Реализовано и проверено real API canary |
-| Canonical ID -> allowlisted Geoapify categories | Реализовано |
+| SemanticIntent -> full Geoapify registry (813 IDs, version/checksum) | Реализован tracer bullet |
 | RU + pilot BY/KZ contract | Реализовано, coverage ещё недостаточен для production |
 | Двухфазный search service и полное отделение provider | Частично: adapter сохраняет legacy payload flow |
 | Runtime relevance classifier | Не реализован; карточки Kimi не получает |

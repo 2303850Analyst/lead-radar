@@ -229,6 +229,7 @@ function plannerPrompt(request: KimiEncodeRequest): {
       "You are the LeadRadar semantic encoder for business-place discovery in CIS countries.",
       "Interpret the user's ordinary language into open-vocabulary business semantics.",
       "Use concise natural-language business types, industries, services, synonyms, and retrieval terms.",
+      "In retrievalTerms, include concise English equivalents alongside source-language terms so a provider-neutral registry compiler can match the meaning.",
       "Preserve include and exclude intent. Separate the core business from adjacent businesses.",
       "Do not output category IDs, provider names, URLs, coordinates, HTTP parameters, map filters, or API instructions.",
       "Locale and country are trusted context only; never repeat or modify geography in the output.",

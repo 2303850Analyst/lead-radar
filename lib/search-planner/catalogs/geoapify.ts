@@ -3,60 +3,31 @@ import {
   type CanonicalConceptId,
   getCanonicalConcept,
 } from "../taxonomy";
+import type { SemanticIntentV2 } from "../types";
+import capabilitySnapshot from "./geoapify-categories.snapshot.json";
 
-export const GEOAPIFY_PROVIDER_CATALOG_VERSION = "2026-08-16.1";
+export const GEOAPIFY_PROVIDER_CATALOG_VERSION = capabilitySnapshot.catalogVersion;
 
 /**
- * IDs verified against Geoapify's official Places category catalog on
- * 2026-08-16. Keep this allowlist provider-specific and code-reviewed.
+ * Full provider capability registry captured from Geoapify's official Places
+ * documentation. The snapshot is versioned and code-reviewed; runtime never
+ * accepts a category merely because a model emitted a similar string.
  */
-export const GEOAPIFY_CATEGORY_IDS = [
-  "office.logistics",
-  "rental.storage",
-  "service.beauty.hairdresser",
-  "service.beauty",
-  "healthcare.dentist",
-  "healthcare.clinic_or_praxis",
-  "healthcare.pharmacy",
-  "service.vehicle.repair",
-  "service.vehicle.car_wash",
-  "service.vehicle.fuel",
-  "service.vehicle.charging_station",
-  "commercial.supermarket",
-  "commercial.convenience",
-  "commercial.food_and_drink.bakery",
-  "commercial.food_and_drink.butcher",
-  "commercial.florist",
-  "commercial.clothing.clothes",
-  "commercial.clothing.shoes",
-  "commercial.furniture_and_interior",
-  "commercial.houseware_and_hardware.building_materials",
-  "commercial.elektronics",
-  "commercial.pet",
-  "catering.restaurant",
-  "catering.cafe",
-  "catering.fast_food",
-  "accommodation.hotel",
-  "accommodation.hostel",
-  "office.coworking",
-  "office.estate_agent",
-  "service.estate_agent",
-  "office.lawyer",
-  "office.accountant",
-  "office.it",
-  "office.advertising_agency",
-  "service.cleaning",
-  "service.cleaning.laundry",
-  "service.cleaning.dry_cleaning",
-  "service.photographer",
-  "office.travel_agent",
-  "service.travel_agency",
-  "rental.car",
-  "education.driving_school",
-  "education.language_school",
-] as const;
+export const GEOAPIFY_CAPABILITY_REGISTRY = Object.freeze({
+  schemaVersion: capabilitySnapshot.schemaVersion,
+  provider: capabilitySnapshot.provider,
+  version: capabilitySnapshot.catalogVersion,
+  sourceUrl: capabilitySnapshot.sourceUrl,
+  sourceRetrievedAt: capabilitySnapshot.sourceRetrievedAt,
+  checksumAlgorithm: capabilitySnapshot.checksumAlgorithm,
+  checksum: capabilitySnapshot.checksum,
+  categories: Object.freeze([...capabilitySnapshot.categories]),
+});
 
-export type GeoapifyCategoryId = (typeof GEOAPIFY_CATEGORY_IDS)[number];
+export const GEOAPIFY_CATEGORY_IDS: readonly string[] =
+  GEOAPIFY_CAPABILITY_REGISTRY.categories;
+
+export type GeoapifyCategoryId = string;
 
 export type GeoapifyConceptBinding = {
   conceptId: CanonicalConceptId;
@@ -121,6 +92,28 @@ export type CompiledGeoapifySelectors = {
   broadConceptIds: CanonicalConceptId[];
 };
 
+export type GeoapifyCapabilityProvenance = {
+  semanticField: "precision" | "recall";
+  semanticTerm: string;
+  match: "exact_leaf" | "exact_path" | "parent";
+  categoryId: string;
+};
+
+export type GeoapifyCapabilityBatch = {
+  id: "precision" | "broad";
+  mode: "precision" | "broad";
+  categoryIds: string[];
+  provenance: GeoapifyCapabilityProvenance[];
+};
+
+export type CompiledGeoapifyCapabilityPlan = {
+  provider: "geoapify";
+  providerCatalogVersion: string;
+  registryChecksum: string;
+  categoryIds: string[];
+  batches: GeoapifyCapabilityBatch[];
+};
+
 export function isGeoapifyCategoryId(value: string): value is GeoapifyCategoryId {
   return ALLOWED_CATEGORY_IDS.has(value);
 }
@@ -165,6 +158,245 @@ export function compileGeoapifySelectors(
     broadConceptIds: bindings
       .filter((binding) => binding.precision === "broad")
       .map((binding) => binding.conceptId),
+  };
+}
+
+const MAX_CATEGORIES_PER_BATCH = 8;
+const MAX_TERM_CACHE_ENTRIES = 500;
+
+function normalizedCapabilityToken(value: string): string {
+  const token = value.toLocaleLowerCase("en-US");
+  if (token === "centre" || token === "centres" || token === "centers") return "center";
+  if (token === "sports") return "sport";
+  if (token === "gyms") return "gym";
+  if (token.endsWith("ies") && token.length > 4) return `${token.slice(0, -3)}y`;
+  if (token.endsWith("s") && token.length > 4) return token.slice(0, -1);
+  return token;
+}
+
+function capabilityTokens(value: string): string[] {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[_./-]+/g, " ")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(normalizedCapabilityToken);
+}
+
+function normalizedCapabilityPhrase(value: string): string {
+  return capabilityTokens(value).join(" ");
+}
+
+type CapabilityCandidate = {
+  categoryId: string;
+  score: number;
+  provenance: GeoapifyCapabilityProvenance;
+};
+
+type IndexedCapability = {
+  categoryId: string;
+  segments: string[];
+  leafPhrase: string;
+  pathPhrase: string;
+  pathTokens: Set<string>;
+  hasChildren: boolean;
+};
+
+const CAPABILITY_PARENT_IDS = new Set(
+  GEOAPIFY_CATEGORY_IDS.flatMap((categoryId) => {
+    const segments = categoryId.split(".");
+    return segments.slice(1).map((_, index) => segments.slice(0, index + 1).join("."));
+  }),
+);
+const CAPABILITY_INDEX: readonly IndexedCapability[] = GEOAPIFY_CATEGORY_IDS.map(
+  (categoryId) => {
+    const segments = categoryId.split(".");
+    const pathPhrase = normalizedCapabilityPhrase(categoryId);
+    return {
+      categoryId,
+      segments,
+      leafPhrase: normalizedCapabilityPhrase(segments.at(-1) ?? ""),
+      pathPhrase,
+      pathTokens: new Set(pathPhrase.split(" ").filter(Boolean)),
+      hasChildren: CAPABILITY_PARENT_IDS.has(categoryId),
+    };
+  },
+);
+const CAPABILITY_TERM_CACHE = new Map<
+  string,
+  Array<Omit<CapabilityCandidate, "provenance"> & { match: GeoapifyCapabilityProvenance["match"] }>
+>();
+
+function rememberTermCandidates(
+  termPhrase: string,
+  candidates: Array<Omit<CapabilityCandidate, "provenance"> & { match: GeoapifyCapabilityProvenance["match"] }>,
+) {
+  if (CAPABILITY_TERM_CACHE.size >= MAX_TERM_CACHE_ENTRIES) {
+    const oldest = CAPABILITY_TERM_CACHE.keys().next().value;
+    if (oldest) CAPABILITY_TERM_CACHE.delete(oldest);
+  }
+  CAPABILITY_TERM_CACHE.set(termPhrase, candidates);
+}
+
+function candidatesForTerm(
+  semanticField: "precision" | "recall",
+  semanticTerm: string,
+): CapabilityCandidate[] {
+  const termPhrase = normalizedCapabilityPhrase(semanticTerm);
+  const termTokens = termPhrase.split(" ").filter(Boolean);
+  if (!termPhrase || !termTokens.length) return [];
+  const cached = CAPABILITY_TERM_CACHE.get(termPhrase);
+  if (cached) {
+    return cached.map((candidate) => ({
+      categoryId: candidate.categoryId,
+      score: candidate.score,
+      provenance: {
+        semanticField,
+        semanticTerm,
+        match: candidate.match,
+        categoryId: candidate.categoryId,
+      },
+    }));
+  }
+  const baseCandidates: Array<
+    Omit<CapabilityCandidate, "provenance"> & { match: GeoapifyCapabilityProvenance["match"] }
+  > = [];
+  const exactLeafMatches = CAPABILITY_INDEX.filter(
+    (entry) => entry.leafPhrase === termPhrase,
+  );
+  const rootMatch = exactLeafMatches.find((entry) => entry.segments.length === 1);
+
+  for (const entry of CAPABILITY_INDEX) {
+    const { categoryId, segments, leafPhrase, pathPhrase, pathTokens, hasChildren } = entry;
+    // Top-level provider roots are too broad to be actionable lead searches.
+    if (segments.length === 1) continue;
+    let match: GeoapifyCapabilityProvenance["match"] | null = null;
+    let score = 0;
+    if (termPhrase === leafPhrase) {
+      if (termTokens.length === 1 && rootMatch) continue;
+      match = hasChildren ? "parent" : "exact_leaf";
+      score = hasChildren ? 100 - segments.length : 110 + segments.length;
+    } else if (termPhrase === pathPhrase) {
+      match = "exact_path";
+      score = 105 + segments.length;
+    } else if (
+      termTokens.length >= 2 &&
+      termTokens.every((token) => pathTokens.has(token))
+    ) {
+      match = segments.length <= 2 ? "parent" : "exact_path";
+      score = 70 + termTokens.length * 5 + segments.length;
+    }
+    if (!match) continue;
+    baseCandidates.push({
+      categoryId,
+      score,
+      match,
+    });
+  }
+  rememberTermCandidates(termPhrase, baseCandidates);
+  return baseCandidates.map((candidate) => ({
+    categoryId: candidate.categoryId,
+    score: candidate.score,
+    provenance: {
+      semanticField,
+      semanticTerm,
+      match: candidate.match,
+      categoryId: candidate.categoryId,
+    },
+  }));
+}
+
+function bestCapabilityCandidates(
+  field: "precision" | "recall",
+  terms: readonly string[],
+): CapabilityCandidate[] {
+  const bestByCategory = new Map<string, CapabilityCandidate>();
+  for (const term of terms) {
+    for (const candidate of candidatesForTerm(field, term)) {
+      const current = bestByCategory.get(candidate.categoryId);
+      if (!current || candidate.score > current.score) {
+        bestByCategory.set(candidate.categoryId, candidate);
+      }
+    }
+  }
+  return [...bestByCategory.values()]
+    .sort((left, right) => right.score - left.score || left.categoryId.localeCompare(right.categoryId))
+    .slice(0, MAX_CATEGORIES_PER_BATCH);
+}
+
+/**
+ * Deterministically compiles open semantic terms against the full provider
+ * registry. Kimi supplies language, not provider IDs; every resulting ID is
+ * looked up again in the pinned registry before it reaches the adapter.
+ */
+export function compileGeoapifySemanticIntent(
+  semanticIntent: SemanticIntentV2,
+): CompiledGeoapifyCapabilityPlan {
+  const precisionTerms = [
+    ...semanticIntent.retrievalTerms.precision,
+    ...semanticIntent.coreBusinessTypes,
+    ...semanticIntent.productsAndServices,
+  ];
+  const recallTerms = [
+    ...semanticIntent.retrievalTerms.recall,
+    ...semanticIntent.adjacentBusinessTypes,
+    ...semanticIntent.industries,
+  ];
+  const exclusionTerms = [
+    ...semanticIntent.retrievalTerms.exclude,
+    ...semanticIntent.excludedBusinessTypes,
+    ...semanticIntent.excludeSignals,
+  ];
+  const excludedCategoryIds = new Set(
+    exclusionTerms.flatMap((term) =>
+      candidatesForTerm("precision", term).map((candidate) => candidate.categoryId),
+    ),
+  );
+  const conflictsWithExclusion = (categoryId: string) =>
+    [...excludedCategoryIds].some(
+      (excludedId) =>
+        categoryId === excludedId ||
+        categoryId.startsWith(`${excludedId}.`) ||
+        excludedId.startsWith(`${categoryId}.`),
+    );
+  const precision = bestCapabilityCandidates("precision", precisionTerms)
+    .filter((candidate) => !conflictsWithExclusion(candidate.categoryId));
+  const precisionIds = new Set(precision.map((candidate) => candidate.categoryId));
+  const broad = bestCapabilityCandidates("recall", recallTerms)
+    .filter(
+      (candidate) =>
+        !precisionIds.has(candidate.categoryId) &&
+        !conflictsWithExclusion(candidate.categoryId),
+    );
+  const batches: GeoapifyCapabilityBatch[] = [];
+  if (precision.length) {
+    batches.push({
+      id: "precision",
+      mode: "precision",
+      categoryIds: precision.map((candidate) => candidate.categoryId),
+      provenance: precision.map((candidate) => candidate.provenance),
+    });
+  }
+  if (broad.length) {
+    batches.push({
+      id: "broad",
+      mode: "broad",
+      categoryIds: broad.map((candidate) => candidate.categoryId),
+      provenance: broad.map((candidate) => candidate.provenance),
+    });
+  }
+  const categoryIds = [...new Set(batches.flatMap((batch) => batch.categoryIds))];
+  if (categoryIds.some((categoryId) => !isGeoapifyCategoryId(categoryId))) {
+    throw new Error("Semantic compiler produced a category outside the provider registry");
+  }
+  return {
+    provider: "geoapify",
+    providerCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
+    registryChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+    categoryIds,
+    batches,
   };
 }
 

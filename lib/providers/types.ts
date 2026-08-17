@@ -10,7 +10,18 @@ export type CompiledGeoapifyPlan = {
   provider: "geoapify";
   providerCatalogVersion: string;
   categoryIds: string[];
-  batches: string[][];
+  registryChecksum: string;
+  batches: Array<{
+    id: "precision" | "broad" | "legacy";
+    mode: "precision" | "broad";
+    categoryIds: string[];
+    provenance: Array<{
+      semanticField: "precision" | "recall" | "legacy";
+      semanticTerm: string;
+      match: "exact_leaf" | "exact_path" | "parent" | "legacy_binding";
+      categoryId: string;
+    }>;
+  }>;
   countryCode: SupportedCountryCode;
   language: "ru" | "be" | "kk";
   conceptIds: string[];

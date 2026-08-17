@@ -115,6 +115,11 @@ test("search API exposes health and deterministic demo results", async () => {
   assert.equal(health.version, packageMetadata.version);
   assert.equal(health.capabilities.geoapifyPlaces.strictRadius, true);
   assert.equal(health.capabilities.geoapifyPlaces.rawResponsesStored, false);
+  assert.ok(health.capabilities.geoapifyPlaces.capabilityRegistry.categoryCount >= 800);
+  assert.match(
+    health.capabilities.geoapifyPlaces.capabilityRegistry.checksum,
+    /^[a-f0-9]{64}$/,
+  );
   assert.equal(health.capabilities.metroStations.systems.length, 7);
   assert.equal(health.capabilities.metroStations.typedGeocodeFallback, true);
   assert.equal(health.capabilities.yandexGeosearch.strictRadius, true);
@@ -1131,9 +1136,9 @@ test("search plan encodes an unseen business intent without canonical candidates
     includeSignals: ["спортзал", "фитнес-клуб", "тренажёрный зал"],
     excludeSignals: ["интернет-магазин"],
     retrievalTerms: {
-      precision: ["фитнес-клуб", "тренажёрный зал"],
-      recall: ["спортзал", "спортивный зал"],
-      exclude: ["магазин спортивных товаров"],
+      precision: ["фитнес-клуб", "тренажёрный зал", "sports hall", "gym", "fitness centre"],
+      recall: ["спортзал", "спортивный зал", "fitness", "sport club"],
+      exclude: ["магазин спортивных товаров", "sporting goods store"],
     },
     brandSearch: "include",
     confidence: "high",
@@ -1160,6 +1165,7 @@ test("search plan encodes an unseen business intent without canonical candidates
       '"conceptId"',
       "food.restaurant",
       "logistics.fulfillment",
+      "sport.fitness.gym",
     ]) {
       assert.equal(serializedRequest.includes(forbidden), false, forbidden);
     }
@@ -1210,7 +1216,7 @@ test("search plan encodes an unseen business intent without canonical candidates
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          description: "Спортзалы",
+          description: "Спортзалы для open-world end-to-end проверки",
           primaryQuery: "Спортивный зал",
           relatedQueries: ["Фитнес-клуб"],
           excludeQueries: ["Магазины спорттоваров"],
@@ -1234,7 +1240,12 @@ test("search plan encodes an unseen business intent without canonical candidates
     assert.deepEqual(plan.semanticIntent.adjacentBusinessTypes, semanticIntent.adjacentBusinessTypes);
     assert.deepEqual(plan.semanticIntent.excludedBusinessTypes, semanticIntent.excludedBusinessTypes);
     assert.equal(plan.confidence.intent, "high");
-    assert.equal(plan.confidence.providerCoverage, "unknown");
+    assert.equal(plan.confidence.providerCoverage, "high");
+    assert.equal(plan.status, "ready");
+    assert.deepEqual(plan.resolution.selectedConceptIds, []);
+    assert.ok(plan.executionPreview.categoryLabels.includes("sport.sports_hall"));
+    assert.ok(plan.executionPreview.categoryLabels.includes("sport.fitness.gym"));
+    assert.equal(plan.executionPreview.categoryLabels.includes("catering.restaurant"), false);
     assert.equal(plan.ai.used, true);
     assert.equal(plan.ai.modelId, "kimi-k3");
     assert.equal(plan.ai.inputTokens, 420);
@@ -1245,6 +1256,163 @@ test("search plan encodes an unseen business intent without canonical candidates
     assert.match(plan.planHash, /^[a-f0-9]{64}$/);
     assert.equal(JSON.stringify(plan).includes("fake-kimi-open-vocabulary-key"), false);
     assert.equal(JSON.stringify(plan).includes("37.6176"), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+test("sports intent executes Kimi to Geoapify through the real search seam", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEnv = {
+    QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
+    SEARCH_PROVIDER: process.env.SEARCH_PROVIDER,
+    MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+    KIMI_API_KEY: process.env.KIMI_API_KEY,
+    GEOAPIFY_API_KEY: process.env.GEOAPIFY_API_KEY,
+    GEOAPIFY_DETAILS_LIMIT: process.env.GEOAPIFY_DETAILS_LIMIT,
+  };
+  const registry = JSON.parse(
+    await readFile(
+      new URL(
+        "../lib/search-planner/catalogs/geoapify-categories.snapshot.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const allowedCategories = new Set(registry.categories);
+  const requestedBatches = [];
+  let kimiCalls = 0;
+  const semanticIntent = {
+    schemaVersion: "2.0",
+    normalizedGoal: "найти спортивные залы, тренажёрные залы и фитнес-клубы",
+    entityKind: "physical_business",
+    physicalLocationRequirement: "required",
+    industries: ["спорт", "фитнес"],
+    coreBusinessTypes: ["спортивный зал", "тренажёрный зал", "фитнес-клуб"],
+    adjacentBusinessTypes: ["спортивный клуб"],
+    excludedBusinessTypes: ["магазин спортивных товаров"],
+    productsAndServices: ["фитнес-тренировки"],
+    includeSignals: ["спортзал", "фитнес-клуб"],
+    excludeSignals: ["интернет-магазин"],
+    retrievalTerms: {
+      precision: ["sports hall", "gym", "fitness centre"],
+      recall: ["fitness", "sport club"],
+      exclude: ["sporting goods store"],
+    },
+    brandSearch: "include",
+    confidence: "high",
+    ambiguity: {
+      isAmbiguous: false,
+      reason: null,
+      clarificationQuestion: null,
+    },
+  };
+
+  process.env.QUERY_INTELLIGENCE_MODE = "kimi";
+  process.env.SEARCH_PROVIDER = "geoapify";
+  process.env.MOONSHOT_API_KEY = "fake-kimi-sports-key";
+  delete process.env.KIMI_API_KEY;
+  process.env.GEOAPIFY_API_KEY = "fake-geoapify-sports-key";
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.hostname === "api.moonshot.ai") {
+      kimiCalls += 1;
+      const body = JSON.parse(String(init?.body));
+      const serialized = JSON.stringify(body);
+      assert.equal(serialized.includes('"candidates"'), false);
+      assert.equal(serialized.includes("sport.fitness.gym"), false);
+      return new Response(
+        [
+          `data: ${JSON.stringify({
+            model: "kimi-k3",
+            choices: [{
+              index: 0,
+              delta: { content: JSON.stringify(semanticIntent) },
+              finish_reason: null,
+            }],
+          })}\n\n`,
+          `data: ${JSON.stringify({
+            model: "kimi-k3",
+            choices: [{
+              index: 0,
+              delta: {},
+              finish_reason: "stop",
+              usage: { prompt_tokens: 500, completion_tokens: 250, total_tokens: 750 },
+            }],
+          })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join(""),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    assert.equal(url.hostname, "api.geoapify.com");
+    assert.equal(url.pathname, "/v2/places");
+    const categories = (url.searchParams.get("categories") ?? "")
+      .split(",")
+      .filter(Boolean);
+    requestedBatches.push(categories);
+    assert.ok(categories.length > 0 && categories.length <= 8);
+    assert.ok(categories.every((categoryId) => allowedCategories.has(categoryId)));
+    assert.equal(categories.includes("catering.restaurant"), false);
+    return Response.json({
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        properties: {
+          place_id: "sports-place-1",
+          name: "Фитнес Арена",
+          country_code: "ru",
+          city: "Москва",
+          formatted: "Фитнес Арена, Москва, Россия",
+          categories: ["sport.fitness.gym"],
+          lon: 37.62,
+          lat: 55.76,
+        },
+        geometry: { type: "Point", coordinates: [37.62, 55.76] },
+      }],
+    });
+  };
+
+  try {
+    const worker = await getWorker();
+    const response = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          description: "Спортзалы",
+          primaryQuery: "Спортивный зал",
+          relatedQueries: ["Фитнес-клуб"],
+          excludeQueries: ["Магазины спорттоваров"],
+          location: "Москва",
+          center: [37.6176, 55.7558],
+          radiusKm: 5,
+          locale: "ru-RU",
+          countryCodes: ["RU"],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.mode, "geoapify");
+    assert.equal(result.plan.status, "ready");
+    assert.deepEqual(result.plan.resolution.selectedConceptIds, []);
+    assert.ok(result.plan.executionPreview.categoryLabels.includes("sport.sports_hall"));
+    assert.equal(result.leads.length, 1);
+    assert.equal(result.leads[0].name, "Фитнес Арена");
+    assert.equal(kimiCalls, 1);
+    assert.ok(requestedBatches.length >= 1 && requestedBatches.length <= 2);
+    assert.ok(requestedBatches.flat().includes("sport.fitness.gym"));
+    assert.equal(JSON.stringify(result).includes("fake-kimi-sports-key"), false);
+    assert.equal(JSON.stringify(result).includes("fake-geoapify-sports-key"), false);
   } finally {
     globalThis.fetch = previousFetch;
     for (const [name, value] of Object.entries(previousEnv)) {
@@ -1284,8 +1452,8 @@ test("SemanticIntentV2 executes through the production search orchestrator", { c
       includeSignals: ["барбершоп", "стрижка бороды"],
       excludeSignals: ["груминг животных"],
       retrievalTerms: {
-        precision: ["барбершоп"],
-        recall: ["мужская парикмахерская", "стрижка бороды"],
+        precision: ["барбершоп", "hairdresser"],
+        recall: ["мужская парикмахерская", "стрижка бороды", "barbershop"],
         exclude: ["груминг животных"],
       },
       brandSearch: "include",
