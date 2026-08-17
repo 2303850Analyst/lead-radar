@@ -75,19 +75,19 @@ function ensureExecutablePlan(
   plan: SearchPlan,
   isPlannerInfrastructureFailure: (plan: SearchPlan) => boolean,
 ) {
-  if (plan.status === "needs_confirmation") {
-    throw new SearchPlanOutcomeError(
-      "Нужно подтвердить категорию до обращения к карте",
-      "SEARCH_PLAN_CONFIRMATION_REQUIRED",
-      409,
-      plan,
-    );
-  }
   if (isPlannerInfrastructureFailure(plan)) {
     throw new SearchPlanOutcomeError(
       "Сервис интерпретации запроса временно недоступен. Повторите поиск позже.",
       "SEARCH_PLANNER_UNAVAILABLE",
       503,
+      plan,
+    );
+  }
+  if (plan.status === "needs_confirmation") {
+    throw new SearchPlanOutcomeError(
+      "Нужно подтвердить категорию до обращения к карте",
+      "SEARCH_PLAN_CONFIRMATION_REQUIRED",
+      409,
       plan,
     );
   }
@@ -118,19 +118,25 @@ export function createSearchOrchestrator(
       options: SearchExecutionOptions = {},
     ): Promise<SearchResponse> {
       const { onProgress, signal } = options;
-      const payload = await dependencies.verifyGeography(initialPayload, signal);
 
       await emitProgress(onProgress, {
         stage: "intent_resolution",
         status: "started",
-        message: payload.confirmedConceptIds?.length
+        message:
+          initialPayload.confirmedAlternative ||
+          initialPayload.confirmedConceptIds?.length
           ? "Проверяем выбранную трактовку"
           : "Систематизируем бизнес-намерение пользователя",
       });
 
-      const plan = payload.confirmedConceptIds?.length && payload.confirmationToken
-        ? await dependencies.confirmPlan(payload)
-        : await dependencies.createPlan(payload, signal);
+      const hasConfirmation = Boolean(
+        initialPayload.confirmationToken &&
+          (initialPayload.confirmedAlternative ||
+            initialPayload.confirmedConceptIds?.length),
+      );
+      const plan = hasConfirmation
+        ? await dependencies.confirmPlan(initialPayload)
+        : await dependencies.createPlan(initialPayload, signal);
 
       await emitProgress(onProgress, {
         stage: "intent_resolution",
@@ -146,6 +152,11 @@ export function createSearchOrchestrator(
       });
 
       ensureExecutablePlan(plan, dependencies.isPlannerInfrastructureFailure);
+
+      // Semantic acceptance is deliberately completed before any provider-backed
+      // geography lookup. Ambiguous or tampered requests must not consume map
+      // quota before the user selects a signed interpretation.
+      const payload = await dependencies.verifyGeography(initialPayload, signal);
 
       const providerId = dependencies.selectProvider();
       const provider = dependencies.providers[providerId];

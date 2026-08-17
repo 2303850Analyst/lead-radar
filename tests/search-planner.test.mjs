@@ -22,6 +22,7 @@ import {
 import {
   DECISION_POLICY_VERSION,
   confirmSearchPlan,
+  createSemanticAlternativeHash,
   createSearchPlan,
 } from "../lib/search-planner/planner.ts";
 import {
@@ -36,9 +37,12 @@ import {
 } from "../lib/search-planner/schema.ts";
 import { isSearchPlan } from "../lib/search-planner/guards.ts";
 import {
+  SEARCH_PLAN_SCHEMA_VERSION,
+  SEMANTIC_INTENT_SCHEMA_VERSION,
+} from "../lib/search-planner/types.ts";
+import {
   CANONICAL_CONCEPT_IDS,
   CANONICAL_TAXONOMY,
-  CANONICAL_TAXONOMY_VERSION,
 } from "../lib/search-planner/taxonomy.ts";
 import { GEOAPIFY_PROVIDER_CATALOG_VERSION } from "../lib/search-planner/catalogs/geoapify.ts";
 
@@ -117,6 +121,25 @@ function geoapifySearchPayload() {
     locale: "ru-RU",
     countryCodes: ["RU"],
   };
+}
+
+async function signedLegacyV1Token(secret, claims) {
+  const claimsPart = Buffer.from(JSON.stringify({ v: 1, ...claims })).toString(
+    "base64url",
+  );
+  const key = await globalThis.crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await globalThis.crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(claimsPart),
+  );
+  return `${claimsPart}.${Buffer.from(signature).toString("base64url")}`;
 }
 
 test("taxonomy and Geoapify catalog have complete allowlisted coverage", async () => {
@@ -842,7 +865,7 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
     false,
   );
   const renderablePlan = {
-    schemaVersion: "2.1",
+    schemaVersion: "2.2",
     taxonomyVersion: "test-taxonomy",
     providerCatalogVersion: "test-provider",
     decisionPolicyVersion: "test-policy",
@@ -949,9 +972,9 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
     );
   }
   assert.equal(
-    isSearchPlan({ ...renderablePlan, schemaVersion: "2.0" }),
+    isSearchPlan({ ...renderablePlan, schemaVersion: "2.1" }),
     false,
-    "old SearchPlan v2.0 must not be accepted as the v2.1 arm contract",
+    "old SearchPlan v2.1 must not be accepted as the v2.2 confirmation contract",
   );
   assert.equal(
     isSearchPlan({
@@ -1036,14 +1059,18 @@ test("confirmation token rejects tampering, expiry, stale context, and unoffered
     secret: signingSecret,
     now,
     expectedRequestCacheKey: plan.requestCacheKey,
-    expectedTaxonomyVersion: CANONICAL_TAXONOMY_VERSION,
+    expectedSearchPlanSchemaVersion: SEARCH_PLAN_SCHEMA_VERSION,
+    expectedSemanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
     expectedProviderCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
     expectedDecisionPolicyVersion: DECISION_POLICY_VERSION,
+    expectedPromptVersion: plan.promptVersion,
   });
   assert.deepEqual(
-    claims.allowedConceptIds,
-    [...claims.allowedConceptIds].sort(),
+    claims.allowedAlternativeHashes,
+    [...claims.allowedAlternativeHashes].sort(),
   );
+  const offered = plan.resolution.alternatives[0];
+  assert.ok(offered);
 
   const tampered = `${plan.confirmation.token.slice(0, -1)}${
     plan.confirmation.token.endsWith("A") ? "B" : "A"
@@ -1067,8 +1094,45 @@ test("confirmation token rejects tampering, expiry, stale context, and unoffered
     verifyConfirmationToken(plan.confirmation.token, {
       secret: signingSecret,
       now,
-      expectedTaxonomyVersion: "stale-taxonomy",
+      expectedSearchPlanSchemaVersion: "stale-plan-schema",
     }),
+    (error) =>
+      error instanceof ConfirmationTokenError &&
+      error.code === "CONFIRMATION_CONTEXT_MISMATCH",
+  );
+  await assert.rejects(
+    confirmSearchPlan(
+      {
+        input: plannerInput("другой запрос"),
+        confirmationToken: plan.confirmation.token,
+        selectedAlternative: {
+          alternativeId: offered.alternativeId,
+          alternativeHash: offered.alternativeHash,
+          semanticIntent: offered.semanticIntent,
+        },
+      },
+      { signingSecret, now },
+    ),
+    (error) =>
+      error instanceof ConfirmationTokenError &&
+      error.code === "CONFIRMATION_CONTEXT_MISMATCH",
+  );
+  await assert.rejects(
+    confirmSearchPlan(
+      {
+        input,
+        confirmationToken: plan.confirmation.token,
+        selectedAlternative: {
+          alternativeId: offered.alternativeId,
+          alternativeHash: offered.alternativeHash,
+          semanticIntent: {
+            ...offered.semanticIntent,
+            normalizedGoal: `${offered.semanticIntent.normalizedGoal} подмена`,
+          },
+        },
+      },
+      { signingSecret, now },
+    ),
     (error) =>
       error instanceof ConfirmationTokenError &&
       error.code === "CONFIRMATION_CONTEXT_MISMATCH",
@@ -1084,19 +1148,22 @@ test("confirmation token rejects tampering, expiry, stale context, and unoffered
       error.code === "CONFIRMATION_CONTEXT_MISMATCH",
   );
 
-  const unoffered = CANONICAL_CONCEPT_IDS.find(
-    (conceptId) => !claims.allowedConceptIds.includes(conceptId),
-  );
+  const unofferedIntent = semanticIntentFor("sports hall");
+  const unofferedHash = await createSemanticAlternativeHash(unofferedIntent);
   await assert.rejects(
     confirmSearchPlan(
       {
         input,
         confirmationToken: plan.confirmation.token,
-        selectedConceptIds: [unoffered],
+        selectedAlternative: {
+          alternativeId: `alt-${unofferedHash.slice(0, 16)}`,
+          alternativeHash: unofferedHash,
+          semanticIntent: unofferedIntent,
+        },
       },
       { signingSecret, now },
     ),
-    /allowed by the confirmation token/i,
+    /not offered by the signed plan/i,
   );
 });
 
@@ -1106,10 +1173,12 @@ test("confirmation token primitive enforces expiry independently of planner", as
     secret: signingSecret,
     requestCacheKey: "cache-key",
     sourcePlanHash: "source-plan-hash",
-    allowedConceptIds: ["logistics.fulfillment", "logistics.warehouse"],
-    taxonomyVersion: CANONICAL_TAXONOMY_VERSION,
+    allowedAlternativeHashes: ["a".repeat(64), "b".repeat(64)],
+    searchPlanSchemaVersion: SEARCH_PLAN_SCHEMA_VERSION,
+    semanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
     providerCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
     decisionPolicyVersion: DECISION_POLICY_VERSION,
+    promptVersion: "test-prompt",
     ttlSeconds: 60,
     now,
   });
@@ -1119,6 +1188,26 @@ test("confirmation token primitive enforces expiry independently of planner", as
       now: new Date("2026-08-16T12:01:01.000Z"),
     }),
     /expired/i,
+  );
+});
+
+test("legacy V1 confirmation token is rejected before semantic execution", async () => {
+  const now = new Date("2026-08-16T12:00:00.000Z");
+  const legacyToken = await signedLegacyV1Token(signingSecret, {
+    requestCacheKey: "legacy-request",
+    sourcePlanHash: "legacy-plan",
+    allowedConceptIds: ["logistics.warehouse"],
+    taxonomyVersion: "legacy-taxonomy",
+    providerCatalogVersion: "legacy-provider",
+    decisionPolicyVersion: "legacy-policy",
+    iat: Math.floor(now.getTime() / 1_000),
+    exp: Math.floor(now.getTime() / 1_000) + 600,
+  });
+  await assert.rejects(
+    verifyConfirmationToken(legacyToken, { secret: signingSecret, now }),
+    (error) =>
+      error instanceof ConfirmationTokenError &&
+      error.code === "LEGACY_CONFIRMATION_TOKEN",
   );
 });
 
@@ -1634,10 +1723,47 @@ test("generic warehouse policy overrides an overconfident Kimi selection", async
   });
   assert.equal(plan.status, "needs_confirmation");
   assert.deepEqual(plan.resolution.selectedConceptIds, []);
-  assert.deepEqual(
-    plan.resolution.alternatives.map((alternative) => alternative.conceptId),
-    ["logistics.warehouse", "logistics.fulfillment"],
+  assert.equal(plan.resolution.alternatives.length, 2);
+  assert.ok(
+    plan.resolution.alternatives.every(
+      (alternative) =>
+        /^alt-[a-f0-9]{16}$/.test(alternative.alternativeId) &&
+        /^[a-f0-9]{64}$/.test(alternative.alternativeHash) &&
+        alternative.semanticIntent.schemaVersion === "2.0" &&
+        alternative.executionPreview.retrievalArms.length > 0 &&
+        typeof alternative.explanation === "string" &&
+        !Object.hasOwn(alternative, "conceptId"),
+    ),
+  );
+  assert.notDeepEqual(
+    plan.resolution.alternatives[0].executionPreview.categoryLabels,
+    plan.resolution.alternatives[1].executionPreview.categoryLabels,
   );
   assert.equal(plan.executionPreview, null);
   assert.ok(plan.confirmation.token);
+
+  const selected = plan.resolution.alternatives[0];
+  const confirmed = await confirmSearchPlan(
+    {
+      input: plannerInput("склад"),
+      confirmationToken: plan.confirmation.token,
+      selectedAlternative: {
+        alternativeId: selected.alternativeId,
+        alternativeHash: selected.alternativeHash,
+        semanticIntent: selected.semanticIntent,
+      },
+    },
+    {
+      signingSecret,
+      now: new Date("2026-08-16T12:00:00.000Z"),
+    },
+  );
+  assert.equal(confirmed.status, "ready");
+  assert.equal(confirmed.resolution.method, "user_confirmed");
+  assert.deepEqual(confirmed.resolution.selectedConceptIds, []);
+  assert.equal(confirmed.parentPlanHash, plan.planHash);
+  assert.deepEqual(
+    confirmed.executionPreview,
+    selected.executionPreview,
+  );
 });

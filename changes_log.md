@@ -82,6 +82,16 @@
   `executionPreview.retrievalArms` и provenance стали обязательной частью
   исполняемого плана. Клиент отклоняет старый или частичный plan payload до
   отображения; версия внутреннего `SemanticIntentV2` остаётся `2.0`.
+- Неоднозначность переведена с canonical concept IDs на semantic alternatives.
+  Каждый вариант содержит понятное объяснение, собственный `SemanticIntentV2`,
+  opaque ID/hash и отличающийся retrieval preview. HMAC token V2 подписывает
+  исходные request/plan hash, список разрешённых alternative hash, версии
+  SearchPlan/SemanticIntent/provider/policy/prompt и TTL; выбранный intent
+  повторно валидируется и хэшируется до provider call. V1 token не исполняется,
+  а клиенту предлагается безопасно перепланировать запрос.
+- Из-за несовместимого confirmation-контракта публичная схема `SearchPlan`
+  повышена с `2.1` до `2.2`. UI использует нативную radio-группу с клавиатурным
+  выбором и показывает объяснение и бюджеты стратегий каждого варианта.
 
 - Добавлен полный versioned capability registry Geoapify: 813 category IDs,
   извлечённых из официального раздела Supported categories 17.08.2026, с
@@ -137,6 +147,17 @@
 
 ### Проверено
 
+- Semantic confirmation проверен transient-вызовами реального `kimi-k3` для
+  запроса «склад»: финальный planner-вызов за 26,7 с вернул
+  `needs_confirmation`, strict schema validation `passed` и две независимо
+  скомпилированные alternative — «Складские услуги» и «Фулфилмент». Из трёх
+  последовательных canary-вызовов два прошли, один завершился контролируемой
+  validation failure; это подтверждает функциональный путь, но не внешний SLA.
+  Ключ, raw model response, reasoning и lead data не сохранялись.
+- Регрессионные тесты подтверждают, что ambiguous plan, испорченный или V1
+  confirmation token отклоняются до provider-backed проверки географии и до
+  любого Places-запроса; корректно подписанная alternative исполняет именно её
+  retrieval preview.
 - Два opt-in live smoke на реальных `kimi-k3` и Geoapify прошли за 27,4–27,7 с:
   `SemanticIntentV2` schema validation — passed, provider plan — ready, найдено
   3–20 карточек спортивных организаций, Place Details — 3 из 3 в обоих
@@ -157,6 +178,11 @@
 
 ### Исправлено
 
+- Неоднозначный план с вариантами, но без настроенного
+  `SEARCH_PLAN_SIGNING_SECRET`, больше не возвращается как якобы рабочий
+  HTTP 200: это retryable `SEARCH_PLANNER_UNAVAILABLE`/503, а карта не
+  вызывается. Скрытые нативные radio-переключатели semantic alternatives
+  получили видимый `focus-within` outline для клавиатурной навигации.
 - Асинхронные ответы геокодера и уточняющего поиска станции больше не могут
   вернуть форму в старый город или режим после действий пользователя. Запросы
   отменяются при изменении ввода, а неоднозначное совпадение теперь требует

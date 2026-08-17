@@ -1,4 +1,4 @@
-export const SEARCH_PLAN_SCHEMA_VERSION = "2.1" as const;
+export const SEARCH_PLAN_SCHEMA_VERSION = "2.2" as const;
 export const SEMANTIC_INTENT_SCHEMA_VERSION = "2.0" as const;
 
 export const SUPPORTED_COUNTRY_CODES = ["RU", "BY", "KZ"] as const;
@@ -127,11 +127,42 @@ export type SemanticIntentV2 = {
   };
 };
 
+export type SearchPlanExecutionPreview = {
+  provider: "geoapify";
+  categoryLabels: string[];
+  batches: number;
+  retrievalArms: Array<{
+    id: string;
+    type: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
+    role: "primary" | "adjacent" | "fallback";
+    priority: number;
+    resultBudget: number;
+    categoryLabels: string[];
+    usesNameFallback: boolean;
+    provenance: Array<{
+      semanticField: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
+      semanticTerm: string;
+      origin: string;
+      match: "exact_leaf" | "exact_path" | "parent" | "name_fallback" | "legacy_binding";
+      categoryId: string;
+    }>;
+  }>;
+};
+
 export type SearchPlanAlternative = {
-  conceptId: string;
+  alternativeId: string;
+  alternativeHash: string;
   label: string;
+  explanation: string;
+  semanticIntent: SemanticIntentV2;
+  executionPreview: SearchPlanExecutionPreview;
   reasonCodes: ResolutionReasonCode[];
 };
+
+export type ConfirmedSemanticAlternative = Pick<
+  SearchPlanAlternative,
+  "alternativeId" | "alternativeHash" | "semanticIntent"
+>;
 
 export type SearchPlanAiMetadata = {
   used: boolean;
@@ -168,27 +199,7 @@ export type SearchPlan = {
     reasonCodes: ResolutionReasonCode[];
     clarificationQuestion: string | null;
   };
-  executionPreview: {
-    provider: "geoapify";
-    categoryLabels: string[];
-    batches: number;
-    retrievalArms: Array<{
-      id: string;
-      type: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
-      role: "primary" | "adjacent" | "fallback";
-      priority: number;
-      resultBudget: number;
-      categoryLabels: string[];
-      usesNameFallback: boolean;
-      provenance: Array<{
-        semanticField: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
-        semanticTerm: string;
-        origin: string;
-        match: "exact_leaf" | "exact_path" | "parent" | "name_fallback" | "legacy_binding";
-        categoryId: string;
-      }>;
-    }>;
-  } | null;
+  executionPreview: SearchPlanExecutionPreview | null;
   ai: SearchPlanAiMetadata;
   confirmation: {
     token: string | null;
@@ -216,13 +227,15 @@ export type KimiEncodeResult = {
 };
 
 export type ConfirmationTokenClaims = {
-  v: 1;
+  v: 2;
   requestCacheKey: string;
   sourcePlanHash: string;
-  allowedConceptIds: string[];
-  taxonomyVersion: string;
+  allowedAlternativeHashes: string[];
+  searchPlanSchemaVersion: typeof SEARCH_PLAN_SCHEMA_VERSION;
+  semanticIntentSchemaVersion: typeof SEMANTIC_INTENT_SCHEMA_VERSION;
   providerCatalogVersion: string;
   decisionPolicyVersion: string;
+  promptVersion: string;
   iat: number;
   exp: number;
 };

@@ -194,6 +194,11 @@
   background: #f3f8ff;
 }
 
+.alternatives label:focus-within {
+  outline: 3px solid rgba(23, 105, 224, 0.32);
+  outline-offset: 2px;
+}
+
 .alternatives input {
   position: absolute;
   width: 1px;

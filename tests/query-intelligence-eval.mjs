@@ -38,10 +38,7 @@ function semanticOutput(plan) {
 
 function expectedConceptIsVisible(entry, plan) {
   if (!entry.expectedConceptId) return true;
-  return [
-    ...plan.resolution.selectedConceptIds,
-    ...plan.resolution.alternatives.map((alternative) => alternative.conceptId),
-  ].includes(entry.expectedConceptId);
+  return plan.resolution.selectedConceptIds.includes(entry.expectedConceptId);
 }
 
 async function evaluate() {

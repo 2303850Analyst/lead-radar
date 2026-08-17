@@ -20,6 +20,25 @@ async function getWorker() {
   return worker;
 }
 
+async function signedLegacyV1Token(secret, claims) {
+  const claimsPart = Buffer.from(JSON.stringify({ v: 1, ...claims })).toString(
+    "base64url",
+  );
+  const key = await globalThis.crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await globalThis.crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(claimsPart),
+  );
+  return `${claimsPart}.${Buffer.from(signature).toString("base64url")}`;
+}
+
 test("server-renders the LeadRadar search workspace", async () => {
   const worker = await getWorker();
   const response = await worker.fetch(
@@ -91,6 +110,16 @@ test("planner outage UI never presents an infrastructure failure as an unsupport
   assert.match(panelSource, /Смежные типы/);
   assert.match(panelSource, /Исключаем/);
   assert.doesNotMatch(panelSource, /Для этой ниши пока нет безопасной категории/);
+
+  const panelCss = await readFile(
+    new URL("../components/SearchIntentPanel.module.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    panelCss,
+    /\.alternatives\s+label:focus-within\s*\{[^}]*outline:/s,
+    "the visually hidden native radio must expose a visible keyboard focus ring",
+  );
 });
 
 test("search API exposes health and deterministic demo results", async () => {
@@ -1239,7 +1268,7 @@ test("search plan encodes an unseen business intent without canonical candidates
     assert.equal(response.status, 200);
     assert.ok(capturedRequest);
     const plan = await response.json();
-    assert.equal(plan.schemaVersion, "2.1");
+    assert.equal(plan.schemaVersion, "2.2");
     assert.equal(plan.semanticIntent.schemaVersion, "2.0");
     assert.equal(plan.semanticIntent.normalizedGoal, semanticIntent.normalizedGoal);
     assert.deepEqual(plan.semanticIntent.coreBusinessTypes, semanticIntent.coreBusinessTypes);
@@ -1517,6 +1546,227 @@ test("known niche keeps its precise legacy categories when Kimi is unavailable",
   }
 });
 
+test("warehouse semantic confirmation executes only the signed selected preview", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEnv = {
+    QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
+    SEARCH_PROVIDER: process.env.SEARCH_PROVIDER,
+    MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+    KIMI_API_KEY: process.env.KIMI_API_KEY,
+    GEOAPIFY_API_KEY: process.env.GEOAPIFY_API_KEY,
+    GEOAPIFY_DETAILS_LIMIT: process.env.GEOAPIFY_DETAILS_LIMIT,
+    SEARCH_PLAN_SIGNING_SECRET: process.env.SEARCH_PLAN_SIGNING_SECRET,
+  };
+  const signingSecret = "e2e-semantic-confirmation-secret-32-bytes";
+  const placesCalls = [];
+  let kimiCalls = 0;
+  process.env.QUERY_INTELLIGENCE_MODE = "kimi";
+  process.env.SEARCH_PROVIDER = "geoapify";
+  process.env.MOONSHOT_API_KEY = "fake-kimi-confirmation-key";
+  delete process.env.KIMI_API_KEY;
+  process.env.GEOAPIFY_API_KEY = "fake-geoapify-confirmation-key";
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  process.env.SEARCH_PLAN_SIGNING_SECRET = signingSecret;
+  const semanticIntent = {
+    schemaVersion: "2.0",
+    normalizedGoal: "найти складские организации",
+    entityKind: "physical_business",
+    physicalLocationRequirement: "required",
+    industries: ["логистика"],
+    coreBusinessTypes: ["склад"],
+    adjacentBusinessTypes: ["фулфилмент"],
+    excludedBusinessTypes: [],
+    productsAndServices: ["хранение", "обработка заказов"],
+    includeSignals: ["склад"],
+    excludeSignals: [],
+    retrievalTerms: {
+      precision: ["склад", "warehouse"],
+      recall: ["storage", "fulfillment"],
+      exclude: [],
+    },
+    brandSearch: "include",
+    confidence: "medium",
+    ambiguity: {
+      isAmbiguous: true,
+      reason: "Склад может означать хранение или обработку заказов",
+      clarificationQuestion: "Нужны складские услуги или фулфилмент?",
+    },
+  };
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.hostname === "api.moonshot.ai") {
+      kimiCalls += 1;
+      return new Response(
+        [
+          `data: ${JSON.stringify({
+            model: "kimi-k3",
+            choices: [{
+              index: 0,
+              delta: { content: JSON.stringify(semanticIntent) },
+              finish_reason: null,
+            }],
+          })}\n\n`,
+          `data: ${JSON.stringify({
+            model: "kimi-k3",
+            choices: [{
+              index: 0,
+              delta: {},
+              finish_reason: "stop",
+              usage: { prompt_tokens: 350, completion_tokens: 180, total_tokens: 530 },
+            }],
+          })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join(""),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    assert.equal(url.hostname, "api.geoapify.com");
+    assert.equal(url.pathname, "/v2/places");
+    placesCalls.push(url);
+    return Response.json({ type: "FeatureCollection", features: [] });
+  };
+
+  const input = {
+    description: "warehouse semantic confirmation e2e",
+    primaryQuery: "склад",
+    relatedQueries: [],
+    excludeQueries: [],
+    location: "Москва",
+    center: [37.6176, 55.7558],
+    radiusKm: 5,
+    services: [],
+    locale: "ru-RU",
+    countryCodes: ["RU"],
+  };
+  try {
+    const worker = await getWorker();
+    const planResponse = await worker.fetch(
+      new Request("http://localhost/api/search/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(planResponse.status, 200);
+    const plan = await planResponse.json();
+    assert.equal(plan.status, "needs_confirmation");
+    assert.equal(plan.schemaVersion, "2.2");
+    assert.equal(plan.resolution.alternatives.length, 2);
+    assert.equal(placesCalls.length, 0);
+    assert.equal(kimiCalls, 1);
+    const selected = plan.resolution.alternatives[0];
+
+    const tamperedResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...input,
+          confirmationToken: plan.confirmation.token,
+          confirmedAlternative: {
+            alternativeId: selected.alternativeId,
+            alternativeHash: selected.alternativeHash,
+            semanticIntent: {
+              ...selected.semanticIntent,
+              normalizedGoal: `${selected.semanticIntent.normalizedGoal} подмена`,
+            },
+          },
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(tamperedResponse.status, 409);
+    assert.equal(placesCalls.length, 0);
+
+    const nowSeconds = Math.floor(Date.now() / 1_000);
+    const legacyToken = await signedLegacyV1Token(signingSecret, {
+      requestCacheKey: plan.requestCacheKey,
+      sourcePlanHash: plan.planHash,
+      allowedConceptIds: ["logistics.warehouse"],
+      taxonomyVersion: "legacy",
+      providerCatalogVersion: plan.providerCatalogVersion,
+      decisionPolicyVersion: "legacy",
+      iat: nowSeconds,
+      exp: nowSeconds + 600,
+    });
+    const legacyResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...input,
+          confirmationToken: legacyToken,
+          confirmedConceptIds: ["logistics.warehouse"],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(legacyResponse.status, 409);
+    assert.equal(placesCalls.length, 0);
+
+    const searchResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...input,
+          confirmationToken: plan.confirmation.token,
+          confirmedAlternative: {
+            alternativeId: selected.alternativeId,
+            alternativeHash: selected.alternativeHash,
+            semanticIntent: selected.semanticIntent,
+          },
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(searchResponse.status, 200);
+    const result = await searchResponse.json();
+    assert.equal(result.plan.resolution.method, "user_confirmed");
+    assert.equal(result.plan.parentPlanHash, plan.planHash);
+    assert.deepEqual(result.plan.executionPreview, selected.executionPreview);
+    assert.deepEqual(
+      placesCalls.map((url) => url.searchParams.get("categories")),
+      selected.executionPreview.retrievalArms.map((arm) =>
+        arm.categoryLabels.join(","),
+      ),
+    );
+    assert.equal(kimiCalls, 1, "confirmation must not re-run Kimi");
+
+    const placesBeforeUnsignedPlan = placesCalls.length;
+    delete process.env.SEARCH_PLAN_SIGNING_SECRET;
+    const unsignedPlanResponse = await worker.fetch(
+      new Request("http://localhost/api/search/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...input,
+          description: "warehouse without signing capability",
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(unsignedPlanResponse.status, 503);
+    const unsignedFailure = await unsignedPlanResponse.json();
+    assert.equal(unsignedFailure.code, "SEARCH_PLANNER_UNAVAILABLE");
+    assert.equal(unsignedFailure.plan.status, "needs_confirmation");
+    assert.equal(unsignedFailure.plan.confirmation.token, null);
+    assert.equal(placesCalls.length, placesBeforeUnsignedPlan);
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("SemanticIntentV2 executes through the production search orchestrator", { concurrency: false }, async () => {
   const previousFetch = globalThis.fetch;
   const previousEnv = {
@@ -1607,7 +1857,7 @@ test("SemanticIntentV2 executes through the production search orchestrator", { c
     const result = records.find((record) => record.type === "result")?.data;
     assert.ok(result);
     assert.equal(result.mode, "demo");
-    assert.equal(result.plan.schemaVersion, "2.1");
+    assert.equal(result.plan.schemaVersion, "2.2");
     assert.equal(result.plan.semanticIntent.coreBusinessTypes[0], "барбершоп");
     assert.equal(result.plan.ai.validation, "passed");
     assert.ok(records.some(

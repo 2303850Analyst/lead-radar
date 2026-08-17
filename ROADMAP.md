@@ -148,8 +148,9 @@ scoring, экспорт и показ на сторонней карте не в
   запрещены контрактом и локальной валидацией;
 - `POST /api/search/plan`, новый `SearchPlan` в search response и визуальная
   трактовка запроса до обращения к картам;
-- stateless HMAC confirmation token с TTL, `requestCacheKey`, `planHash` и
-  `parentPlanHash`;
+- semantic confirmation без canonical IDs: opaque alternative hash, отдельный
+  retrieval preview и stateless HMAC token с TTL, `requestCacheKey`, исходным
+  `planHash`, semantic/compiler versions и `parentPlanHash`;
 - server-side compilation canonical IDs в категории Geoapify;
 - bounded retrieval: до четырёх arms/Places-запросов и 200 карточек, отдельные
   arm budgets, стабильные IDs и primary/adjacent/fallback provenance;

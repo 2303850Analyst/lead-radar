@@ -1,4 +1,5 @@
 import type {
+  ConfirmedSemanticAlternative,
   SearchPlan,
   SupportedCountryCode,
   SupportedLocale,
@@ -119,6 +120,9 @@ export type SearchPayload = {
   services: string[];
   locale?: SupportedLocale;
   countryCodes?: SupportedCountryCode[];
+  /** V2 semantic confirmation. Server re-hashes and validates the full intent. */
+  confirmedAlternative?: ConfirmedSemanticAlternative;
+  /** Deprecated V1 field; accepted only to return a safe re-planning response. */
   confirmedConceptIds?: string[];
   confirmationToken?: string;
 };

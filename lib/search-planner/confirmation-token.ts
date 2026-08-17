@@ -1,10 +1,9 @@
 import "server-only";
 
 import { canonicalJson, type CanonicalJsonValue } from "./hashing";
-import { isCanonicalConceptId } from "./taxonomy";
 import type { ConfirmationTokenClaims } from "./types";
 
-const TOKEN_VERSION = 1 as const;
+const TOKEN_VERSION = 2 as const;
 const DEFAULT_TTL_SECONDS = 10 * 60;
 const MAX_TTL_SECONDS = 60 * 60;
 const CLOCK_SKEW_SECONDS = 30;
@@ -14,9 +13,9 @@ const BASE64URL_ALPHABET =
 
 export type IssueConfirmationTokenInput = Omit<
   ConfirmationTokenClaims,
-  "v" | "iat" | "exp" | "allowedConceptIds"
+  "v" | "iat" | "exp" | "allowedAlternativeHashes"
 > & {
-  allowedConceptIds: readonly string[];
+  allowedAlternativeHashes: readonly string[];
   secret: string;
   now?: Date;
   ttlSeconds?: number;
@@ -26,9 +25,11 @@ export type VerifyConfirmationTokenOptions = {
   secret: string;
   now?: Date;
   expectedRequestCacheKey?: string;
-  expectedTaxonomyVersion?: string;
+  expectedSearchPlanSchemaVersion?: string;
+  expectedSemanticIntentSchemaVersion?: string;
   expectedProviderCatalogVersion?: string;
   expectedDecisionPolicyVersion?: string;
+  expectedPromptVersion?: string;
 };
 
 export class ConfirmationTokenError extends Error {
@@ -37,7 +38,8 @@ export class ConfirmationTokenError extends Error {
     | "MALFORMED_CONFIRMATION_TOKEN"
     | "INVALID_CONFIRMATION_SIGNATURE"
     | "EXPIRED_CONFIRMATION_TOKEN"
-    | "CONFIRMATION_CONTEXT_MISMATCH";
+    | "CONFIRMATION_CONTEXT_MISMATCH"
+    | "LEGACY_CONFIRMATION_TOKEN";
 
   constructor(code: ConfirmationTokenError["code"], message: string) {
     super(message);
@@ -142,24 +144,35 @@ function parseClaims(value: unknown): ConfirmationTokenClaims {
     );
   }
   const claims = value as Partial<ConfirmationTokenClaims>;
+  if ((value as { v?: unknown }).v === 1) {
+    throw new ConfirmationTokenError(
+      "LEGACY_CONFIRMATION_TOKEN",
+      "Legacy V1 confirmation tokens require safe re-planning",
+    );
+  }
   const strings = [
     claims.requestCacheKey,
     claims.sourcePlanHash,
-    claims.taxonomyVersion,
+    claims.searchPlanSchemaVersion,
+    claims.semanticIntentSchemaVersion,
     claims.providerCatalogVersion,
     claims.decisionPolicyVersion,
+    claims.promptVersion,
   ];
   if (
     claims.v !== TOKEN_VERSION ||
     strings.some((item) => typeof item !== "string" || !item) ||
     !Number.isInteger(claims.iat) ||
     !Number.isInteger(claims.exp) ||
-    !Array.isArray(claims.allowedConceptIds) ||
-    claims.allowedConceptIds.length < 1 ||
-    claims.allowedConceptIds.length > 3 ||
-    new Set(claims.allowedConceptIds).size !== claims.allowedConceptIds.length ||
-    claims.allowedConceptIds.some(
-      (conceptId) => typeof conceptId !== "string" || !isCanonicalConceptId(conceptId),
+    claims.searchPlanSchemaVersion !== "2.2" ||
+    claims.semanticIntentSchemaVersion !== "2.0" ||
+    !Array.isArray(claims.allowedAlternativeHashes) ||
+    claims.allowedAlternativeHashes.length < 1 ||
+    claims.allowedAlternativeHashes.length > 3 ||
+    new Set(claims.allowedAlternativeHashes).size !==
+      claims.allowedAlternativeHashes.length ||
+    claims.allowedAlternativeHashes.some(
+      (hash) => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash),
     )
   ) {
     throw new ConfirmationTokenError(
@@ -178,23 +191,29 @@ export async function issueConfirmationToken(
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > MAX_TTL_SECONDS) {
     throw new Error(`ttlSeconds must be between 1 and ${MAX_TTL_SECONDS}`);
   }
-  const allowedConceptIds = [...new Set(input.allowedConceptIds)].sort();
+  const allowedAlternativeHashes = [
+    ...new Set(input.allowedAlternativeHashes),
+  ].sort();
   if (
-    !allowedConceptIds.length ||
-    allowedConceptIds.length > 3 ||
-    allowedConceptIds.some((conceptId) => !isCanonicalConceptId(conceptId))
+    !allowedAlternativeHashes.length ||
+    allowedAlternativeHashes.length > 3 ||
+    allowedAlternativeHashes.some((hash) => !/^[a-f0-9]{64}$/.test(hash))
   ) {
-    throw new Error("allowedConceptIds must contain one to three canonical IDs");
+    throw new Error(
+      "allowedAlternativeHashes must contain one to three SHA-256 hashes",
+    );
   }
   const iat = Math.floor((input.now ?? new Date()).getTime() / 1_000);
   const claims: ConfirmationTokenClaims = {
     v: TOKEN_VERSION,
     requestCacheKey: input.requestCacheKey,
     sourcePlanHash: input.sourcePlanHash,
-    allowedConceptIds,
-    taxonomyVersion: input.taxonomyVersion,
+    allowedAlternativeHashes,
+    searchPlanSchemaVersion: input.searchPlanSchemaVersion,
+    semanticIntentSchemaVersion: input.semanticIntentSchemaVersion,
     providerCatalogVersion: input.providerCatalogVersion,
     decisionPolicyVersion: input.decisionPolicyVersion,
+    promptVersion: input.promptVersion,
     iat,
     exp: iat + ttlSeconds,
   };
@@ -263,12 +282,18 @@ export async function verifyConfirmationToken(
   const mismatched =
     (options.expectedRequestCacheKey !== undefined &&
       claims.requestCacheKey !== options.expectedRequestCacheKey) ||
-    (options.expectedTaxonomyVersion !== undefined &&
-      claims.taxonomyVersion !== options.expectedTaxonomyVersion) ||
+    (options.expectedSearchPlanSchemaVersion !== undefined &&
+      claims.searchPlanSchemaVersion !==
+        options.expectedSearchPlanSchemaVersion) ||
+    (options.expectedSemanticIntentSchemaVersion !== undefined &&
+      claims.semanticIntentSchemaVersion !==
+        options.expectedSemanticIntentSchemaVersion) ||
     (options.expectedProviderCatalogVersion !== undefined &&
       claims.providerCatalogVersion !== options.expectedProviderCatalogVersion) ||
     (options.expectedDecisionPolicyVersion !== undefined &&
-      claims.decisionPolicyVersion !== options.expectedDecisionPolicyVersion);
+      claims.decisionPolicyVersion !== options.expectedDecisionPolicyVersion) ||
+    (options.expectedPromptVersion !== undefined &&
+      claims.promptVersion !== options.expectedPromptVersion);
   if (mismatched) {
     throw new ConfirmationTokenError(
       "CONFIRMATION_CONTEXT_MISMATCH",

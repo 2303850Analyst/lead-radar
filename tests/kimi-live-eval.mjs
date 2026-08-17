@@ -69,10 +69,7 @@ const ALL_CASES = [
       countryCodes: ["RU"],
     },
     expectedStatus: "needs_confirmation",
-    expectedAlternativeConceptIds: [
-      "logistics.fulfillment",
-      "logistics.warehouse",
-    ],
+    expectedAlternativeCount: 2,
   },
   {
     id: "live-ru-unsupported-cloud-crm",
@@ -131,15 +128,6 @@ function sortedUnique(values) {
   return [...new Set(values)].sort();
 }
 
-function sameValues(left, right) {
-  const leftSorted = sortedUnique(left);
-  const rightSorted = sortedUnique(right);
-  return (
-    leftSorted.length === rightSorted.length &&
-    leftSorted.every((value, index) => value === rightSorted[index])
-  );
-}
-
 function expectedOutcomeMatches(entry, plan) {
   if (plan.status !== entry.expectedStatus) return false;
   if (entry.kind === "selected") {
@@ -149,9 +137,14 @@ function expectedOutcomeMatches(entry, plan) {
     );
   }
   if (entry.kind === "ambiguous") {
-    return sameValues(
-      plan.resolution.alternatives.map((alternative) => alternative.conceptId),
-      entry.expectedAlternativeConceptIds,
+    return (
+      plan.resolution.alternatives.length === entry.expectedAlternativeCount &&
+      plan.resolution.alternatives.every(
+        (alternative) =>
+          /^alt-[a-f0-9]{16}$/.test(alternative.alternativeId) &&
+          /^[a-f0-9]{64}$/.test(alternative.alternativeHash) &&
+          alternative.executionPreview?.batches > 0,
+      )
     );
   }
   return (
@@ -191,8 +184,8 @@ try {
         kimiClient: client,
       });
       const selectedConceptId = plan.resolution.selectedConceptIds[0] ?? null;
-      const alternativeConceptIds = sortedUnique(
-        plan.resolution.alternatives.map((alternative) => alternative.conceptId),
+      const alternativeIds = sortedUnique(
+        plan.resolution.alternatives.map((alternative) => alternative.alternativeId),
       );
       const outcomeMatches = expectedOutcomeMatches(entry, plan);
       const kimiOutputValid = plan.ai.used && plan.ai.validation === "passed";
@@ -203,9 +196,8 @@ try {
         expectedStatus: entry.expectedStatus,
         selectedConceptId,
         expectedConceptId: entry.expectedConceptId ?? null,
-        alternativeConceptIds,
-        expectedAlternativeConceptIds:
-          entry.expectedAlternativeConceptIds ?? [],
+        alternativeIds,
+        expectedAlternativeCount: entry.expectedAlternativeCount ?? 0,
         correct: outcomeMatches && kimiOutputValid,
         kimiUsed: plan.ai.used,
         schemaValidation: plan.ai.validation,

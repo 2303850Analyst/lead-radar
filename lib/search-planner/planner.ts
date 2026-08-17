@@ -21,6 +21,7 @@ import {
   normalizePlannerInput,
   resolveDeterministically,
 } from "./resolver";
+import { validateKimiSemanticIntent } from "./schema";
 import {
   CANONICAL_TAXONOMY_VERSION,
   canonicalConceptLabel,
@@ -29,6 +30,7 @@ import {
 import {
   SEARCH_PLAN_SCHEMA_VERSION,
   SEMANTIC_INTENT_SCHEMA_VERSION,
+  type ConfirmedSemanticAlternative,
   type ConfidenceBand,
   type KimiEncodeResult,
   type NormalizedSearchIntent,
@@ -38,10 +40,11 @@ import {
   type SearchPlan,
   type SearchPlanAiMetadata,
   type SearchPlanAlternative,
+  type SearchPlanExecutionPreview,
   type SemanticIntentV2,
 } from "./types";
 
-export const DECISION_POLICY_VERSION = "2026-08-17.3";
+export const DECISION_POLICY_VERSION = "2026-08-17.4";
 export const KIMI_PROMPT_VERSION = "semantic-intent-v2/2026-08-17.2";
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;
 export const SEARCH_PLAN_RUNTIME_CACHE_MAX_ENTRIES = 200;
@@ -60,7 +63,7 @@ export type CreateSearchPlanOptions = {
 export type ConfirmSearchPlanRequest = {
   input: PlannerInput;
   confirmationToken: string;
-  selectedConceptIds: readonly string[];
+  selectedAlternative: ConfirmedSemanticAlternative;
 };
 
 export type ConfirmSearchPlanOptions = {
@@ -80,12 +83,17 @@ const PLANNER_INFRASTRUCTURE_FAILURE_REASONS = new Set<ResolutionReasonCode>([
  * incorrectly presenting an infrastructure failure as a taxonomy decision.
  */
 export function isSearchPlannerInfrastructureFailure(plan: SearchPlan): boolean {
+  const missingConfirmationCapability =
+    plan.status === "needs_confirmation" &&
+    plan.resolution.alternatives.length > 0 &&
+    !plan.confirmation.token;
   return (
-    plan.status === "unsupported" &&
-    plan.resolution.method === "fallback" &&
-    plan.resolution.reasonCodes.some((reason) =>
-      PLANNER_INFRASTRUCTURE_FAILURE_REASONS.has(reason),
-    )
+    missingConfirmationCapability ||
+    (plan.status === "unsupported" &&
+      plan.resolution.method === "fallback" &&
+      plan.resolution.reasonCodes.some((reason) =>
+        PLANNER_INFRASTRUCTURE_FAILURE_REASONS.has(reason),
+      ))
   );
 }
 
@@ -138,19 +146,92 @@ export async function createRequestCacheKey(
   return hashCanonicalJson(plannerInputCacheMaterial(intent));
 }
 
-function alternativesFromIds(
+function semanticIntentForConcept(
+  conceptId: string,
+  intent: NormalizedSearchIntent,
+): SemanticIntentV2 {
+  const selectors = compileGeoapifySelectors([conceptId]);
+  const label = canonicalConceptLabel(conceptId, intent.locale);
+  const capabilityTerms = selectors.categoryIds.map((categoryId) =>
+    categoryId.replaceAll(".", " ").replaceAll("_", " "),
+  );
+  const conceptTerm = conceptId.split(".").at(-1)?.replaceAll("_", " ") ?? conceptId;
+  const englishTerms = [...new Set([conceptTerm, ...capabilityTerms])];
+  return {
+    schemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
+    normalizedGoal: `найти ${label}`,
+    entityKind: "physical_business",
+    physicalLocationRequirement: "required",
+    industries: [...new Set(capabilityTerms.map((term) => term.split(" ")[0]))],
+    coreBusinessTypes: [label, conceptTerm],
+    adjacentBusinessTypes: [],
+    excludedBusinessTypes: [...intent.excludeQueries],
+    productsAndServices: [],
+    includeSignals: [label, conceptTerm],
+    excludeSignals: [...intent.excludeQueries],
+    retrievalTerms: {
+      precision: englishTerms,
+      recall: englishTerms,
+      exclude: [...intent.excludeQueries],
+    },
+    brandSearch: "include",
+    confidence: "medium",
+    ambiguity: {
+      isAmbiguous: false,
+      reason: null,
+      clarificationQuestion: null,
+    },
+  };
+}
+
+export async function createSemanticAlternativeHash(
+  semanticIntent: SemanticIntentV2,
+): Promise<string> {
+  return hashCanonicalJson({
+    semanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
+    providerCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
+    decisionPolicyVersion: DECISION_POLICY_VERSION,
+    semanticIntent: semanticIntent as unknown as CanonicalJsonValue,
+  });
+}
+
+async function alternativesFromIds(
   ids: readonly string[],
-  locale: NormalizedSearchIntent["locale"],
+  intent: NormalizedSearchIntent,
   reasonCodes: readonly ResolutionReasonCode[],
-): SearchPlanAlternative[] {
-  return [...new Set(ids)]
+): Promise<SearchPlanAlternative[]> {
+  const alternatives = [...new Set(ids)]
     .filter(isCanonicalConceptId)
     .slice(0, 3)
-    .map((conceptId) => ({
-      conceptId,
-      label: canonicalConceptLabel(conceptId, locale),
-      reasonCodes: [...reasonCodes],
-    }));
+    .map(async (conceptId) => {
+      const semanticIntent = semanticIntentForConcept(conceptId, intent);
+      const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+      const preview = semanticExecutionPreview(capabilityPlan);
+      if (!preview) return null;
+      const alternativeHash = await createSemanticAlternativeHash(semanticIntent);
+      const label = canonicalConceptLabel(conceptId, intent.locale);
+      return {
+        alternativeId: `alt-${alternativeHash.slice(0, 16)}`,
+        alternativeHash,
+        label,
+        explanation: `Искать физические организации формата «${label}»`,
+        semanticIntent,
+        executionPreview: preview,
+        reasonCodes: [...reasonCodes],
+      } satisfies SearchPlanAlternative;
+    });
+  const resolved = (await Promise.all(alternatives)).filter(
+    (alternative): alternative is SearchPlanAlternative => Boolean(alternative),
+  );
+  const seenPreviews = new Set<string>();
+  return resolved.filter((alternative) => {
+    const signature = JSON.stringify(
+      [...alternative.executionPreview.categoryLabels].sort(),
+    );
+    if (seenPreviews.has(signature)) return false;
+    seenPreviews.add(signature);
+    return true;
+  });
 }
 
 function executionPreview(selectedConceptIds: readonly string[]): SearchPlan["executionPreview"] {
@@ -284,12 +365,14 @@ async function finalizePlan(
       secret: options.signingSecret,
       requestCacheKey: draft.requestCacheKey,
       sourcePlanHash: planHash,
-      allowedConceptIds: draft.resolution.alternatives.map(
-        (alternative) => alternative.conceptId,
+      allowedAlternativeHashes: draft.resolution.alternatives.map(
+        (alternative) => alternative.alternativeHash,
       ),
-      taxonomyVersion: draft.taxonomyVersion,
+      searchPlanSchemaVersion: draft.schemaVersion,
+      semanticIntentSchemaVersion: draft.semanticIntent.schemaVersion,
       providerCatalogVersion: draft.providerCatalogVersion,
       decisionPolicyVersion: draft.decisionPolicyVersion,
+      promptVersion: draft.promptVersion,
       ttlSeconds: options.confirmationTtlSeconds,
       now: options.now,
     });
@@ -445,14 +528,13 @@ export async function createSearchPlan(
     );
   }
 
-  const deterministicAlternatives = deterministic.candidates
-    .filter((candidate) => !candidate.negativeConflict)
-    .slice(0, 3)
-    .map((candidate) => ({
-      conceptId: candidate.conceptId,
-      label: candidate.label,
-      reasonCodes: candidate.reasonCodes,
-    }));
+  const deterministicAlternatives = await alternativesFromIds(
+    deterministic.candidates
+      .filter((candidate) => !candidate.negativeConflict)
+      .map((candidate) => candidate.conceptId),
+    intent,
+    ["AMBIGUOUS_SCOPE"],
+  );
   if (mode === "deterministic") {
     const hasAlternatives = deterministicAlternatives.length > 0;
     return finalizePlan(
@@ -580,9 +662,9 @@ export async function createSearchPlan(
           resolution: {
             method: "kimi",
             selectedConceptIds: [],
-            alternatives: alternativesFromIds(
+            alternatives: await alternativesFromIds(
               candidateIds,
-              intent.locale,
+              intent,
               ["AMBIGUOUS_SCOPE"],
             ),
             confidenceBand: semanticIntent.confidence,
@@ -797,24 +879,55 @@ export async function confirmSearchPlan(
     secret: options.signingSecret,
     now: options.now,
     expectedRequestCacheKey: requestCacheKey,
-    expectedTaxonomyVersion: CANONICAL_TAXONOMY_VERSION,
+    expectedSearchPlanSchemaVersion: SEARCH_PLAN_SCHEMA_VERSION,
+    expectedSemanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
     expectedProviderCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
     expectedDecisionPolicyVersion: DECISION_POLICY_VERSION,
+    expectedPromptVersion: KIMI_PROMPT_VERSION,
   });
-  const selectedConceptIds = [...new Set(request.selectedConceptIds)];
+  const selected = request.selectedAlternative;
   if (
-    selectedConceptIds.length !== 1 ||
-    !claims.allowedConceptIds.includes(selectedConceptIds[0])
+    !selected ||
+    typeof selected.alternativeId !== "string" ||
+    typeof selected.alternativeHash !== "string"
   ) {
     throw new ConfirmationTokenError(
       "CONFIRMATION_CONTEXT_MISMATCH",
-      "Exactly one concept allowed by the confirmation token is required",
+      "Exactly one semantic alternative is required",
+    );
+  }
+  let semanticIntent: SemanticIntentV2;
+  try {
+    semanticIntent = validateKimiSemanticIntent(selected.semanticIntent);
+  } catch {
+    throw new ConfirmationTokenError(
+      "CONFIRMATION_CONTEXT_MISMATCH",
+      "Selected semantic alternative is invalid",
+    );
+  }
+  const alternativeHash = await createSemanticAlternativeHash(semanticIntent);
+  if (
+    selected.alternativeHash !== alternativeHash ||
+    selected.alternativeId !== `alt-${alternativeHash.slice(0, 16)}` ||
+    !claims.allowedAlternativeHashes.includes(alternativeHash)
+  ) {
+    throw new ConfirmationTokenError(
+      "CONFIRMATION_CONTEXT_MISMATCH",
+      "Selected semantic alternative was not offered by the signed plan",
+    );
+  }
+  const executionPreview: SearchPlanExecutionPreview | null =
+    semanticExecutionPreview(compileGeoapifySemanticIntent(semanticIntent));
+  if (!executionPreview) {
+    throw new ConfirmationTokenError(
+      "CONFIRMATION_CONTEXT_MISMATCH",
+      "Selected semantic alternative is not executable",
     );
   }
   const common = baseDraft(
     intent,
     requestCacheKey,
-    synthesizedSemanticIntent(intent, "high"),
+    semanticIntent,
     "high",
   );
   return finalizePlan(
@@ -824,13 +937,13 @@ export async function confirmSearchPlan(
       status: "ready",
       resolution: {
         method: "user_confirmed",
-        selectedConceptIds,
+        selectedConceptIds: [],
         alternatives: [],
         confidenceBand: "high",
         reasonCodes: ["USER_CONFIRMED"],
         clarificationQuestion: null,
       },
-      executionPreview: executionPreview(selectedConceptIds),
+      executionPreview,
       ai: AI_NOT_USED,
     },
     {},

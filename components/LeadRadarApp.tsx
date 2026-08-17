@@ -50,7 +50,10 @@ import type {
   SearchPayload,
   SearchResponse,
 } from "@/lib/types";
-import type { SearchPlan } from "@/lib/search-planner/types";
+import type {
+  SearchPlan,
+  SearchPlanAlternative,
+} from "@/lib/search-planner/types";
 
 import LeadMap from "./LeadMap";
 import LocationSelector from "./LocationSelector";
@@ -836,10 +839,6 @@ export default function LeadRadarApp() {
         return;
       }
 
-      if (planPayload.resolution.selectedConceptIds.length === 0) {
-        throw new Error("Не удалось получить безопасную категорию для поиска");
-      }
-
       setSearchPhase("searching");
       await requestSearch(queryWithLocale, controller.signal);
     } catch (searchError) {
@@ -855,7 +854,7 @@ export default function LeadRadarApp() {
   };
 
   const confirmSearchPlan = async (
-    confirmedConceptIds: string[],
+    selectedAlternative: SearchPlanAlternative,
     confirmationToken: string,
   ) => {
     activeSearchController.current?.abort();
@@ -887,7 +886,11 @@ export default function LeadRadarApp() {
           locale: "ru-RU",
           countryCodes: ["RU"],
           confirmationToken,
-          confirmedConceptIds,
+          confirmedAlternative: {
+            alternativeId: selectedAlternative.alternativeId,
+            alternativeHash: selectedAlternative.alternativeHash,
+            semanticIntent: selectedAlternative.semanticIntent,
+          },
         },
         controller.signal,
       );
@@ -1114,7 +1117,10 @@ function SearchScreen({
   progress: SearchProgressPanelEvent[];
   error: string;
   onSubmit: (event: FormEvent) => void;
-  onConfirm: (conceptIds: string[], confirmationToken: string) => void;
+  onConfirm: (
+    alternative: SearchPlanAlternative,
+    confirmationToken: string,
+  ) => void;
   onSave: () => void;
 }) {
   const services = ["Создание сайта", "Внедрение CRM", "Автоматизация заявок", "Онлайн-калькулятор"];

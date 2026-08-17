@@ -11,7 +11,11 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
-import type { PlanStatus, SearchPlan } from "@/lib/search-planner/types";
+import type {
+  PlanStatus,
+  SearchPlan,
+  SearchPlanAlternative,
+} from "@/lib/search-planner/types";
 
 import styles from "./SearchIntentPanel.module.css";
 
@@ -90,14 +94,6 @@ function retrievalArmLabel(
   return "совместимый";
 }
 
-function readableConceptId(conceptId: string) {
-  return conceptId
-    .split(".")
-    .at(-1)
-    ?.replaceAll("_", " ")
-    .replace(/(^|\s)\S/g, (letter) => letter.toLocaleUpperCase("ru-RU")) ?? conceptId;
-}
-
 export default function SearchIntentPanel({
   plan,
   busy,
@@ -106,15 +102,21 @@ export default function SearchIntentPanel({
 }: {
   plan: SearchPlan;
   busy: boolean;
-  onConfirm: (conceptIds: string[], confirmationToken: string) => void;
+  onConfirm: (
+    alternative: SearchPlanAlternative,
+    confirmationToken: string,
+  ) => void;
   onRevise: () => void;
 }) {
-  const [selectedConceptId, setSelectedConceptId] = useState("");
+  const [selectedAlternativeId, setSelectedAlternativeId] = useState("");
   const statusCopy = statusCopyForPlan(plan);
 
   const alternatives = plan.resolution.alternatives.slice(0, 3);
+  const selectedAlternative = alternatives.find(
+    (alternative) => alternative.alternativeId === selectedAlternativeId,
+  );
   const confirmationToken = plan.confirmation?.token ?? null;
-  const canConfirm = Boolean(selectedConceptId && confirmationToken && !busy);
+  const canConfirm = Boolean(selectedAlternative && confirmationToken && !busy);
 
   return (
     <section
@@ -168,22 +170,32 @@ export default function SearchIntentPanel({
           </legend>
           {alternatives.map((alternative) => (
             <label
-              key={alternative.conceptId}
+              key={alternative.alternativeId}
               className={
-                selectedConceptId === alternative.conceptId ? styles.selected : ""
+                selectedAlternativeId === alternative.alternativeId
+                  ? styles.selected
+                  : ""
               }
             >
               <input
                 type="radio"
-                name="canonical-concept"
-                value={alternative.conceptId}
-                checked={selectedConceptId === alternative.conceptId}
-                onChange={() => setSelectedConceptId(alternative.conceptId)}
+                name="semantic-interpretation"
+                value={alternative.alternativeId}
+                checked={selectedAlternativeId === alternative.alternativeId}
+                onChange={() => setSelectedAlternativeId(alternative.alternativeId)}
               />
               <span className={styles.radio} aria-hidden="true" />
               <span className={styles.alternativeCopy}>
                 <strong>{alternative.label}</strong>
-                <small>{readableConceptId(alternative.conceptId)}</small>
+                <small>{alternative.explanation}</small>
+                <small>
+                  {alternative.executionPreview.retrievalArms
+                    .map(
+                      (arm) =>
+                        `${retrievalArmLabel(arm.type)} · до ${arm.resultBudget}`,
+                    )
+                    .join("; ")}
+                </small>
               </span>
               <ChevronRight size={17} aria-hidden="true" />
             </label>
@@ -235,8 +247,8 @@ export default function SearchIntentPanel({
               className="button button-primary"
               disabled={!canConfirm}
               onClick={() => {
-                if (confirmationToken && selectedConceptId) {
-                  onConfirm([selectedConceptId], confirmationToken);
+                if (confirmationToken && selectedAlternative) {
+                  onConfirm(selectedAlternative, confirmationToken);
                 }
               }}
             >

@@ -290,7 +290,7 @@ fallback. Ответ содержит только нормализованны�
 }
 ```
 
-Ответ содержит `SearchPlan` версии `2.1` со статусом `ready`,
+Ответ содержит `SearchPlan` версии `2.2` со статусом `ready`,
 `needs_confirmation`, `unsupported` или `degraded`, объектом
 `semanticIntent`, отдельной уверенностью в смысле запроса и покрытии источника,
 версиями prompt/schema, usage, latency и проверяемыми hash. Вложенный
@@ -337,18 +337,24 @@ fallback. Ответ содержит только нормализованны�
 `SEARCH_PLAN_UNSUPPORTED`. Ошибка live-провайдера возвращается с HTTP 502 и не
 подменяется демоданными.
 
-Чтобы продолжить неоднозначный поиск, повторите тот же payload и добавьте только
-ID из показанных alternatives и подписанный token:
+Чтобы продолжить неоднозначный поиск, повторите тот же payload и передайте
+ровно одну показанную semantic alternative вместе с подписанным token:
 
 ```json
 {
-  "confirmedConceptIds": ["logistics.warehouse"],
+  "confirmedAlternative": {
+    "alternativeId": "alt-из-SearchPlan",
+    "alternativeHash": "hash_из_SearchPlan",
+    "semanticIntent": "полный semanticIntent выбранной alternative без изменений"
+  },
   "confirmationToken": "token_из_SearchPlan"
 }
 ```
 
-Token действует 10 минут, связан с исходным intent и не позволяет подтвердить
-произвольную категорию.
+Token действует 10 минут и подписывает исходные request/plan hash, допустимые
+alternative hash и версии semantic/compiler contracts. Сервер заново валидирует
+и хэширует выбранный `SemanticIntentV2`; V1 token с canonical IDs не исполняется
+и требует безопасно сформировать новый план.
 
 ### `POST /api/search?stream=1`
 

@@ -23,7 +23,11 @@ import {
   isSearchPlannerInfrastructureFailure,
   plannerModeFromEnv,
 } from "@/lib/search-planner/planner";
-import type { SearchPlan } from "@/lib/search-planner/types";
+import { validateKimiSemanticIntent } from "@/lib/search-planner/schema";
+import type {
+  ConfirmedSemanticAlternative,
+  SearchPlan,
+} from "@/lib/search-planner/types";
 import type {
   Lead,
   SearchLocationMode,
@@ -207,10 +211,46 @@ function parseSearchPayload(value: unknown): PayloadResult {
   if (confirmationToken && confirmationToken.length > 8_192) {
     return { ok: false, error: "Токен подтверждения слишком длинный" };
   }
-  if ((confirmedConceptIds.value?.length ?? 0) > 0 && !confirmationToken) {
+  let confirmedAlternative: ConfirmedSemanticAlternative | undefined;
+  if (value.confirmedAlternative !== undefined) {
+    if (!isRecord(value.confirmedAlternative)) {
+      return { ok: false, error: "Подтверждённая трактовка имеет неверный формат" };
+    }
+    const alternativeId = value.confirmedAlternative.alternativeId;
+    const alternativeHash = value.confirmedAlternative.alternativeHash;
+    if (
+      typeof alternativeId !== "string" ||
+      !/^alt-[a-f0-9]{16}$/.test(alternativeId) ||
+      typeof alternativeHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(alternativeHash)
+    ) {
+      return { ok: false, error: "Подтверждённая трактовка содержит неверный ID" };
+    }
+    try {
+      confirmedAlternative = {
+        alternativeId,
+        alternativeHash,
+        semanticIntent: validateKimiSemanticIntent(
+          value.confirmedAlternative.semanticIntent,
+        ),
+      };
+    } catch {
+      return { ok: false, error: "Подтверждённая трактовка не прошла проверку" };
+    }
+  }
+  if (
+    ((confirmedConceptIds.value?.length ?? 0) > 0 || confirmedAlternative) &&
+    !confirmationToken
+  ) {
     return {
       ok: false,
-      error: "Для подтверждённой категории нужен confirmationToken",
+      error: "Для подтверждённой трактовки нужен confirmationToken",
+    };
+  }
+  if (confirmedAlternative && (confirmedConceptIds.value?.length ?? 0) > 0) {
+    return {
+      ok: false,
+      error: "Нельзя одновременно подтверждать V1-категорию и V2-трактовку",
     };
   }
 
@@ -345,6 +385,7 @@ function parseSearchPayload(value: unknown): PayloadResult {
       ...(confirmedConceptIds.value?.length
         ? { confirmedConceptIds: confirmedConceptIds.value }
         : {}),
+      ...(confirmedAlternative ? { confirmedAlternative } : {}),
       ...(confirmationToken ? { confirmationToken } : {}),
     },
   };
@@ -1026,7 +1067,7 @@ const searchOrchestrator = createSearchOrchestrator({
         {
           input: payload,
           confirmationToken: payload.confirmationToken ?? "",
-          selectedConceptIds: payload.confirmedConceptIds ?? [],
+          selectedAlternative: payload.confirmedAlternative as ConfirmedSemanticAlternative,
         },
         { signingSecret },
       );

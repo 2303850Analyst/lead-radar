@@ -1,4 +1,4 @@
-import type { SearchPlan } from "./types";
+import type { SearchPlan, SemanticIntentV2 } from "./types";
 
 const PLAN_STATUSES = new Set(["ready", "needs_confirmation", "unsupported", "degraded"]);
 const SEMANTIC_CONFIDENCE_VALUES = new Set(["high", "medium", "low"]);
@@ -89,7 +89,7 @@ function isNormalizedIntent(value: unknown): boolean {
   );
 }
 
-function isSemanticIntent(value: unknown): boolean {
+function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
   if (!isRecord(value) || value.schemaVersion !== "2.0") return false;
   const retrieval = value.retrievalTerms;
   const ambiguity = value.ambiguity;
@@ -125,18 +125,46 @@ function isSemanticIntent(value: unknown): boolean {
 
 function isResolution(value: unknown): boolean {
   if (!isRecord(value)) return false;
+  const alternatives = Array.isArray(value.alternatives)
+    ? value.alternatives
+    : null;
+  if (!alternatives || alternatives.length > 3) return false;
+  const alternativeIds = new Set<string>();
+  const alternativeHashes = new Set<string>();
+  const validAlternatives = alternatives.every((alternative) => {
+    if (!isRecord(alternative)) return false;
+    const semanticIntent = alternative.semanticIntent;
+    const executionPreview = alternative.executionPreview;
+    if (
+      typeof alternative.alternativeId !== "string" ||
+      !/^alt-[a-f0-9]{16}$/.test(alternative.alternativeId) ||
+      alternativeIds.has(alternative.alternativeId) ||
+      typeof alternative.alternativeHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(alternative.alternativeHash) ||
+      alternativeHashes.has(alternative.alternativeHash) ||
+      typeof alternative.label !== "string" ||
+      alternative.label.length < 1 ||
+      alternative.label.length > 160 ||
+      typeof alternative.explanation !== "string" ||
+      alternative.explanation.length < 1 ||
+      alternative.explanation.length > 500 ||
+      !isSemanticIntent(semanticIntent) ||
+      semanticIntent.ambiguity.isAmbiguous ||
+      !isExecutionPreview(executionPreview) ||
+      executionPreview === null ||
+      !isReasonArray(alternative.reasonCodes)
+    ) {
+      return false;
+    }
+    alternativeIds.add(alternative.alternativeId);
+    alternativeHashes.add(alternative.alternativeHash);
+    return true;
+  });
   return (
     typeof value.method === "string" &&
     RESOLUTION_METHODS.has(value.method) &&
     isStringArray(value.selectedConceptIds) &&
-    Array.isArray(value.alternatives) &&
-    value.alternatives.every(
-      (alternative) =>
-        isRecord(alternative) &&
-        typeof alternative.conceptId === "string" &&
-        typeof alternative.label === "string" &&
-        isReasonArray(alternative.reasonCodes),
-    ) &&
+    validAlternatives &&
     typeof value.confidenceBand === "string" &&
     CONFIDENCE_VALUES.has(value.confidenceBand) &&
     isReasonArray(value.reasonCodes) &&
@@ -270,7 +298,7 @@ function isExecutionPreview(value: unknown): boolean {
 
 /** Rejects partial or malformed network payloads before the UI dereferences them. */
 export function isSearchPlan(value: unknown): value is SearchPlan {
-  if (!isRecord(value) || value.schemaVersion !== "2.1") return false;
+  if (!isRecord(value) || value.schemaVersion !== "2.2") return false;
   if (typeof value.status !== "string" || !PLAN_STATUSES.has(value.status)) return false;
   const confidence = value.confidence;
   const confirmation = value.confirmation;
