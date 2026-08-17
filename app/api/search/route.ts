@@ -40,6 +40,10 @@ import {
   type SupportedCountryCode,
   type SupportedLocale,
 } from "@/lib/search-planner/types";
+import {
+  SearchPlanOutcomeError,
+  createSearchOrchestrator,
+} from "@/lib/search-orchestrator";
 import packageMetadata from "@/package.json";
 
 const YANDEX_ENDPOINT = "https://search-maps.yandex.ru/v1/";
@@ -957,32 +961,17 @@ async function demoSearch(
   return response;
 }
 
-class SearchPlanOutcomeError extends Error {
-  constructor(
-    message: string,
-    readonly code:
-      | "SEARCH_PLAN_CONFIRMATION_REQUIRED"
-      | "SEARCH_PLAN_UNSUPPORTED"
-      | "SEARCH_PLANNER_UNAVAILABLE",
-    readonly status: 409 | 422 | 503,
-    readonly plan?: SearchPlan,
-  ) {
-    super(message);
-    this.name = "SearchPlanOutcomeError";
-  }
-}
+const searchOrchestrator = createSearchOrchestrator({
+  async verifyGeography(payload, signal) {
+    if (
+      payload.locationMode !== "metro" ||
+      !payload.metro?.stationId ||
+      !payload.metro.stationName ||
+      !payload.center
+    ) {
+      return payload;
+    }
 
-async function executeSearch(
-  payload: SearchPayload,
-  onProgress?: SearchProgressCallback,
-  signal?: AbortSignal,
-): Promise<SearchResponse> {
-  if (
-    payload.locationMode === "metro" &&
-    payload.metro?.stationId &&
-    payload.metro.stationName &&
-    payload.center
-  ) {
     const system = getRussianMetroSystem(payload.metro.systemId);
     const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
     if (!system || !apiKey) {
@@ -1001,7 +990,7 @@ async function executeSearch(
       apiKey,
       signal,
     );
-    payload = {
+    return {
       ...payload,
       location: `Метро «${station.name}», ${system.city}`,
       metro: {
@@ -1011,151 +1000,87 @@ async function executeSearch(
       },
       center: station.coordinates,
     };
-  }
-  await emitProgress(onProgress, {
-    stage: "intent_resolution",
-    status: "started",
-    message: payload.confirmedConceptIds?.length
-      ? "Проверяем выбранную трактовку"
-      : "Сопоставляем запрос с бизнес-категориями",
-  });
-
-  let plan: SearchPlan;
-  try {
-    if (payload.confirmedConceptIds?.length && payload.confirmationToken) {
-      const signingSecret = process.env.SEARCH_PLAN_SIGNING_SECRET?.trim();
-      if (!signingSecret) {
-        throw new SearchPlanOutcomeError(
-          "Сервер не настроен для безопасного подтверждения категории",
-          "SEARCH_PLAN_CONFIRMATION_REQUIRED",
-          409,
-        );
-      }
-      plan = await confirmSearchPlan(
-        {
-          input: payload,
-          confirmationToken: payload.confirmationToken,
-          selectedConceptIds: payload.confirmedConceptIds,
-        },
-        { signingSecret },
-      );
-    } else {
-      plan = await createSearchPlanFromEnv(payload, { signal });
-    }
-  } catch (error) {
-    if (error instanceof SearchPlanOutcomeError) throw error;
-    if (error instanceof ConfirmationTokenError) {
+  },
+  createPlan: (payload, signal) => createSearchPlanFromEnv(payload, { signal }),
+  async confirmPlan(payload) {
+    const signingSecret = process.env.SEARCH_PLAN_SIGNING_SECRET?.trim();
+    if (!signingSecret) {
       throw new SearchPlanOutcomeError(
-        "Подтверждение категории недействительно или истекло. Сформируйте план заново.",
+        "Сервер не настроен для безопасного подтверждения категории",
         "SEARCH_PLAN_CONFIRMATION_REQUIRED",
         409,
       );
     }
-    throw error;
-  }
-
-  await emitProgress(onProgress, {
-    stage: "intent_resolution",
-    status: "completed",
-    message:
-      plan.status === "ready"
-        ? "Категория поиска определена"
-        : plan.status === "degraded"
-          ? "Используем безопасную локальную трактовку"
-          : plan.status === "needs_confirmation"
-            ? "Требуется выбор трактовки"
-            : "Поддерживаемая категория не найдена",
-  });
-
-  if (plan.status === "needs_confirmation") {
-    throw new SearchPlanOutcomeError(
-      "Нужно подтвердить категорию до обращения к карте",
-      "SEARCH_PLAN_CONFIRMATION_REQUIRED",
-      409,
-      plan,
+    try {
+      return await confirmSearchPlan(
+        {
+          input: payload,
+          confirmationToken: payload.confirmationToken ?? "",
+          selectedConceptIds: payload.confirmedConceptIds ?? [],
+        },
+        { signingSecret },
+      );
+    } catch (error) {
+      if (error instanceof ConfirmationTokenError) {
+        throw new SearchPlanOutcomeError(
+          "Подтверждение категории недействительно или истекло. Сформируйте план заново.",
+          "SEARCH_PLAN_CONFIRMATION_REQUIRED",
+          409,
+        );
+      }
+      throw error;
+    }
+  },
+  isPlannerInfrastructureFailure: isSearchPlannerInfrastructureFailure,
+  selectProvider: selectedProvider,
+  compileGeoapifyPlan(plan): CompiledGeoapifyPlan {
+    const selectors = compileGeoapifySelectors(
+      plan.resolution.selectedConceptIds,
     );
-  }
-  if (isSearchPlannerInfrastructureFailure(plan)) {
-    throw new SearchPlanOutcomeError(
-      "Сервис интерпретации запроса временно недоступен. Повторите поиск позже.",
-      "SEARCH_PLANNER_UNAVAILABLE",
-      503,
-      plan,
-    );
-  }
-  if (plan.status === "unsupported") {
-    throw new SearchPlanOutcomeError(
-      "Для запроса пока нет безопасной категории поиска",
-      "SEARCH_PLAN_UNSUPPORTED",
-      422,
-      plan,
-    );
-  }
-  if (!plan.resolution.selectedConceptIds.length) {
-    throw new SearchPlanOutcomeError(
-      "Не удалось безопасно подготовить категорию поиска",
-      "SEARCH_PLAN_UNSUPPORTED",
-      422,
-      plan,
-    );
-  }
-
-  await emitProgress(onProgress, {
-    stage: "provider_compilation",
-    status: "started",
-    message: "Компилируем разрешённые категории источника",
-  });
-  const selectors = compileGeoapifySelectors(
-    plan.resolution.selectedConceptIds,
-  );
-  const compiledPlan: CompiledGeoapifyPlan = {
-    provider: "geoapify",
-    providerCatalogVersion: selectors.providerCatalogVersion,
-    categoryIds: [...selectors.categoryIds],
-    batches: [[...selectors.categoryIds]],
-    countryCode: plan.intent.countryCodes[0],
-    language:
-      plan.intent.locale === "be-BY"
-        ? "be"
-        : plan.intent.locale === "kk-KZ"
-          ? "kk"
-          : "ru",
-    conceptIds: [...plan.resolution.selectedConceptIds],
-  };
-  await emitProgress(onProgress, {
-    stage: "provider_compilation",
-    status: "completed",
-    message: `Подготовлено категорий: ${compiledPlan.categoryIds.length}`,
-  });
-
-  const provider = selectedProvider();
-  let response: SearchResponse;
-  if (provider === "geoapify") {
-    const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
-    response = apiKey
-      ? await new GeoapifyProvider(apiKey).search(payload, {
-          onProgress,
-          signal,
-          compiledPlan,
-        })
-      : await demoSearch(payload, onProgress);
-    return { ...response, plan };
-  }
-
-  if (provider === "demo") {
-    response = await demoSearch(payload, onProgress);
-    return { ...response, plan };
-  }
-
-  const liveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
-  const apiKey = liveUiEnabled
-    ? process.env.YANDEX_MAPS_API_KEY?.trim()
-    : undefined;
-  response = apiKey
-    ? await yandexSearch(payload, apiKey, onProgress)
-    : await demoSearch(payload, onProgress);
-  return { ...response, plan };
-}
+    return {
+      provider: "geoapify",
+      providerCatalogVersion: selectors.providerCatalogVersion,
+      categoryIds: [...selectors.categoryIds],
+      batches: [[...selectors.categoryIds]],
+      countryCode: plan.intent.countryCodes[0],
+      language:
+        plan.intent.locale === "be-BY"
+          ? "be"
+          : plan.intent.locale === "kk-KZ"
+            ? "kk"
+            : "ru",
+      conceptIds: [...plan.resolution.selectedConceptIds],
+    };
+  },
+  providers: {
+    demo: {
+      search: (payload, { onProgress }) => demoSearch(payload, onProgress),
+    },
+    geoapify: {
+      search: async (payload, { onProgress, signal, compiledPlan }) => {
+        const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+        return apiKey && compiledPlan
+          ? new GeoapifyProvider(apiKey).search(payload, {
+              onProgress,
+              signal,
+              compiledPlan,
+            })
+          : demoSearch(payload, onProgress);
+      },
+    },
+    yandex: {
+      search: async (payload, { onProgress }) => {
+        const liveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
+        const apiKey = liveUiEnabled
+          ? process.env.YANDEX_MAPS_API_KEY?.trim()
+          : undefined;
+        return apiKey
+          ? yandexSearch(payload, apiKey, onProgress)
+          : demoSearch(payload, onProgress);
+      },
+    },
+  },
+});
 
 function publicSearchError(error: unknown): PublicSearchError {
   if (error instanceof SearchPlanOutcomeError) {
@@ -1240,11 +1165,10 @@ function streamSearch(
             message: "Параметры поиска проверены",
             timestamp: new Date().toISOString(),
           } satisfies SearchProgressEvent);
-          const result = await executeSearch(
-            payload,
-            (event) => send(event),
-            searchController.signal,
-          );
+          const result = await searchOrchestrator.search(payload, {
+            onProgress: (event) => send(event),
+            signal: searchController.signal,
+          });
           send({ type: "result", data: result });
         } catch (error) {
           if (!searchController.signal.aborted) {
@@ -1314,7 +1238,7 @@ export async function POST(request: Request) {
   if (streamRequested) return streamSearch(payload, request.signal);
 
   try {
-    return Response.json(await executeSearch(payload));
+    return Response.json(await searchOrchestrator.search(payload));
   } catch (error) {
     const failure = publicSearchError(error);
     return Response.json(

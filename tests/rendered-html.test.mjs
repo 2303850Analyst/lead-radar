@@ -138,6 +138,84 @@ test("search API exposes health and deterministic demo results", async () => {
   assert.match(result.notice, /синтетические данные/i);
 });
 
+test("JSON and NDJSON demo search share one result without Geoapify compilation", { concurrency: false }, async () => {
+  const previousProvider = process.env.SEARCH_PROVIDER;
+  process.env.SEARCH_PROVIDER = "demo";
+
+  const payload = {
+    description: "Фулфилменты для маркетплейсов",
+    primaryQuery: "Фулфилмент",
+    relatedQueries: ["Складские услуги", "Комплектация заказов"],
+    excludeQueries: ["Камеры хранения"],
+    location: "Москва, ул. Лесная, 7",
+    radiusKm: 15,
+    services: ["Создание сайта", "Внедрение CRM"],
+  };
+
+  try {
+    const worker = await getWorker();
+    const jsonResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    const streamResponse = await worker.fetch(
+      new Request("http://localhost/api/search?stream=1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+
+    assert.equal(jsonResponse.status, 200);
+    assert.equal(streamResponse.status, 200);
+    const jsonResult = await jsonResponse.json();
+    const records = (await streamResponse.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const streamedResult = records.find((record) => record.type === "result")?.data;
+    assert.ok(streamedResult);
+    assert.deepEqual(
+      {
+        mode: streamedResult.mode,
+        summary: streamedResult.summary,
+        leadIds: streamedResult.leads.map((lead) => lead.id),
+        providerPolicy: streamedResult.provider.policy,
+      },
+      {
+        mode: jsonResult.mode,
+        summary: jsonResult.summary,
+        leadIds: jsonResult.leads.map((lead) => lead.id),
+        providerPolicy: jsonResult.provider.policy,
+      },
+    );
+
+    const progress = records.filter((record) => record.type === "progress");
+    assert.ok(progress.some((record) => record.stage === "provider_compilation"));
+    assert.ok(
+      progress.some(
+        (record) =>
+          record.stage === "provider_compilation" &&
+          /demo не требует категорий/i.test(record.message),
+      ),
+    );
+    assert.equal(
+      progress.some((record) => /компилируем разрешённые категории/i.test(record.message)),
+      false,
+    );
+  } finally {
+    if (previousProvider === undefined) delete process.env.SEARCH_PROVIDER;
+    else process.env.SEARCH_PROVIDER = previousProvider;
+  }
+});
+
 test("Geoapify provider normalizes live data without inventing missing websites", { concurrency: false }, async () => {
   const previousFetch = globalThis.fetch;
   const previousEnv = {

@@ -1,0 +1,184 @@
+import type {
+  CompiledGeoapifyPlan,
+  SearchProgressCallback,
+} from "./providers/types";
+import type { SearchPlan } from "./search-planner/types";
+import type {
+  SearchPayload,
+  SearchProgressEvent,
+  SearchResponse,
+} from "./types";
+
+export type SearchExecutionProvider = "demo" | "geoapify" | "yandex";
+
+export type SearchExecutionOptions = {
+  onProgress?: SearchProgressCallback;
+  signal?: AbortSignal;
+};
+
+type ProviderExecutionOptions = SearchExecutionOptions & {
+  plan: SearchPlan;
+  compiledPlan?: CompiledGeoapifyPlan;
+};
+
+export type SearchExecutionAdapter = {
+  search(
+    payload: SearchPayload,
+    options: ProviderExecutionOptions,
+  ): Promise<SearchResponse>;
+};
+
+export type SearchOrchestratorDependencies = {
+  verifyGeography(
+    payload: SearchPayload,
+    signal?: AbortSignal,
+  ): Promise<SearchPayload>;
+  createPlan(payload: SearchPayload, signal?: AbortSignal): Promise<SearchPlan>;
+  confirmPlan(payload: SearchPayload): Promise<SearchPlan>;
+  isPlannerInfrastructureFailure(plan: SearchPlan): boolean;
+  selectProvider(): SearchExecutionProvider;
+  compileGeoapifyPlan(plan: SearchPlan): CompiledGeoapifyPlan;
+  providers: Record<SearchExecutionProvider, SearchExecutionAdapter>;
+};
+
+export type SearchOrchestrator = {
+  search(
+    payload: SearchPayload,
+    options?: SearchExecutionOptions,
+  ): Promise<SearchResponse>;
+};
+
+export class SearchPlanOutcomeError extends Error {
+  constructor(
+    message: string,
+    readonly code:
+      | "SEARCH_PLAN_CONFIRMATION_REQUIRED"
+      | "SEARCH_PLAN_UNSUPPORTED"
+      | "SEARCH_PLANNER_UNAVAILABLE",
+    readonly status: 409 | 422 | 503,
+    readonly plan?: SearchPlan,
+  ) {
+    super(message);
+    this.name = "SearchPlanOutcomeError";
+  }
+}
+
+async function emitProgress(
+  onProgress: SearchProgressCallback | undefined,
+  event: Omit<SearchProgressEvent, "type" | "timestamp">,
+) {
+  await onProgress?.({
+    type: "progress",
+    ...event,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+function ensureExecutablePlan(
+  plan: SearchPlan,
+  isPlannerInfrastructureFailure: (plan: SearchPlan) => boolean,
+) {
+  if (plan.status === "needs_confirmation") {
+    throw new SearchPlanOutcomeError(
+      "Нужно подтвердить категорию до обращения к карте",
+      "SEARCH_PLAN_CONFIRMATION_REQUIRED",
+      409,
+      plan,
+    );
+  }
+  if (isPlannerInfrastructureFailure(plan)) {
+    throw new SearchPlanOutcomeError(
+      "Сервис интерпретации запроса временно недоступен. Повторите поиск позже.",
+      "SEARCH_PLANNER_UNAVAILABLE",
+      503,
+      plan,
+    );
+  }
+  if (plan.status === "unsupported") {
+    throw new SearchPlanOutcomeError(
+      "Для запроса пока нет безопасной категории поиска",
+      "SEARCH_PLAN_UNSUPPORTED",
+      422,
+      plan,
+    );
+  }
+  if (!plan.resolution.selectedConceptIds.length) {
+    throw new SearchPlanOutcomeError(
+      "Не удалось безопасно подготовить категорию поиска",
+      "SEARCH_PLAN_UNSUPPORTED",
+      422,
+      plan,
+    );
+  }
+}
+
+export function createSearchOrchestrator(
+  dependencies: SearchOrchestratorDependencies,
+): SearchOrchestrator {
+  return Object.freeze({
+    async search(
+      initialPayload: SearchPayload,
+      options: SearchExecutionOptions = {},
+    ): Promise<SearchResponse> {
+      const { onProgress, signal } = options;
+      const payload = await dependencies.verifyGeography(initialPayload, signal);
+
+      await emitProgress(onProgress, {
+        stage: "intent_resolution",
+        status: "started",
+        message: payload.confirmedConceptIds?.length
+          ? "Проверяем выбранную трактовку"
+          : "Сопоставляем запрос с бизнес-категориями",
+      });
+
+      const plan = payload.confirmedConceptIds?.length && payload.confirmationToken
+        ? await dependencies.confirmPlan(payload)
+        : await dependencies.createPlan(payload, signal);
+
+      await emitProgress(onProgress, {
+        stage: "intent_resolution",
+        status: "completed",
+        message:
+          plan.status === "ready"
+            ? "Категория поиска определена"
+            : plan.status === "degraded"
+              ? "Используем безопасную локальную трактовку"
+              : plan.status === "needs_confirmation"
+                ? "Требуется выбор трактовки"
+                : "Поддерживаемая категория не найдена",
+      });
+
+      ensureExecutablePlan(plan, dependencies.isPlannerInfrastructureFailure);
+
+      const providerId = dependencies.selectProvider();
+      await emitProgress(onProgress, {
+        stage: "provider_compilation",
+        status: "started",
+        message:
+          providerId === "geoapify"
+            ? "Компилируем разрешённые категории источника"
+            : `Источник ${providerId} не требует категорий Geoapify`,
+      });
+
+      const compiledPlan = providerId === "geoapify"
+        ? dependencies.compileGeoapifyPlan(plan)
+        : undefined;
+
+      await emitProgress(onProgress, {
+        stage: "provider_compilation",
+        status: "completed",
+        message: compiledPlan
+          ? `Подготовлено категорий: ${compiledPlan.categoryIds.length}`
+          : `Источник ${providerId} выбран без Geoapify compilation`,
+      });
+
+      const response = await dependencies.providers[providerId].search(payload, {
+        onProgress,
+        signal,
+        plan,
+        ...(compiledPlan ? { compiledPlan } : {}),
+      });
+      return { ...response, plan };
+    },
+  });
+}
