@@ -12,6 +12,9 @@ export const RELEVANCE_STATUSES = [
   "not_checked",
 ] as const;
 
+export const RELEVANCE_CONTRACT_VERSION = "2026-08-17.2";
+export const CANDIDATE_EVIDENCE_SCHEMA_VERSION = "candidate-evidence-v2";
+
 export const RELEVANCE_EVIDENCE_FIELDS = [
   "name",
   "providerCategoryIds",
@@ -65,6 +68,35 @@ const GENERIC_TOKENS = new Set([
 
 const MAX_EVIDENCE_FACTS = 8;
 const MAX_REASON_CODES = 12;
+const KIMI_RELEVANCE_REASON_CODES = new Set([
+  "MODEL_MATCH",
+  "MODEL_PARTIAL_MATCH",
+  "MODEL_REJECT",
+  "MODEL_INSUFFICIENT_EVIDENCE",
+]);
+const KIMI_REASON_CODE_BY_STATUS: Record<LeadRelevance["status"], string> = {
+  matched: "MODEL_MATCH",
+  maybe: "MODEL_PARTIAL_MATCH",
+  rejected: "MODEL_REJECT",
+  not_checked: "MODEL_INSUFFICIENT_EVIDENCE",
+};
+const CLASSIFIER_RESULT_KEYS = new Set([
+  "candidateId",
+  "status",
+  "confidence",
+  "evidence",
+  "reasonCodes",
+  "source",
+]);
+const EVIDENCE_FACT_KEYS = new Set(["field", "value"]);
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: ReadonlySet<string>,
+): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.size && keys.every((key) => expected.has(key));
+}
 
 function normalize(value: string): string {
   return value
@@ -227,7 +259,11 @@ export function classifyCandidateRelevance(
       evidenceForTerm(evidence, term),
     ),
   );
-  const termFields = new Set(termFacts.map((fact) => fact.field));
+  const textTermFields = new Set(
+    termFacts
+      .filter((fact) => fact.field !== "providerCategoryIds")
+      .map((fact) => fact.field),
+  );
 
   if (precisionCategoryFacts.length) {
     return result(
@@ -235,12 +271,15 @@ export function classifyCandidateRelevance(
       "matched",
       0.95,
       [...precisionCategoryFacts, ...broadCategoryFacts, ...termFacts],
-      ["PROVIDER_CATEGORY_MATCH", ...(termFacts.length ? ["TEXT_SIGNAL_MATCH"] : [])],
+      [
+        "PROVIDER_CATEGORY_MATCH",
+        ...(textTermFields.size ? ["TEXT_SIGNAL_MATCH"] : []),
+      ],
     );
   }
   if (
-    (broadCategoryFacts.length && termFacts.length) ||
-    termFields.size >= 2
+    (broadCategoryFacts.length && textTermFields.size >= 1) ||
+    textTermFields.size >= 2
   ) {
     return result(
       evidence.candidateId,
@@ -298,6 +337,9 @@ export function validateCandidateRelevance(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return notCheckedRelevance(evidence.candidateId, "INVALID_CLASSIFIER_RESULT");
   }
+  if (!hasExactKeys(value as Record<string, unknown>, CLASSIFIER_RESULT_KEYS)) {
+    return notCheckedRelevance(evidence.candidateId, "INVALID_CLASSIFIER_RESULT");
+  }
   const candidate = value as Partial<LeadRelevance>;
   if (
     candidate.candidateId !== evidence.candidateId ||
@@ -311,10 +353,18 @@ export function validateCandidateRelevance(
     !Array.isArray(candidate.evidence) ||
     candidate.evidence.length > MAX_EVIDENCE_FACTS ||
     !Array.isArray(candidate.reasonCodes) ||
-    candidate.reasonCodes.length > MAX_REASON_CODES ||
+    candidate.reasonCodes.length !== 1 ||
     candidate.reasonCodes.some(
-      (code) => typeof code !== "string" || !code || code.length > 80,
+      (code) =>
+        typeof code !== "string" || !KIMI_RELEVANCE_REASON_CODES.has(code),
     )
+  ) {
+    return notCheckedRelevance(evidence.candidateId, "INVALID_CLASSIFIER_RESULT");
+  }
+
+  if (
+    candidate.reasonCodes[0] !==
+    KIMI_REASON_CODE_BY_STATUS[candidate.status as LeadRelevance["status"]]
   ) {
     return notCheckedRelevance(evidence.candidateId, "INVALID_CLASSIFIER_RESULT");
   }
@@ -325,6 +375,7 @@ export function validateCandidateRelevance(
       !fact ||
       typeof fact !== "object" ||
       Array.isArray(fact) ||
+      !hasExactKeys(fact as Record<string, unknown>, EVIDENCE_FACT_KEYS) ||
       !RELEVANCE_EVIDENCE_FIELDS.includes(
         (fact as RelevanceEvidenceFact).field,
       ) ||
@@ -337,7 +388,11 @@ export function validateCandidateRelevance(
     ) {
       return notCheckedRelevance(evidence.candidateId, "INVALID_EVIDENCE");
     }
-    validFacts.push(fact as RelevanceEvidenceFact);
+    const canonicalFact = fact as RelevanceEvidenceFact;
+    validFacts.push({
+      field: canonicalFact.field,
+      value: canonicalFact.value,
+    });
   }
   if (candidate.status !== "not_checked" && !validFacts.length) {
     return notCheckedRelevance(evidence.candidateId, "MISSING_EVIDENCE");

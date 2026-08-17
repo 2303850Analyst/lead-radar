@@ -146,11 +146,17 @@ Open-world gate можно воспроизвести отдельно:
 
 ```powershell
 npm run eval:open-world
+npm run eval:relevance
 ```
 
-Он проверяет 500 замороженных CIS intent-сценариев через mock Kimi и реальный
-planner/compiler. В stdout попадают только агрегаты, версии и checksum; запросы,
-лиды и ответы провайдеров не записываются.
+Первая команда проверяет 500 замороженных CIS intent-сценариев через mock Kimi
+и реальный planner/compiler. Вторая — 600 явно размеченных синтетических
+candidate-evidence сценариев по 150 provider targets через фактический
+deterministic relevance runtime. Retrieval-контекст хранится отдельно от
+golden label, а prompt-injection равномерно покрывает все четыре статуса. В
+stdout попадают
+только агрегаты, версии и checksum; запросы, лиды и ответы провайдеров не
+записываются.
 
 Опциональный live canary запускается явно, чтобы случайно не расходовать квоту:
 
@@ -469,8 +475,9 @@ scoring, CSV или отображения поверх сторонней ка�
 - Open-vocabulary semantic encoder и полный registry уже не ограничены 40
   concepts. Frozen planner gate достиг 500/500 CIS intent cases и включает 100
   типов физических организаций, но использует golden mock Kimi и поэтому не
-  доказывает качество live-модели. Classifier/relevance coverage пока составляет
-  60 из требуемых 600 размеченных карточек.
+  доказывает качество live-модели. Deterministic relevance gate достиг 600/600
+  синтетических карточек; optional Kimi-classifier остаётся `N/A` до отдельного
+  data-flow/rate разрешения и live evaluation.
 - Runtime deterministic relevance уже заполняет `Lead.relevance` до Details по
   названию, provider categories, короткому описанию, географии и исключениям.
   Статусы `matched`, `maybe`, `rejected`, `not_checked` видны в таблице, карте,

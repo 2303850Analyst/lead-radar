@@ -29,6 +29,21 @@
 
 ### Добавлено
 
+- Добавлен frozen deterministic relevance gate на 600 явно размеченных
+  синтетических `CandidateEvidence` по 150 различным provider-категориям: по
+  150 `matched`, `maybe`, `rejected`, `not_checked` и по 15 prompt-injection
+  случаев в каждом статусе. Retrieval-контекст, evidence и label фиксируются
+  независимо, а precision/broad/empty/conflict сценарии пересекают статусы.
+  `npm run eval:relevance` измеряет matched
+  precision/recall, positive-to-rejected, точность evidence references,
+  обязательную evidence-поддержку, identity и fail-closed обработку
+  невалидного classifier output. Контракт `2026-08-17.2` принимает только
+  точную схему результата/evidence и совместимый со статусом machine reason
+  code, поэтому дополнительные поля или произвольный текст не попадают в лид.
+  Отчёт содержит только агрегаты, версии и checksum. Optional Kimi-classifier
+  остаётся выключенным по data-flow/rate gate, поэтому его AI-метрики честно
+  отмечены `N/A`, а обязательные deterministic safety gates выполняются.
+
 - Добавлен замороженный open-world quality gate для semantic intent: 500
   пользовательских CIS-сценариев, 150 непересекающихся семейств и 100 типов
   физических организаций с family-level split `60/20/20`. Корпус включает
@@ -76,6 +91,13 @@
   кандидатами, клиентским и глобальным rate limit и общим deadline 30 секунд.
 
 ### Бизнес-логика и ограничения
+
+- Broad provider category больше не считается одновременно категорией и
+  независимым текстовым доказательством. Статус повышается с `maybe` до
+  `matched` только при отдельном совпадении в названии/описании либо двух
+  независимых текстовых полях; это устраняет ложное уверенное совпадение вроде
+  прачечной для общего запроса клининга и не расходует Details на
+  недоказанную карточку.
 
 - Поиск получил единый local Tier-0 runtime deadline 60 секунд от admission до
   terminal outcome. Один `AbortSignal` отменяет Kimi SSE, Geoapify/Yandex

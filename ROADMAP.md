@@ -168,8 +168,10 @@ scoring, экспорт и показ на сторонней карте не в
   поиск;
 - frozen open-world planner gate: 500 cases, 150 family-level групп, 100 типов
   физических организаций, split `60/20/20`, две независимые слепые разметки и
-  Cohen's kappa `1.0000`; прежние 222 planner cases сохранены как compatibility
-  suite, 60 synthetic classifier fixtures пока не являются release corpus;
+  Cohen's kappa `1.0000`; frozen deterministic relevance gate содержит 600
+  явно размеченных synthetic CandidateEvidence по 150 provider targets (по
+  150 на каждый статус, retrieval context отделён от labels), прежние 222 planner
+  cases сохранены как compatibility suite;
 - open-vocabulary encoder проверен реальным `kimi-k3` на барбершопе,
   спортивном зале и ремонте телефонов: валидные ответы заняли 13,8–30,3 с;
   прежний V1 Kimi → Geoapify canary не считается доказательством нового
@@ -196,8 +198,8 @@ scoring, экспорт и показ на сторонней карте не в
 
 Не выполнено и блокирует production `v0.4.0`:
 
-- 600 размеченных relevance fixtures и измеренный classifier quality gate;
-  optional post-search Kimi остаётся за отдельным data-flow gate;
+- optional post-search Kimi остаётся за отдельным data-flow/rate gate; его
+  метрики пока `N/A`, обязательный deterministic relevance corpus 600/600 готов;
 - auth, shared/multi-instance admission и server-side quota limiter; текущие
   scheduler/circuit breaker/metrics являются только in-process Tier-0;
 - browser E2E, mock load 1000/concurrency 10, 100 live intents на модель,
@@ -222,8 +224,8 @@ Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
    in-process Tier-0 scheduler, circuit breaker и deadline уже готовы.
 2. Завершить двухфазную provider boundary и измерить качество relevance до
    enrichment на размеченной выборке.
-3. Расширить classifier/relevance dataset с 60 до 600 размеченных карточек;
-   open-world planner corpus 500/500 и две независимые разметки уже готовы.
+3. После разрешения data-flow добавить отдельный live Kimi relevance benchmark;
+   deterministic relevance 600/600 и open-world planner 500/500 уже готовы.
 4. Прогнать model comparison, stability, browser E2E, load и 30 реальных
    search tasks с versioned обезличенным отчётом.
 5. Оптимизировать prompt до token/cost gate и измерить минимум 100 поисков и

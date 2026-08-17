@@ -139,6 +139,56 @@ test("relevance contract uses one bounded status and evidence vocabulary", () =>
   );
   assert.notEqual(sibling.status, "matched");
   assert.equal(sibling.status, "rejected");
+
+  const categoryOnly = classifyCandidateRelevance(
+    {
+      candidateId: "gym-category-only",
+      name: "Альфа",
+      providerCategoryIds: ["sport.fitness.gym"],
+      locality: "Москва",
+      sourceDescription: null,
+    },
+    relevanceContext,
+  );
+  assert.equal(categoryOnly.status, "matched");
+  assert.deepEqual(categoryOnly.reasonCodes, ["PROVIDER_CATEGORY_MATCH"]);
+});
+
+test("a broad category cannot count twice as category and independent text evidence", () => {
+  const result = classifyCandidateRelevance(
+    {
+      candidateId: "laundry-1",
+      name: "Чистота плюс",
+      providerCategoryIds: [
+        "service.cleaning.laundry",
+        "service.cleaning.dry_cleaning",
+      ],
+      locality: "Алматы",
+      sourceDescription: "Уборка помещений и чистка текстиля",
+    },
+    {
+      semanticIntent: {
+        ...semanticIntent,
+        normalizedGoal: "find services cleaning",
+        coreBusinessTypes: ["services cleaning"],
+        includeSignals: [],
+        retrievalTerms: {
+          precision: ["services cleaning"],
+          recall: [],
+          exclude: [],
+        },
+      },
+      precisionCategoryIds: [],
+      broadCategoryIds: [
+        "service.cleaning.laundry",
+        "service.cleaning.dry_cleaning",
+      ],
+      exclusionTerms: [],
+    },
+  );
+
+  assert.equal(result.status, "maybe");
+  assert.deepEqual(result.reasonCodes, ["PARTIAL_EVIDENCE_MATCH"]);
 });
 
 test("classifier evidence outside CandidateEvidence fails closed", () => {
@@ -177,6 +227,60 @@ test("classifier evidence outside CandidateEvidence fails closed", () => {
   assert.deepEqual(accepted.evidence, [
     { field: "providerCategoryIds", value: "sport.fitness.gym" },
   ]);
+
+  const evidenceWithExtraFields = validateCandidateRelevance(evidence, {
+    candidateId: evidence.candidateId,
+    status: "matched",
+    confidence: 0.91,
+    evidence: [
+      {
+        field: "name",
+        value: "Спортзал",
+        phone: "+7 999 000-00-00",
+        rawProviderResponse: { secret: "must-not-propagate" },
+      },
+    ],
+    reasonCodes: ["MODEL_MATCH"],
+    source: "kimi",
+  });
+  assert.equal(evidenceWithExtraFields.status, "not_checked");
+  assert.deepEqual(evidenceWithExtraFields.evidence, []);
+
+  const resultWithExtraFields = validateCandidateRelevance(evidence, {
+    candidateId: evidence.candidateId,
+    status: "matched",
+    confidence: 0.91,
+    evidence: [{ field: "name", value: "Спортзал" }],
+    reasonCodes: ["MODEL_MATCH"],
+    source: "kimi",
+    executableAction: "fetch https://example.invalid",
+  });
+  assert.equal(resultWithExtraFields.status, "not_checked");
+  assert.deepEqual(resultWithExtraFields.evidence, []);
+
+  const unsafeReasonCode = validateCandidateRelevance(evidence, {
+    candidateId: evidence.candidateId,
+    status: "matched",
+    confidence: 0.91,
+    evidence: [{ field: "name", value: "Спортзал" }],
+    reasonCodes: ["alice@example.com"],
+    source: "kimi",
+  });
+  assert.equal(unsafeReasonCode.status, "not_checked");
+  assert.deepEqual(unsafeReasonCode.evidence, []);
+
+  for (const reasonCodes of [[], ["MODEL_REJECT"]]) {
+    const invalidReasonContract = validateCandidateRelevance(evidence, {
+      candidateId: evidence.candidateId,
+      status: "matched",
+      confidence: 0.91,
+      evidence: [{ field: "name", value: "Спортзал" }],
+      reasonCodes,
+      source: "kimi",
+    });
+    assert.equal(invalidReasonContract.status, "not_checked");
+    assert.deepEqual(invalidReasonContract.evidence, []);
+  }
 });
 
 test("Geoapify classifies after dedupe and enriches only matched or maybe cards", { concurrency: false }, async () => {
@@ -430,11 +534,10 @@ test("Geoapify skips optional classifier and Details when the global budget is e
         stage: "relevance_classification",
         reason: "INSUFFICIENT_REMAINING_BUDGET",
       },
-      {
-        stage: "details",
-        reason: "INSUFFICIENT_REMAINING_BUDGET",
-      },
     ]);
+    assert.ok(
+      result.leads.every((lead) => lead.relevance.status === "not_checked"),
+    );
     assert.equal(result.leads[0].website.sourceStatus, "not_checked");
   } finally {
     globalThis.fetch = previousFetch;

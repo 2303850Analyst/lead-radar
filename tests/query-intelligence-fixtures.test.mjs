@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CANDIDATE_EVIDENCE_SCHEMA_VERSION,
   RELEVANCE_EVIDENCE_FIELDS,
   RELEVANCE_STATUSES,
 } from "../lib/search-planner/relevance.ts";
+import { GEOAPIFY_CAPABILITY_REGISTRY } from "../lib/search-planner/catalogs/geoapify.ts";
 
 import {
   expandPlannerCases,
@@ -117,18 +119,14 @@ test("family split is atomic and the expanded fixture does not leak a family", a
 });
 
 test("classifier fixture is balanced, synthetic, and evidence-bounded", async () => {
-  const [planner, classifier] = await Promise.all([
-    loadPlannerFixture(),
-    loadClassifierFixture(),
-  ]);
+  const classifier = await loadClassifierFixture();
   assert.equal(classifier.privacy.syntheticOnly, true);
+  assert.equal(classifier.schemaVersion, CANDIDATE_EVIDENCE_SCHEMA_VERSION);
   assert.equal(classifier.privacy.containsContacts, false);
   assert.equal(classifier.privacy.containsStreetAddresses, false);
   assert.equal(classifier.privacy.containsRawProviderResponses, false);
 
-  const knownConcepts = new Set(
-    planner.conceptFamilies.map((family) => family.expectedConceptId),
-  );
+  const providerCategories = new Set(GEOAPIFY_CAPABILITY_REGISTRY.categories);
   const allowedPointers = new Set(classifier.allowedEvidencePointers);
   assert.deepEqual(
     [...allowedPointers].sort(),
@@ -145,13 +143,26 @@ test("classifier fixture is balanced, synthetic, and evidence-bounded", async ()
   for (const entry of classifier.cases) {
     assert.equal(ids.has(entry.id), false, entry.id);
     ids.add(entry.id);
-    assert.ok(knownConcepts.has(entry.targetConceptId), entry.id);
-    if (entry.materializeProviderCategoriesFromConceptId) {
-      assert.ok(
-        knownConcepts.has(entry.materializeProviderCategoriesFromConceptId),
-        entry.id,
-      );
-    }
+    assert.ok(providerCategories.has(entry.targetProviderCategoryId), entry.id);
+    assert.ok(entry.semanticTerm.length >= 3, entry.id);
+    assert.ok(
+      entry.retrievalContext.precisionCategoryIds.every((categoryId) =>
+        providerCategories.has(categoryId),
+      ),
+      entry.id,
+    );
+    assert.ok(
+      entry.retrievalContext.broadCategoryIds.every((categoryId) =>
+        providerCategories.has(categoryId),
+      ),
+      entry.id,
+    );
+    assert.ok(
+      entry.evidence.providerCategoryIds.every((categoryId) =>
+        providerCategories.has(categoryId),
+      ),
+      entry.id,
+    );
     assert.ok(Object.hasOwn(counts, entry.expected.status), entry.id);
     counts[entry.expected.status] += 1;
     assert.ok(
@@ -160,7 +171,7 @@ test("classifier fixture is balanced, synthetic, and evidence-bounded", async ()
       ),
       entry.id,
     );
-    assert.match(entry.evidence.candidateId, /^synthetic-/);
+    assert.match(entry.evidence.candidateId, /^candidate-rel-/);
     assert.ok(
       entry.evidence.locality === null ||
         (!/[\d,]/.test(entry.evidence.locality) &&
@@ -178,10 +189,10 @@ test("classifier fixture is balanced, synthetic, and evidence-bounded", async ()
   }
 
   assert.deepEqual(counts, {
-    matched: 15,
-    maybe: 15,
-    rejected: 15,
-    not_checked: 15,
+    matched: 150,
+    maybe: 150,
+    rejected: 150,
+    not_checked: 150,
   });
   assert.deepEqual(Object.keys(counts), [...RELEVANCE_STATUSES]);
 });

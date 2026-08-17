@@ -12,6 +12,11 @@ import {
   loadClassifierFixture,
   loadPlannerFixture,
 } from "./helpers/query-intelligence-fixtures.mjs";
+import { expandRelevanceCases } from "./helpers/relevance-evaluation.mjs";
+import {
+  expandOpenWorldCases,
+  loadOpenWorldFixture,
+} from "./helpers/open-world-evaluation.mjs";
 
 const PROFILE = process.env.EVAL_PROFILE === "release" ? "release" : "initial";
 const FIXED_NOW = new Date("2026-08-16T12:00:00.000Z");
@@ -42,11 +47,14 @@ function expectedConceptIsVisible(entry, plan) {
 }
 
 async function evaluate() {
-  const [plannerFixture, classifierFixture] = await Promise.all([
+  const [plannerFixture, classifierFixture, openWorldFixture] = await Promise.all([
     loadPlannerFixture(),
     loadClassifierFixture(),
+    loadOpenWorldFixture(),
   ]);
   const cases = expandPlannerCases(plannerFixture);
+  const relevanceCases = expandRelevanceCases(classifierFixture);
+  const openWorldCases = expandOpenWorldCases(openWorldFixture);
   const mock = createGoldenKimiClient(plannerFixture);
   const providerAllowlist = new Set(GEOAPIFY_CATEGORY_IDS);
   const results = [];
@@ -177,8 +185,9 @@ async function evaluate() {
     cases.length >= 210 &&
     plannerFixture.conceptFamilies.length >= 30 &&
     plannerFixture.zeroOverlapCases.length >= 30 &&
-    classifierFixture.cases.length >= 60;
-  const releaseCoverage = cases.length >= 500 && classifierFixture.cases.length >= 600;
+    relevanceCases.length >= 600;
+  const releaseCoverage =
+    openWorldCases.length >= 500 && relevanceCases.length >= 600;
   const metricGates = {
     top1Accuracy: metrics.top1Accuracy >= 0.92,
     canonicalMacroF1: metrics.canonicalMacroF1 >= 0.9,
@@ -222,18 +231,19 @@ async function evaluate() {
     },
     sampleCounts: {
       plannerCases: cases.length,
+      openWorldPlannerCases: openWorldCases.length,
       conceptFamilies: plannerFixture.conceptFamilies.length,
       zeroOverlap: plannerFixture.zeroOverlapCases.length,
       ambiguous: plannerFixture.ambiguousCases.length,
       unsupported: plannerFixture.unsupportedCases.length,
       injection: plannerFixture.injectionCases.length,
       localized: plannerFixture.localizedCases.length,
-      syntheticClassifierCases: classifierFixture.cases.length,
+      syntheticClassifierCases: relevanceCases.length,
     },
     coverage: {
       initialGate: initialCoverage,
       releaseGate: releaseCoverage,
-      releaseTarget: { plannerCases: 500, classifierCases: 600 },
+      releaseTarget: { openWorldPlannerCases: 500, classifierCases: 600 },
     },
     metrics: Object.fromEntries(
       Object.entries(metrics).map(([key, value]) => [key, roundMetric(value)]),
@@ -242,8 +252,8 @@ async function evaluate() {
     hardGates,
     qualityErrors,
     classifier: {
-      status: "INITIAL_CONTRACT_GATE",
-      reason: "runtime deterministic relevance is active; the 60-case synthetic fixture validates privacy and status/evidence invariants, not the 600-case release accuracy gate",
+      status: "DETERMINISTIC_RELEASE_GATE",
+      reason: "600-case frozen synthetic corpus validates deterministic status, evidence, privacy, injection and fail-closed invariants; optional Kimi metrics remain N/A",
       fixtureInvariantCoverage: "PASS",
     },
     sanitizedFailures,
