@@ -47,6 +47,7 @@ import {
 import type {
   Lead,
   LeadStatus,
+  RelevanceStatus,
   SearchPayload,
   SearchResponse,
 } from "@/lib/types";
@@ -347,6 +348,47 @@ function statusTone(status: LeadStatus) {
   return "status-work";
 }
 
+function relevanceStatus(lead: Lead): RelevanceStatus {
+  return lead.relevance?.status ?? "not_checked";
+}
+
+function relevanceLabel(status: RelevanceStatus) {
+  if (status === "matched") return "Соответствует";
+  if (status === "maybe") return "Возможно подходит";
+  if (status === "rejected") return "Отклонено правилами";
+  return "Не проверено";
+}
+
+function relevanceEvidenceLabel(lead: Lead) {
+  const evidence = lead.relevance?.evidence ?? [];
+  if (!evidence.length) return "Доказательств недостаточно";
+  return evidence
+    .map((fact) => {
+      if (fact.field === "providerCategoryIds") return `категория: ${fact.value}`;
+      if (fact.field === "sourceDescription") return `описание: ${fact.value}`;
+      if (fact.field === "locality") return `география: ${fact.value}`;
+      return `название: ${fact.value}`;
+    })
+    .join("; ");
+}
+
+function relevanceReasonLabel(reason: string) {
+  const labels: Record<string, string> = {
+    EXCLUSION_MATCH: "Совпало с исключением",
+    PROVIDER_CATEGORY_MATCH: "Категория источника совпала",
+    TEXT_SIGNAL_MATCH: "Текст карточки подтвердил совпадение",
+    MULTIPLE_EVIDENCE_MATCH: "Совпало несколько независимых признаков",
+    PARTIAL_EVIDENCE_MATCH: "Есть только частичное совпадение",
+    PROVIDER_CATEGORY_CONFLICT: "Категория источника не соответствует задаче",
+    INSUFFICIENT_EVIDENCE: "Недостаточно данных в карточке",
+    OPTIONAL_CLASSIFIER_UNAVAILABLE: "Дополнительная проверка временно недоступна",
+    OPTIONAL_CLASSIFIER_NOT_CONFIGURED: "Дополнительная проверка не настроена",
+    CLASSIFIER_DISABLED_FOR_PROVIDER: "Проверка для этого источника отключена",
+    SYNTHETIC_DEMO_CARD: "Синтетическая демо-карточка",
+  };
+  return labels[reason] ?? "Требуется ручная проверка";
+}
+
 function csvCell(value: string | number | null) {
   const normalized = value === null ? "" : String(value);
   // Provider data is untrusted. Neutralize spreadsheet formulas before the
@@ -521,6 +563,7 @@ export default function LeadRadarApp() {
   const [minConfidence, setMinConfidence] = useState(0);
   const [websiteFilter, setWebsiteFilter] = useState("any");
   const [statusFilter, setStatusFilter] = useState("any");
+  const [relevanceFilter, setRelevanceFilter] = useState("any");
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState("");
   const activeSearchController = useRef<AbortController | null>(null);
@@ -576,6 +619,10 @@ export default function LeadRadarApp() {
       if (lead.scores.hiddenness < minHiddenness) return false;
       if (lead.scores.confidence < minConfidence) return false;
       if (statusFilter !== "any" && lead.status !== statusFilter) return false;
+      if (
+        relevanceFilter !== "any" &&
+        relevanceStatus(lead) !== relevanceFilter
+      ) return false;
       if (websiteFilter === "missing" && lead.website.sourceStatus !== "not_listed") return false;
       if (websiteFilter === "listed" && lead.website.sourceStatus !== "listed") return false;
       if (websiteFilter === "unchecked" && lead.website.sourceStatus !== "not_checked") return false;
@@ -587,7 +634,7 @@ export default function LeadRadarApp() {
       if (sort === "name") return left.name.localeCompare(right.name, "ru");
       return right.scores.opportunity - left.scores.opportunity;
     });
-  }, [response, minOpportunity, minHiddenness, minConfidence, statusFilter, websiteFilter, sort]);
+  }, [response, minOpportunity, minHiddenness, minConfidence, statusFilter, relevanceFilter, websiteFilter, sort]);
 
   const pageSize = 5;
   const pageCount = Math.max(1, Math.ceil(filteredLeads.length / pageSize));
@@ -953,12 +1000,14 @@ export default function LeadRadarApp() {
         return link ? `${link.label} — ${link.href}` : item;
       })
       .join("; ");
-    const header = ["Компания", "Категория", "Адрес", "Телефон", "Email", "Сайт", "Статус сайта", "Проблемы", "Потенциал", "Скрытость", "Достоверность", "Статус", "Источник", "ID источника", "Атрибуция данных"];
+    const header = ["Компания", "Категория", "Релевантность", "Доказательства релевантности", "Адрес", "Телефон", "Email", "Сайт", "Статус сайта", "Проблемы", "Потенциал", "Скрытость", "Достоверность", "Статус", "Источник", "ID источника", "Атрибуция данных"];
     const rows = filteredLeads.map((lead) => {
       const source = (lead as LeadWithSources).sources?.[0];
       return [
         lead.name,
         lead.category,
+        relevanceLabel(relevanceStatus(lead)),
+        relevanceEvidenceLabel(lead),
         lead.location.address,
         lead.phone,
         lead.email ?? null,
@@ -1032,11 +1081,13 @@ export default function LeadRadarApp() {
             minOpportunity={minOpportunity}
             websiteFilter={websiteFilter}
             statusFilter={statusFilter}
+            relevanceFilter={relevanceFilter}
             onSort={(value) => { setSort(value); setPage(1); }}
             onToggleFilters={() => setShowFilters((current) => !current)}
             onOpportunity={(value) => { setMinOpportunity(value); setPage(1); }}
             onWebsite={(value) => { setWebsiteFilter(value); setPage(1); }}
             onStatusFilter={(value) => { setStatusFilter(value); setPage(1); }}
+            onRelevanceFilter={(value) => { setRelevanceFilter(value); setPage(1); }}
             onStatus={updateStatus}
             onPage={setPage}
             onOpenLead={openLead}
@@ -1061,12 +1112,14 @@ export default function LeadRadarApp() {
             minConfidence={minConfidence}
             websiteFilter={websiteFilter}
             statusFilter={statusFilter}
+            relevanceFilter={relevanceFilter}
             onSort={(value) => { setSort(value); setPage(1); }}
             onOpportunity={(value) => { setMinOpportunity(value); setPage(1); }}
             onHiddenness={(value) => { setMinHiddenness(value); setPage(1); }}
             onConfidence={(value) => { setMinConfidence(value); setPage(1); }}
             onWebsite={(value) => { setWebsiteFilter(value); setPage(1); }}
             onStatusFilter={(value) => { setStatusFilter(value); setPage(1); }}
+            onRelevanceFilter={(value) => { setRelevanceFilter(value); setPage(1); }}
             onSelect={setSelectedLeadId}
             onOpenLead={openLead}
             onResults={() => setScreen("results")}
@@ -1205,11 +1258,13 @@ function ResultsScreen({
   minOpportunity,
   websiteFilter,
   statusFilter,
+  relevanceFilter,
   onSort,
   onToggleFilters,
   onOpportunity,
   onWebsite,
   onStatusFilter,
+  onRelevanceFilter,
   onStatus,
   onPage,
   onOpenLead,
@@ -1226,11 +1281,13 @@ function ResultsScreen({
   minOpportunity: number;
   websiteFilter: string;
   statusFilter: string;
+  relevanceFilter: string;
   onSort: (sort: string) => void;
   onToggleFilters: () => void;
   onOpportunity: (value: number) => void;
   onWebsite: (value: string) => void;
   onStatusFilter: (value: string) => void;
+  onRelevanceFilter: (value: string) => void;
   onStatus: (id: string, status: LeadStatus) => void;
   onPage: (page: number) => void;
   onOpenLead: (lead: Lead) => void;
@@ -1239,6 +1296,17 @@ function ResultsScreen({
 }) {
   const s = response.summary;
   const persistenceAllowed = canPersist(response);
+  const relevanceSummary = s.relevance ?? response.leads.reduce(
+    (counts, lead) => {
+      const status = relevanceStatus(lead);
+      if (status === "matched") counts.matched += 1;
+      else if (status === "maybe") counts.maybe += 1;
+      else if (status === "rejected") counts.rejected += 1;
+      else counts.notChecked += 1;
+      return counts;
+    },
+    { matched: 0, maybe: 0, rejected: 0, notChecked: 0 },
+  );
   const sampleSize = Math.max(1, s.assumedBusinesses);
   const share = (value: number) =>
     `${((value / sampleSize) * 100).toLocaleString("ru-RU", {
@@ -1259,6 +1327,10 @@ function ResultsScreen({
         <StatCard label="Только расширенным поиском" value={s.foundOnlyExpanded} delta={share(s.foundOnlyExpanded)} />
         <StatCard label="Кандидатов с цифровыми разрывами" value={s.digitalGapCandidates} delta="для приоритизации" />
         <StatCard label="Нужна ручная проверка" value={s.manualReviewCandidates} delta="низкая достоверность" />
+        <StatCard label="Соответствуют задаче" value={relevanceSummary.matched} delta="по фактам карточки" />
+        <StatCard label="Возможно подходят" value={relevanceSummary.maybe} delta="нужна проверка" />
+        <StatCard label="Отклонены правилами" value={relevanceSummary.rejected} delta="доступны в фильтре" />
+        <StatCard label="Не проверены" value={relevanceSummary.notChecked} delta="недостаточно данных" />
         <div className="sample-warning"><AlertTriangle size={20} /><span><strong>Discovery, а не реестр</strong>{response.notice}</span></div>
       </div>
       <div className="toolbar">
@@ -1267,11 +1339,11 @@ function ResultsScreen({
         <div className="view-switch"><button className="active"><Table2 size={15} /> Таблица</button><button onClick={onMap}><MapIcon size={15} /> Карта</button></div>
         <span className="result-count">Показано {visibleLeads.length} из {filteredLeads.length}</span>
       </div>
-      {showFilters && <div className="inline-filters"><label>Потенциал от <input type="number" min={0} max={100} value={minOpportunity} onChange={(event) => onOpportunity(Number(event.target.value))} /></label><label>URL сайта <select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">любой</option><option value="missing">не указан в полученных данных</option><option value="listed">указан источником</option><option value="unchecked">расширенные данные не запрашивались</option></select></label><label>Статус <select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label></div>}
+      {showFilters && <div className="inline-filters"><label>Потенциал от <input type="number" min={0} max={100} value={minOpportunity} onChange={(event) => onOpportunity(Number(event.target.value))} /></label><label>Релевантность <select value={relevanceFilter} onChange={(event) => onRelevanceFilter(event.target.value)}><option value="any">любая</option><option value="matched">соответствует</option><option value="maybe">возможно подходит</option><option value="rejected">отклонено правилами</option><option value="not_checked">не проверено</option></select></label><label>URL сайта <select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">любой</option><option value="missing">не указан в полученных данных</option><option value="listed">указан источником</option><option value="unchecked">расширенные данные не запрашивались</option></select></label><label>Статус <select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label></div>}
       <div className="table-wrap panel">
         <table>
-          <thead><tr><th>№</th><th>Компания</th><th>Категория</th><th>Адрес</th><th>Телефон</th><th>Сайт</th><th>Цифровая проблема</th><th>Потенциал</th><th>Скрытость</th><th>Достоверность</th><th>Статус</th></tr></thead>
-          <tbody>{visibleLeads.map((lead, index) => <tr key={lead.id} onDoubleClick={() => onOpenLead(lead)}><td className="priority-cell">{(page - 1) * 5 + index + 1}</td><td className="company-cell"><button onClick={() => onOpenLead(lead)}>{lead.name}</button><small>{lead.tags[0]}</small></td><td>{lead.category}</td><td>{lead.location.address}</td><td>{lead.phone ?? "—"}</td><td><div className="website-cell">{lead.website.url && <a className="website-link" href={lead.website.url} target="_blank" rel="noreferrer" title={lead.website.url}>{websiteDisplayName(lead.website.url)} <ExternalLink size={11} /></a>}<span className={`site-state ${lead.website.url ? "positive" : ""}`}>{websiteLabel(lead)}</span></div></td><td>{lead.digitalProblems[0] ?? "Не выявлено"}</td><td><Score value={lead.scores.opportunity} compact /></td><td><Score value={lead.scores.hiddenness} compact /></td><td><Score value={lead.scores.confidence} compact /></td><td><select className={`status-select ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(lead.id, event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></td></tr>)}</tbody>
+          <thead><tr><th>№</th><th>Компания</th><th>Категория</th><th>Релевантность</th><th>Адрес</th><th>Телефон</th><th>Сайт</th><th>Цифровая проблема</th><th>Потенциал</th><th>Скрытость</th><th>Достоверность</th><th>Статус</th></tr></thead>
+          <tbody>{visibleLeads.map((lead, index) => <tr key={lead.id} onDoubleClick={() => onOpenLead(lead)}><td className="priority-cell">{(page - 1) * 5 + index + 1}</td><td className="company-cell"><button onClick={() => onOpenLead(lead)}>{lead.name}</button><small>{lead.tags[0]}</small></td><td>{lead.category}</td><td><span className={`relevance-badge relevance-${relevanceStatus(lead)}`} title={relevanceEvidenceLabel(lead)}>{relevanceLabel(relevanceStatus(lead))}</span></td><td>{lead.location.address}</td><td>{lead.phone ?? "—"}</td><td><div className="website-cell">{lead.website.url && <a className="website-link" href={lead.website.url} target="_blank" rel="noreferrer" title={lead.website.url}>{websiteDisplayName(lead.website.url)} <ExternalLink size={11} /></a>}<span className={`site-state ${lead.website.url ? "positive" : ""}`}>{websiteLabel(lead)}</span></div></td><td>{lead.digitalProblems[0] ?? "Не выявлено"}</td><td><Score value={lead.scores.opportunity} compact /></td><td><Score value={lead.scores.hiddenness} compact /></td><td><Score value={lead.scores.confidence} compact /></td><td><select className={`status-select ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(lead.id, event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></td></tr>)}</tbody>
         </table>
         {!visibleLeads.length && <div className="empty-state"><Search size={24} />Нет лидов с такими фильтрами</div>}
       </div>
@@ -1294,12 +1366,14 @@ function MapScreen({
   minConfidence,
   websiteFilter,
   statusFilter,
+  relevanceFilter,
   onSort,
   onOpportunity,
   onHiddenness,
   onConfidence,
   onWebsite,
   onStatusFilter,
+  onRelevanceFilter,
   onSelect,
   onOpenLead,
   onResults,
@@ -1313,12 +1387,14 @@ function MapScreen({
   minConfidence: number;
   websiteFilter: string;
   statusFilter: string;
+  relevanceFilter: string;
   onSort: (value: string) => void;
   onOpportunity: (value: number) => void;
   onHiddenness: (value: number) => void;
   onConfidence: (value: number) => void;
   onWebsite: (value: string) => void;
   onStatusFilter: (value: string) => void;
+  onRelevanceFilter: (value: string) => void;
   onSelect: (id: string) => void;
   onOpenLead: (lead: Lead) => void;
   onResults: () => void;
@@ -1328,9 +1404,9 @@ function MapScreen({
       <header className="screen-header compact-header"><div><p className="eyebrow">География лидов</p><h1>Результаты на карте</h1><p>«{response.query.primaryQuery}» · радиус {response.query.radiusKm} км · найдено {leads.length} компаний</p></div><button className="button" onClick={onResults}><Table2 size={16} /> К таблице</button></header>
       <ProviderAttribution response={response} />
       <div className="map-layout panel">
-        <aside className="map-filters"><div className="filter-heading"><SlidersHorizontal size={17} /><strong>Фильтры</strong><button onClick={() => { onOpportunity(0); onHiddenness(0); onConfidence(0); onWebsite("any"); onStatusFilter("any"); }}>Сбросить</button></div><label>URL сайта<select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">Любой</option><option value="missing">Не указан в полученных данных</option><option value="listed">Указан источником</option><option value="unchecked">Расширенные данные не запрашивались</option></select></label><label>Статус<select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">Любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label><RangeFilter label="Потенциал от" value={minOpportunity} onChange={onOpportunity} /><RangeFilter label="Скрытость от" value={minHiddenness} onChange={onHiddenness} /><RangeFilter label="Достоверность от" value={minConfidence} onChange={onConfidence} /><div className="map-key"><span><i className="key-green" />80–100</span><span><i className="key-orange" />60–79</span><span><i className="key-red" />до 59</span></div></aside>
+        <aside className="map-filters"><div className="filter-heading"><SlidersHorizontal size={17} /><strong>Фильтры</strong><button onClick={() => { onOpportunity(0); onHiddenness(0); onConfidence(0); onWebsite("any"); onStatusFilter("any"); onRelevanceFilter("any"); }}>Сбросить</button></div><label>Релевантность<select value={relevanceFilter} onChange={(event) => onRelevanceFilter(event.target.value)}><option value="any">Любая</option><option value="matched">Соответствует</option><option value="maybe">Возможно подходит</option><option value="rejected">Отклонено правилами</option><option value="not_checked">Не проверено</option></select></label><label>URL сайта<select value={websiteFilter} onChange={(event) => onWebsite(event.target.value)}><option value="any">Любой</option><option value="missing">Не указан в полученных данных</option><option value="listed">Указан источником</option><option value="unchecked">Расширенные данные не запрашивались</option></select></label><label>Статус<select value={statusFilter} onChange={(event) => onStatusFilter(event.target.value)}><option value="any">Любой</option>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select></label><RangeFilter label="Потенциал от" value={minOpportunity} onChange={onOpportunity} /><RangeFilter label="Скрытость от" value={minHiddenness} onChange={onHiddenness} /><RangeFilter label="Достоверность от" value={minConfidence} onChange={onConfidence} /><div className="map-key"><span><i className="key-green" />80–100</span><span><i className="key-orange" />60–79</span><span><i className="key-red" />до 59</span></div></aside>
         <div className="map-canvas"><LeadMap leads={leads} selectedLeadId={selectedLeadId} onSelect={(lead) => onSelect(lead.id)} focusCenter={response.query.center ?? DEFAULT_SEARCH_CENTER} focusRadiusKm={response.query.radiusKm} /></div>
-        <aside className="map-list"><div className="map-list-head"><div><strong>Компании в области</strong><span>{leads.length} результатов</span></div><select value={sort} onChange={(event) => onSort(event.target.value)}><option value="opportunity">По потенциалу</option><option value="hiddenness">По скрытости</option><option value="confidence">По достоверности</option></select></div><div className="lead-stack">{leads.map((lead, index) => <button key={lead.id} className={lead.id === selectedLeadId ? "selected" : ""} onClick={() => onSelect(lead.id)} onDoubleClick={() => onOpenLead(lead)}><span className="list-index">{index + 1}</span><span className="list-copy"><strong>{lead.name}</strong><small>{lead.location.address}</small><em>{lead.digitalProblems[0]}</em></span><Score value={lead.scores.opportunity} compact /></button>)}</div>{selectedLeadId && <button className="button button-primary map-open" onClick={() => { const lead = leads.find((item) => item.id === selectedLeadId); if (lead) onOpenLead(lead); }}>Открыть карточку <ChevronRight size={16} /></button>}</aside>
+        <aside className="map-list"><div className="map-list-head"><div><strong>Компании в области</strong><span>{leads.length} результатов</span></div><select value={sort} onChange={(event) => onSort(event.target.value)}><option value="opportunity">По потенциалу</option><option value="hiddenness">По скрытости</option><option value="confidence">По достоверности</option></select></div><div className="lead-stack">{leads.map((lead, index) => <button key={lead.id} className={lead.id === selectedLeadId ? "selected" : ""} onClick={() => onSelect(lead.id)} onDoubleClick={() => onOpenLead(lead)}><span className="list-index">{index + 1}</span><span className="list-copy"><strong>{lead.name}</strong><small>{lead.location.address}</small><em>{relevanceLabel(relevanceStatus(lead))} · {lead.digitalProblems[0]}</em></span><Score value={lead.scores.opportunity} compact /></button>)}</div>{selectedLeadId && <button className="button button-primary map-open" onClick={() => { const lead = leads.find((item) => item.id === selectedLeadId); if (lead) onOpenLead(lead); }}>Открыть карточку <ChevronRight size={16} /></button>}</aside>
       </div>
     </section>
   );
@@ -1374,6 +1450,7 @@ function DetailScreen({
         <section className="panel detail-card summary-card"><div className="card-title"><FileText size={17} /><h2>Краткая сводка</h2></div><p>{lead.summary}</p><div className="hypothesis"><Sparkles size={15} /><span><strong>Рабочая гипотеза</strong>{lead.recommendedOffer}</span></div></section>
         <section className="panel detail-card mini-map-card"><div className="card-title"><MapIcon size={17} /><h2>Карта и филиалы</h2></div><div className="detail-map"><LeadMap leads={[lead]} selectedLeadId={lead.id} onSelect={() => undefined} /></div>{lead.possibleBranches.length > 0 ? <ul>{lead.possibleBranches.map((branch) => <li key={branch}><MapPin size={13} />{branch}</li>)}</ul> : <p className="muted-copy">Другие филиалы не обнаружены</p>}</section>
         <section className="panel detail-card discovery-card"><div className="card-title"><Layers3 size={17} /><h2>Как обнаружен</h2></div><p className="source-stamp"><Database size={14} />{discoverySourceLabel(lead, response)} · {lead.discovery.observedAt}</p><dl><dt>Основной запрос</dt><dd>{lead.discovery.primaryFound ? "Найден" : "Не найден"}</dd><dt>Смежные запросы</dt><dd>{lead.discovery.matchedQueries.join(", ")}</dd><dt>Причина скрытости</dt><dd>{lead.discovery.hiddenReason}</dd></dl></section>
+        <section className="panel detail-card relevance-card"><div className="card-title"><ShieldCheck size={17} /><h2>Соответствие задаче</h2></div><span className={`relevance-badge relevance-${relevanceStatus(lead)}`}>{relevanceLabel(relevanceStatus(lead))}</span><p>{relevanceEvidenceLabel(lead)}</p>{lead.relevance?.reasonCodes.length ? <ul>{lead.relevance.reasonCodes.map((reason) => <li key={reason}>{relevanceReasonLabel(reason)}</li>)}</ul> : null}<small>Релевантность не изменяет коммерческий score и основана только на полях карточки источника.</small></section>
         <section className="panel detail-card offer-card"><div className="card-title"><Sparkles size={17} /><h2>Рекомендуемый заход</h2></div><p>{lead.recommendedOffer}</p><button className="button" onClick={() => onCopy(`Здравствуйте! Изучили цифровое присутствие компании «${lead.name}». ${lead.recommendedOffer}`, "offer")}>{copied === "offer" ? <Check size={15} /> : <Copy size={15} />}{copied === "offer" ? "Скопировано" : "Скопировать черновик"}</button></section>
         <section className="panel detail-card scores-card"><div className="card-title"><BarChart3 size={17} /><h2>Оценки</h2></div><div className="score-block"><span>Коммерческий потенциал</span><Score value={lead.scores.opportunity} /></div><div className="score-block"><span>Скрытость</span><Score value={lead.scores.hiddenness} /></div><div className="score-block"><span>Достоверность данных</span><Score value={lead.scores.confidence} /></div></section>
         <section className="panel detail-card note-card"><div className="card-title"><Clock3 size={17} /><h2>Рабочая заметка</h2></div><textarea rows={4} value={note} onChange={(event) => onNote(event.target.value)} placeholder="Результат звонка, контекст, следующий шаг…" /><small>Сохраняется локально в браузере</small></section>

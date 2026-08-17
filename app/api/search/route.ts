@@ -24,6 +24,7 @@ import {
   plannerModeFromEnv,
 } from "@/lib/search-planner/planner";
 import { validateKimiSemanticIntent } from "@/lib/search-planner/schema";
+import { notCheckedRelevance } from "@/lib/search-planner/relevance";
 import type {
   ConfirmedSemanticAlternative,
   SearchPlan,
@@ -711,6 +712,13 @@ async function yandexSearch(
     total: terms.length,
   });
   await emitProgress(onProgress, {
+    stage: "relevance_classification",
+    status: "completed",
+    message: "Live-карточки Яндекса не передаются классификатору",
+    completed: observations.size,
+    total: observations.size,
+  });
+  await emitProgress(onProgress, {
     stage: "details",
     status: "started",
     message: "Контакты получены вместе с карточками Яндекса",
@@ -802,6 +810,7 @@ async function yandexSearch(
               ? `Проверить потребность: ${payload.services.join(", ")}.`
               : "Провести первичный аудит цифрового присутствия."),
         possibleBranches: [],
+        relevance: notCheckedRelevance(id, "CLASSIFIER_DISABLED_FOR_PROVIDER"),
       };
     },
   );
@@ -841,6 +850,12 @@ async function yandexSearch(
         (lead) =>
           lead.scores.confidence < 70 || lead.website.sourceStatus === "not_listed",
       ).length,
+      relevance: {
+        matched: 0,
+        maybe: 0,
+        rejected: 0,
+        notChecked: leads.length,
+      },
     },
     leads,
     notice:
@@ -886,6 +901,13 @@ export async function GET() {
         mode: plannerModeFromEnv(),
         model: process.env.KIMI_PLANNER_MODEL?.trim() || "kimi-k3",
         strictStructuredOutput: true,
+        relevance: {
+          deterministic: true,
+          statuses: ["matched", "maybe", "rejected", "not_checked"],
+          optionalClassifierEnabled:
+            process.env.KIMI_LEAD_CLASSIFICATION_ENABLED === "true",
+          liveLeadCardsSentToKimi: false,
+        },
       },
       geoapifyPlaces: {
         configured: geoapifyConfigured,
@@ -978,6 +1000,13 @@ async function demoSearch(
     message: "Демонстрационная выборка загружена",
     completed: 1,
     total: 1,
+  });
+  await emitProgress(onProgress, {
+    stage: "relevance_classification",
+    status: "completed",
+    message: "Синтетические демо-карточки помечены как непроверенные",
+    completed: 0,
+    total: 0,
   });
   await emitProgress(onProgress, {
     stage: "details",
@@ -1154,10 +1183,11 @@ const searchOrchestrator = createSearchOrchestrator({
           async execute(payload, { onProgress, signal }) {
             const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
             return apiKey
-              ? new GeoapifyProvider(apiKey).search(payload, {
+                ? new GeoapifyProvider(apiKey).search(payload, {
                   onProgress,
                   signal,
                   compiledPlan,
+                  semanticIntent: plan.semanticIntent,
                 })
               : demoSearch(payload, onProgress);
           },

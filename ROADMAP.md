@@ -151,13 +151,19 @@ scoring, экспорт и показ на сторонней карте не в
 - semantic confirmation без canonical IDs: opaque alternative hash, отдельный
   retrieval preview и stateless HMAC token с TTL, `requestCacheKey`, исходным
   `planHash`, semantic/compiler versions и `parentPlanHash`;
-- server-side compilation canonical IDs в категории Geoapify;
+- server-side compilation provider-neutral retrieval terms против полного
+  pinned registry Geoapify; legacy canonical IDs используются только как
+  compatibility fallback известных ниш;
 - bounded retrieval: до четырёх arms/Places-запросов и 200 карточек, отдельные
   arm budgets, стабильные IDs и primary/adjacent/fallback provenance;
 - server-owned name fallback для понятного физического intent без узкой
   provider category; model-authored categories и filters не исполняются;
 - дедупликация между arms с сохранением всех причин обнаружения и применение
   exclusions до Details;
+- evidence-based relevance после дедупликации и до Details: единые статусы
+  `matched/maybe/rejected/not_checked`, доказательства только из разрешённых
+  полей карточки, Details только для `matched/maybe`, отдельные фильтры и
+  счётчики без скрытия отклонённых карточек;
 - RU support и пилотные locale/country-контракты BY/KZ, по одной стране на
   поиск;
 - 222 planner cases, 30 zero-token-overlap cases, 60 synthetic classifier
@@ -175,9 +181,10 @@ scoring, экспорт и показ на сторонней карте не в
 
 Частично выполнено:
 
-- полный Geoapify registry и bounded multi-arm compiler готовы; дальше требуется
-  расширить unseen-category corpus, relevance filtering и измерить качество по
-  всему provider catalog, а не только на tracer bullet и regression cases;
+- полный Geoapify registry, bounded multi-arm compiler и deterministic relevance
+  до enrichment готовы; дальше требуется расширить unseen-category/relevance
+  corpus и измерить качество по всему provider catalog, а не только на tracer
+  bullet и regression cases;
 - provider adapter принимает скомпилированные категории, но geocoding,
   exclusions/dedupe и Details ещё не вынесены в отдельный двухфазный search
   service;
@@ -190,8 +197,8 @@ scoring, экспорт и показ на сторонней карте не в
 
 - 500 planner cases, 600 classifier fixtures, hidden split и два независимых
   разметчика;
-- runtime deterministic relevance classifier; post-search Kimi остаётся за
-  отдельным data-flow gate;
+- 600 размеченных relevance fixtures и измеренный classifier quality gate;
+  optional post-search Kimi остаётся за отдельным data-flow gate;
 - scheduler/admission queue, circuit breaker, global Abort/deadline, auth и
   server-side quota limiter;
 - browser E2E, mock load 1000/concurrency 10, 100 live intents на модель,
@@ -214,7 +221,8 @@ Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
 
 1. Довести server orchestration: scheduler, единый deadline/AbortSignal,
    circuit breaker, auth и quota limiter.
-2. Завершить двухфазную provider boundary и relevance filtering до enrichment.
+2. Завершить двухфазную provider boundary и измерить качество relevance до
+   enrichment на размеченной выборке.
 3. Расширить frozen datasets до 500/600 и добавить hidden/manual annotation.
 4. Прогнать model comparison, stability, browser E2E, load и 30 реальных
    search tasks с versioned обезличенным отчётом.

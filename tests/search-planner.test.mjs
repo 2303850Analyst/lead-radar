@@ -361,6 +361,7 @@ test("Geoapify merges duplicate organizations across arms before Details", { con
   expectedIdentityByProviderId.set("variant-place-1", "organization-1");
   expectedIdentityByProviderId.set("variant-place-2", "organization-2");
   expectedIdentityByProviderId.set("distant-place", "organization-distant");
+  expectedIdentityByProviderId.set("excluded-place", "organization-excluded");
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
     if (url.pathname === "/v2/places") {
@@ -506,7 +507,7 @@ test("Geoapify merges duplicate organizations across arms before Details", { con
 
     assert.equal(placeCalls.length, 2);
     assert.ok(placeCalls.every((url) => Number(url.searchParams.get("limit")) <= 21));
-    assert.equal(result.leads.length, 21);
+    assert.equal(result.leads.length, 22);
     assert.equal(result.leads[0].name, "Кроссфит Север");
     assert.equal(
       result.leads.filter(
@@ -541,10 +542,26 @@ test("Geoapify merges duplicate organizations across arms before Details", { con
       mergedCrossfit.discovery.retrievalArms.map((item) => item.type),
       ["precision", "adjacent"],
     );
+    assert.deepEqual(
+      mergedCrossfit.relevance.evidence
+        .filter((fact) => fact.field === "providerCategoryIds")
+        .map((fact) => fact.value)
+        .sort(),
+      ["sport.fitness.gym", "sport.sports_centre"],
+      "relevance keeps category facts from every merged provider observation",
+    );
     assert.equal(
       result.leads.filter((lead) => lead.name === "Кроссфит Север").length,
       2,
       "same coarse identity outside 100 meters must remain two organizations",
+    );
+    const rejected = result.leads.find(
+      (lead) => lead.id === "geoapify-excluded-place",
+    );
+    assert.equal(rejected?.relevance?.status, "rejected");
+    assert.ok(
+      rejected?.relevance?.evidence.some((fact) => fact.field === "name"),
+      "excluded organization remains visible with source evidence",
     );
     assert.deepEqual(detailIds, ["same-place-1"]);
   } finally {

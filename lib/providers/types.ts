@@ -5,6 +5,10 @@ import type {
   SearchResponse,
 } from "../types";
 import type { SupportedCountryCode } from "../search-planner/types";
+import type {
+  RelevanceClassifier,
+} from "../search-planner/relevance";
+import type { SemanticIntentV2 } from "../search-planner/types";
 
 export type CompiledGeoapifyPlan = {
   provider: "geoapify";
@@ -62,6 +66,10 @@ export type SearchProviderOptions = {
   signal?: AbortSignal;
   /** Server-compiled selectors. They must never be accepted directly from a client. */
   compiledPlan?: CompiledGeoapifyPlan;
+  /** Accepted intent used only by the local relevance layer, never as a URL. */
+  semanticIntent?: SemanticIntentV2;
+  /** Optional post-search adapter. Production keeps it absent and disabled. */
+  relevanceClassifier?: RelevanceClassifier;
 };
 
 /**

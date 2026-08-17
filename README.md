@@ -101,6 +101,8 @@ secret. Другой путь можно передать через server-side
 перезапуска выданные ранее confirmation tokens станут
 недействительными. Для постоянной среды задайте отдельный стабильный
 `SEARCH_PLAN_SIGNING_SECRET` длиной не менее 32 байт в secret storage.
+`KIMI_LEAD_CLASSIFICATION_ENABLED` оставляйте `false`: текущий alpha выполняет
+relevance локально и не отправляет найденные карточки модели.
 
 ### Локальный запуск в Docker
 
@@ -360,7 +362,8 @@ alternative hash и версии semantic/compiler contracts. Сервер за�
 
 Возвращает `application/x-ndjson`: отдельные JSON-строки показывают этапы
 `validation`, `intent_resolution`, optional `geocoding`,
-`provider_compilation`, `places`, `details`, `normalizing` и `complete`.
+`provider_compilation`, `places`, `relevance_classification`, `details`,
+`normalizing` и `complete`.
 Последняя строка содержит либо итоговый `{ "type": "result", "data": ... }`,
 либо структурированную ошибку `{ "type": "error", ... }`. Веб-интерфейс
 использует этот режим для живого индикатора, а JSON-вариант `/api/search`
@@ -424,7 +427,8 @@ registry вместе с ограниченным `name`, а не исполня
 причины обнаружения. Точные, смежные и fallback-находки различимы в
 `SearchPlan.executionPreview.retrievalArms` и `Lead.discovery.retrievalArms`.
 Исключения из пользовательского задания и `SemanticIntentV2` применяются по
-доступным названию, адресу и категориям до расхода квоты Details.
+доступным названию, provider categories и короткому source description до
+расхода квоты Details.
 
 Open-vocabulary encoder проверен на реальном `kimi-k3` для трёх обычных
 формулировок: барбершоп, спортивный зал и ремонт телефонов. Валидные ответы
@@ -449,8 +453,11 @@ scoring, CSV или отображения поверх сторонней ка�
   provider-neutral retrieval terms от Kimi; системная quality-выборка по всему
   provider catalog ещё не достигла release gate. Offline release coverage пока
   составляет 222 из требуемых 500 planner cases и 60 из 600 classifier fixtures.
-- Runtime post-search classifier отсутствует; найденные карточки Kimi не
-  получает, а `Lead.relevance` пока не заполняется.
+- Runtime deterministic relevance уже заполняет `Lead.relevance` до Details по
+  названию, provider categories, короткому описанию, географии и исключениям.
+  Статусы `matched`, `maybe`, `rejected`, `not_checked` видны в таблице, карте,
+  карточке и CSV; `rejected` не скрывается. Optional Kimi-classifier остаётся
+  выключенным, поэтому реальные карточки модели по умолчанию не передаются.
 - RU поддерживается, BY/KZ являются пилотными; остальные страны CIS пока
   возвращают контролируемый unsupported.
 - Нет production scheduler, admission limiter, circuit breaker, единого
@@ -472,8 +479,8 @@ scoring, CSV или отображения поверх сторонней ка�
 - Полнота телефонов, email, сайтов и социальных сетей зависит от исходных
   открытых данных.
 - Автоматический fallback и агрегация нескольких источников ещё не реализованы.
-- Исключения применяются до Details простым поиском по названию, адресу и
-  категории; сложная смысловая классификация результата ещё не реализована.
+- Исключения применяются до Details по названию, provider categories и
+  короткому source description; результат остаётся видимым как `rejected`.
 - Отсутствие URL означает только «сайт не указан в карточке источника».
 - Сайты и социальные сети в live-режиме не проверяются.
 - Scoring является эвристикой, а не прогнозом сделки.

@@ -36,9 +36,9 @@ const STAGES: Array<{
   { id: "geocoding", label: "Определяем центр", hint: "Адрес или точка на карте" },
   { id: "provider_compilation", label: "Готовим поиск", hint: "Безопасные категории карты" },
   { id: "places", label: "Ищем компании", hint: "Категории и радиус" },
+  { id: "relevance_classification", label: "Проверяем релевантность", hint: "Факты карточки и задача" },
   { id: "details", label: "Получаем контакты", hint: "Телефоны, email и сайты" },
   { id: "normalizing", label: "Готовим выборку", hint: "Дубли и приоритеты" },
-  { id: "relevance_classification", label: "Проверяем релевантность", hint: "Соответствие задаче" },
   { id: "complete", label: "Готово", hint: "Результат сформирован" },
 ];
 

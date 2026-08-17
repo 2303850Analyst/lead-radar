@@ -7,13 +7,14 @@
 >
 > Tracer bullet Issue #4 уже добавил pinned Geoapify registry из 813 категорий
 > и deterministic exact/parent compiler с precision/broad batches. Это
-> исполняемый open-world путь, но ещё не финальная relevance/multi-provider
-> архитектура из этого документа.
+> исполняемый open-world путь. Issue #7 добавил deterministic relevance до
+> Details; optional Kimi classification и multi-provider orchestration остаются
+> целевой архитектурой.
 
 Статус решения: **локальный alpha реализован; production-архитектура завершена
 частично**
 
-Дата проверки: 2026-08-16
+Дата проверки: 2026-08-17
 
 Целевой релиз: `v0.4.0`
 
@@ -27,7 +28,7 @@
 | SemanticIntent -> full Geoapify registry (813 IDs, version/checksum) | Реализован tracer bullet |
 | RU + pilot BY/KZ contract | Реализовано, coverage ещё недостаточен для production |
 | Двухфазный search service и полное отделение provider | Частично: adapter сохраняет legacy payload flow |
-| Runtime relevance classifier | Не реализован; карточки Kimi не получает |
+| Runtime relevance classifier | Deterministic путь реализован до Details; optional Kimi выключен |
 | Scheduler, admission queue, circuit breaker, global deadline | Не реализовано |
 | Production telemetry, auth, quota limiter | Не реализовано |
 
@@ -38,8 +39,9 @@ LeadRadar получает отдельное ядро Query Intelligence, ко�
 картам, не формирует URL и не придумывает категории провайдера. Модель может
 только выбрать канонические понятия из переданного ей ограниченного списка.
 
-Ниже показана **целевая схема `v0.4.0`**. Узлы post-search classifier и
-выделенного search service ещё не входят в alpha runtime.
+Ниже показана **целевая схема `v0.4.0`**. Deterministic post-search relevance
+уже входит в alpha runtime; Kimi batch classifier и выделенный search service
+ещё не включены.
 
 ```mermaid
 flowchart LR
@@ -80,10 +82,12 @@ Alpha вынесла taxonomy, planner и компиляцию категори�
   plan;
 - прямой legacy-вызов provider может по-прежнему закончиться
   `GEOAPIFY_UNSUPPORTED_CATEGORY`, хотя основной UI сначала строит SearchPlan;
-- provider-категории ещё участвуют в старой relevance-эвристике;
+- provider-категории участвуют в evidence-based deterministic relevance вместе
+  с названием, коротким source description, географией и exclusions;
 - explicit RU/BY/KZ уже поддерживаются planner/compiler, но default legacy path
   остаётся российским;
-- отдельного post-search классификатора нет.
+- optional Kimi post-search classifier отсутствует в production wiring и
+  выключен feature flag; deterministic путь работает локально.
 
 Поэтому «барбершоп», «мужская парикмахерская» и «место, где стригут мужчин» могут
 попасть в разные ветки или не найтись вообще. При этом Geoapify имеет более
@@ -101,7 +105,7 @@ Alpha вынесла taxonomy, planner и компиляцию категори�
 | Decision policy | `ready`, `needs_confirmation`, `unsupported`, `degraded` | Доверять одной самооценке модели |
 | Provider compiler | Concept ID -> allowlisted Geoapify selectors | Принимать raw selector от клиента или модели |
 | Provider adapter | Получать SourceObservation | Интерпретировать бизнес-намерение |
-| Relevance classifier | `matched/ambiguous/rejected/insufficient_data/not_classified` с evidence | Дополнять отсутствующие факты |
+| Relevance classifier | `matched/maybe/rejected/not_checked` с evidence | Дополнять отсутствующие факты |
 
 ## 4. Каноническая таксономия
 
@@ -419,8 +423,8 @@ unsafe auto-run равен нулю.
 Сначала все карточки проходят дешёвые правила. В `v0.4.0` это обязательный и
 достаточный путь. Kimi может получить только спорные карточки, максимум 20 за
 один интерактивный batch, и только после отдельного data-flow gate. До его
-закрытия `KIMI_LEAD_CLASSIFICATION_ENABLED=false`, а поиск возвращает результат
-правил или `not_classified`.
+закрытия `KIMI_LEAD_CLASSIFICATION_ENABLED=false`, а поиск возвращает
+детерминированный результат или `not_checked`.
 
 ```ts
 type CandidateEvidence = {
@@ -433,15 +437,14 @@ type CandidateEvidence = {
 
 type LeadRelevance = {
   candidateId: string;
-  status:
-    | "matched"
-    | "ambiguous"
-    | "rejected"
-    | "insufficient_data"
-    | "not_classified";
-  method: "rules" | "kimi" | "not_run";
+  status: "matched" | "maybe" | "rejected" | "not_checked";
+  confidence: number | null;
+  source: "deterministic" | "kimi" | "not_checked";
   reasonCodes: string[];
-  evidencePointers: string[];
+  evidence: Array<{
+    field: "name" | "providerCategoryIds" | "locality" | "sourceDescription";
+    value: string;
+  }>;
 };
 ```
 
@@ -450,7 +453,7 @@ type LeadRelevance = {
 номера дома, короткое provider description. Разрешённые evidence pointers
 ссылаются только на эти поля. Телефон, email, сайт, полный адрес, raw response и
 notes пользователя в Kimi не отправляются. Если evidence нет, ответом может быть
-только `insufficient_data`.
+только `not_checked`.
 
 **Kimi data-flow gate.** До передачи реальных карточек документируются поля,
 право на их передачу по условиям источника, возможные персональные или
@@ -528,7 +531,7 @@ Kimi не меняет `mode/provider`: источником данных ост
 | Model ID отсутствует в `/models` | AI capability unavailable; health не падает в 500 |
 | Неизвестный concept | `unsupported` или `needs_confirmation` |
 | Geoapify timeout/429/5xx | Существующий provider error; будущий provider fallback проектируется отдельно |
-| Классификатор не успел | Вернуть базовые результаты с `not_classified`; не терять найденные POI |
+| Классификатор не успел | Вернуть базовые результаты с `not_checked`; не терять найденные POI |
 | Пользователь отменил stream | AbortSignal отменяет Kimi и provider fetches |
 
 Автоматический переход на вторую Kimi-модель не включается до измерения: на

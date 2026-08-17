@@ -242,8 +242,8 @@ async function evaluate() {
     hardGates,
     qualityErrors,
     classifier: {
-      status: "N/A",
-      reason: "runtime deterministic classifier is not part of the current core surface",
+      status: "INITIAL_CONTRACT_GATE",
+      reason: "runtime deterministic relevance is active; the 60-case synthetic fixture validates privacy and status/evidence invariants, not the 600-case release accuracy gate",
       fixtureInvariantCoverage: "PASS",
     },
     sanitizedFailures,

@@ -1,5 +1,6 @@
 import type {
   Lead,
+  LeadRelevance,
   LeadRetrievalArm,
   SearchPayload,
   SearchProgressEvent,
@@ -15,6 +16,14 @@ import {
   GEOAPIFY_PROVIDER_CATALOG_VERSION,
   isGeoapifyCategoryId,
 } from "../search-planner/catalogs/geoapify";
+import {
+  classifyCandidateRelevance,
+  notCheckedRelevance,
+  validateCandidateRelevance,
+  type CandidateEvidence,
+  type RelevanceClassifierInput,
+} from "../search-planner/relevance";
+import type { SemanticIntentV2 } from "../search-planner/types";
 import {
   SearchProviderError,
   type CompiledGeoapifyPlan,
@@ -37,6 +46,9 @@ const MAX_DETAILS_LIMIT = 50;
 const MAX_RETRIEVAL_ARMS = 4;
 const MAX_RETRIEVAL_REQUESTS = 4;
 const MAX_RETRIEVAL_CARDS = 200;
+const MAX_CANDIDATE_CATEGORY_IDS = 32;
+const MAX_RELEVANCE_CLASSIFIER_CANDIDATES = 20;
+const DEFAULT_RELEVANCE_CLASSIFIER_TIMEOUT_MS = 8_000;
 const ORGANIZATION_IDENTITY_MAX_DISTANCE_METERS = 100;
 const DETAILS_CONCURRENCY = 3;
 const METRO_STATION_CATEGORY = "public_transport.subway";
@@ -118,6 +130,8 @@ type PlaceObservation = {
   externalId: string;
   externalIds: string[];
   placeId: string | null;
+  /** Union of category facts observed on every provider record merged here. */
+  providerCategoryIds: string[];
   retrievalArms: LeadRetrievalArm[];
 };
 
@@ -193,6 +207,23 @@ function stringArray(value: unknown): string[] {
     .filter((item): item is string => Boolean(item));
 }
 
+function boundedProviderCategoryIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    const categoryId = stringValue(item, 200);
+    if (
+      categoryId &&
+      isGeoapifyCategoryId(categoryId) &&
+      !result.includes(categoryId)
+    ) {
+      result.push(categoryId);
+      if (result.length >= MAX_CANDIDATE_CATEGORY_IDS) break;
+    }
+  }
+  return result;
+}
+
 function validCoordinates(value: unknown): value is [number, number] {
   return (
     Array.isArray(value) &&
@@ -235,6 +266,15 @@ export function geoapifyDetailsLimit(): number {
     DEFAULT_DETAILS_LIMIT,
     0,
     MAX_DETAILS_LIMIT,
+  );
+}
+
+function relevanceClassifierTimeoutMs(): number {
+  return boundedInteger(
+    process.env.KIMI_LEAD_CLASSIFIER_TIMEOUT_MS,
+    DEFAULT_RELEVANCE_CLASSIFIER_TIMEOUT_MS,
+    10,
+    DEFAULT_RELEVANCE_CLASSIFIER_TIMEOUT_MS,
   );
 }
 
@@ -1232,19 +1272,97 @@ function isNearbyIdentityMatch(
   );
 }
 
-function isExcluded(feature: GeoapifyFeature, exclusions: string[]): boolean {
-  if (!exclusions.length) return false;
-  const properties = feature.properties ?? {};
-  const searchable = normalizeText(
-    [
-      placeName(feature),
-      placeAddress(properties),
-      ...stringArray(properties.categories),
-    ]
-      .filter(Boolean)
-      .join(" "),
+function candidateEvidence(
+  observation: PlaceObservation,
+  candidateId: string,
+): CandidateEvidence {
+  const properties = observation.feature.properties ?? {};
+  return {
+    candidateId,
+    name: placeName(observation.feature),
+    providerCategoryIds: [...observation.providerCategoryIds],
+    locality:
+      stringValue(properties.city, 120) ??
+      stringValue(properties.town, 120) ??
+      stringValue(properties.village, 120) ??
+      stringValue(properties.state, 120),
+    sourceDescription: stringValue(properties.description, 500),
+  };
+}
+
+function relevanceIntent(
+  payload: SearchPayload,
+  provided: SemanticIntentV2 | undefined,
+): SemanticIntentV2 {
+  if (provided) return provided;
+  return {
+    schemaVersion: "2.0",
+    normalizedGoal: payload.description || payload.primaryQuery,
+    entityKind: "physical_business",
+    physicalLocationRequirement: "required",
+    industries: [],
+    coreBusinessTypes: [payload.primaryQuery],
+    adjacentBusinessTypes: [...payload.relatedQueries],
+    excludedBusinessTypes: [...payload.excludeQueries],
+    productsAndServices: [],
+    includeSignals: [payload.primaryQuery, ...payload.relatedQueries],
+    excludeSignals: [...payload.excludeQueries],
+    retrievalTerms: {
+      precision: [payload.primaryQuery],
+      recall: [...payload.relatedQueries],
+      exclude: [...payload.excludeQueries],
+    },
+    brandSearch: "include",
+    confidence: "low",
+    ambiguity: {
+      isAmbiguous: false,
+      reason: null,
+      clarificationQuestion: null,
+    },
+  };
+}
+
+function relevanceCounts(items: Iterable<LeadRelevance>) {
+  const counts = { matched: 0, maybe: 0, rejected: 0, notChecked: 0 };
+  for (const item of items) {
+    if (item.status === "matched") counts.matched += 1;
+    else if (item.status === "maybe") counts.maybe += 1;
+    else if (item.status === "rejected") counts.rejected += 1;
+    else counts.notChecked += 1;
+  }
+  return counts;
+}
+
+async function runRelevanceClassifier(
+  classifier: NonNullable<SearchProviderOptions["relevanceClassifier"]>,
+  input: RelevanceClassifierInput,
+  parentSignal?: AbortSignal,
+): Promise<unknown> {
+  throwIfSearchAborted(parentSignal);
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort();
+  parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  const timeout = setTimeout(
+    () => controller.abort(),
+    relevanceClassifierTimeoutMs(),
   );
-  return exclusions.some((item) => containsTerm(searchable, item));
+  const aborted = new Promise<never>((_, reject) => {
+    controller.signal.addEventListener(
+      "abort",
+      () => reject(new Error("Relevance classifier deadline exceeded")),
+      { once: true },
+    );
+  });
+
+  try {
+    return await Promise.race([
+      classifier.classify(input, controller.signal),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  }
 }
 
 async function mapConcurrent<T, R>(
@@ -1423,6 +1541,7 @@ function normalizeLead(
   payload: SearchPayload,
   observedAt: string,
   center: [number, number],
+  relevance: LeadRelevance,
 ): Lead {
   const properties = observation.feature.properties ?? {};
   const categories = stringArray(properties.categories);
@@ -1533,6 +1652,7 @@ function normalizeLead(
     }`,
     recommendedOffer: recommendedOffer(payload, websiteStatus),
     possibleBranches: [],
+    relevance,
   };
 }
 
@@ -1739,8 +1859,7 @@ export class GeoapifyProvider implements SearchProvider {
         // usually have no contacts; skip them before spending detail credits.
         if (
           !placeName(feature) ||
-          !isCountryPlace(feature, countryCode) ||
-          isExcluded(feature, effectiveExclusions)
+          !isCountryPlace(feature, countryCode)
         ) {
           continue;
         }
@@ -1768,6 +1887,9 @@ export class GeoapifyProvider implements SearchProvider {
             externalId: id,
             externalIds: [id],
             placeId: stringValue(feature.properties?.place_id, 500),
+            providerCategoryIds: boundedProviderCategoryIds(
+              feature.properties?.categories,
+            ),
             retrievalArms: [armObservation],
           });
           if (identityKey) {
@@ -1781,6 +1903,17 @@ export class GeoapifyProvider implements SearchProvider {
           }
           if (!existing.placeId) {
             existing.placeId = stringValue(feature.properties?.place_id, 500);
+          }
+          for (const categoryId of boundedProviderCategoryIds(
+            feature.properties?.categories,
+          )) {
+            if (!existing.providerCategoryIds.includes(categoryId)) {
+              existing.providerCategoryIds.push(categoryId);
+              if (
+                existing.providerCategoryIds.length >=
+                MAX_CANDIDATE_CATEGORY_IDS
+              ) break;
+            }
           }
           if (!existing.retrievalArms.some((arm) => arm.id === armObservation.id)) {
             existing.retrievalArms.push(armObservation);
@@ -1806,8 +1939,158 @@ export class GeoapifyProvider implements SearchProvider {
     });
 
     const namedPlaces = [...observations.values()];
+    await reportProgress({
+      stage: "relevance_classification",
+      status: "started",
+      message: "Проверяем соответствие карточек исходной задаче",
+      completed: 0,
+      total: namedPlaces.length,
+    });
+    const acceptedIntent = relevanceIntent(payload, options.semanticIntent);
+    const precisionCategoryIds = [
+      ...new Set(
+        retrievalArms
+          .filter(
+            (arm) => arm.mode === "precision" && arm.type !== "fallback",
+          )
+          .flatMap((arm) => arm.categoryIds),
+      ),
+    ];
+    const broadCategoryIds = [
+      ...new Set(
+        retrievalArms
+          .filter(
+            (arm) => arm.mode === "broad" || arm.type === "fallback",
+          )
+          .flatMap((arm) => arm.categoryIds),
+      ),
+    ];
+    const evidenceById = new Map<string, CandidateEvidence>();
+    const externalIdByCandidateId = new Map<string, string>();
+    const relevanceById = new Map<string, LeadRelevance>();
+    for (const [index, observation] of namedPlaces.entries()) {
+      const evidence = candidateEvidence(
+        observation,
+        `candidate-${String(index + 1).padStart(4, "0")}`,
+      );
+      evidenceById.set(observation.externalId, evidence);
+      externalIdByCandidateId.set(evidence.candidateId, observation.externalId);
+      relevanceById.set(
+        observation.externalId,
+        classifyCandidateRelevance(evidence, {
+          semanticIntent: acceptedIntent,
+          precisionCategoryIds,
+          broadCategoryIds,
+          exclusionTerms: effectiveExclusions,
+        }),
+      );
+    }
+
+    let classifierState: "disabled" | "completed" | "degraded" = "disabled";
+    if (process.env.KIMI_LEAD_CLASSIFICATION_ENABLED === "true") {
+      const candidates = namedPlaces
+        .filter(
+          (observation) =>
+            relevanceById.get(observation.externalId)?.status === "maybe",
+        )
+        .slice(0, MAX_RELEVANCE_CLASSIFIER_CANDIDATES)
+        .map((observation) => evidenceById.get(observation.externalId)!)
+        .filter(Boolean);
+      if (candidates.length) {
+        if (options.relevanceClassifier) {
+          try {
+            const raw = await runRelevanceClassifier(
+              options.relevanceClassifier,
+              { semanticIntent: acceptedIntent, candidates },
+              options.signal,
+            );
+            if (!Array.isArray(raw) || raw.length !== candidates.length) {
+              throw new Error("Classifier result count is invalid");
+            }
+            const allowedCandidateIds = new Set(
+              candidates.map((candidate) => candidate.candidateId),
+            );
+            const byCandidateId = new Map<string, Record<string, unknown>>();
+            for (const item of raw) {
+              if (
+                !item ||
+                typeof item !== "object" ||
+                Array.isArray(item) ||
+                typeof (item as { candidateId?: unknown }).candidateId !==
+                  "string"
+              ) {
+                throw new Error("Classifier result item is invalid");
+              }
+              const candidateId = String(
+                (item as { candidateId: string }).candidateId,
+              );
+              if (
+                !allowedCandidateIds.has(candidateId) ||
+                byCandidateId.has(candidateId)
+              ) {
+                throw new Error("Classifier returned an unknown or duplicate ID");
+              }
+              byCandidateId.set(candidateId, item as Record<string, unknown>);
+            }
+            let invalid = false;
+            for (const evidence of candidates) {
+              const checked = validateCandidateRelevance(
+                evidence,
+                byCandidateId.get(evidence.candidateId),
+              );
+              if (checked.status === "not_checked") invalid = true;
+              relevanceById.set(
+                externalIdByCandidateId.get(evidence.candidateId)!,
+                checked,
+              );
+            }
+            classifierState = invalid ? "degraded" : "completed";
+          } catch {
+            if (options.signal?.aborted) throw abortedSearchError();
+            for (const evidence of candidates) {
+              relevanceById.set(
+                externalIdByCandidateId.get(evidence.candidateId)!,
+                notCheckedRelevance(
+                  evidence.candidateId,
+                  "OPTIONAL_CLASSIFIER_UNAVAILABLE",
+                ),
+              );
+            }
+            classifierState = "degraded";
+          }
+        } else {
+          for (const evidence of candidates) {
+            relevanceById.set(
+              externalIdByCandidateId.get(evidence.candidateId)!,
+              notCheckedRelevance(
+                evidence.candidateId,
+                "OPTIONAL_CLASSIFIER_NOT_CONFIGURED",
+              ),
+            );
+          }
+          classifierState = "degraded";
+        }
+      } else {
+        classifierState = "completed";
+      }
+    }
+    const classifiedCounts = relevanceCounts(relevanceById.values());
+    await reportProgress({
+      stage: "relevance_classification",
+      status: "completed",
+      message: `Релевантность проверена: ${classifiedCounts.matched} точных, ${classifiedCounts.maybe} возможных`,
+      completed: namedPlaces.length,
+      total: namedPlaces.length,
+    });
+
     const detailTargets = namedPlaces
-      .filter((observation) => observation.placeId)
+      .filter(
+        (observation) =>
+          observation.placeId &&
+          ["matched", "maybe"].includes(
+            relevanceById.get(observation.externalId)?.status ?? "not_checked",
+          ),
+      )
       .slice(
         0,
         Math.min(
@@ -1883,6 +2166,8 @@ export class GeoapifyProvider implements SearchProvider {
         payload,
         observedAt,
         center,
+        relevanceById.get(observation.externalId) ??
+          notCheckedRelevance(observation.externalId),
       );
     });
     leads.sort((left, right) => right.scores.opportunity - left.scores.opportunity);
@@ -1915,6 +2200,10 @@ export class GeoapifyProvider implements SearchProvider {
           cardsAccepted: observations.size,
           detailsRequested,
           detailsSucceeded,
+          relevance: {
+            classifier: classifierState,
+            ...classifiedCounts,
+          },
         },
       },
       query: payload,
@@ -1930,8 +2219,10 @@ export class GeoapifyProvider implements SearchProvider {
         manualReviewCandidates: leads.filter(
           (lead) =>
             lead.scores.confidence < 70 ||
-            lead.website.sourceStatus === "not_listed",
+            lead.website.sourceStatus === "not_listed" ||
+            lead.relevance?.status !== "matched",
         ).length,
+        relevance: { ...classifiedCounts },
       },
       leads,
       notice: `Обнаруженная выборка Geoapify/OSM, а не полный реестр рынка. Именованных организаций: ${leads.length}; расширенные контакты получены для ${detailsSucceeded} из ${detailsRequested} фактически запрошенных карточек. Требуется атрибуция Geoapify и OpenStreetMap contributors.`,

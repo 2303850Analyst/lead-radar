@@ -122,6 +122,21 @@ test("planner outage UI never presents an infrastructure failure as an unsupport
   );
 });
 
+test("result UI keeps every relevance outcome inspectable without replacing website links", async () => {
+  const source = await readFile(
+    new URL("../components/LeadRadarApp.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const status of ["matched", "maybe", "rejected", "not_checked"]) {
+    assert.match(source, new RegExp(`<option value="${status}">`));
+  }
+  assert.match(source, /Отклонены правилами/);
+  assert.match(source, /Доказательства релевантности/);
+  assert.match(source, /href=\{lead\.website\.url\}/);
+  assert.match(source, /target="_blank"/);
+  assert.match(source, /websiteLabel\(lead\)/);
+});
+
 test("search API exposes health and deterministic demo results", async () => {
   const worker = await getWorker();
   const healthResponse = await worker.fetch(
@@ -160,6 +175,18 @@ test("search API exposes health and deterministic demo results", async () => {
   assert.equal(health.capabilities.yandexGeosearch.strictRadius, true);
   assert.equal(health.capabilities.queryIntelligence.mode, "deterministic");
   assert.equal(health.capabilities.queryIntelligence.strictStructuredOutput, true);
+  assert.equal(
+    health.capabilities.queryIntelligence.relevance.deterministic,
+    true,
+  );
+  assert.deepEqual(
+    health.capabilities.queryIntelligence.relevance.statuses,
+    ["matched", "maybe", "rejected", "not_checked"],
+  );
+  assert.equal(
+    health.capabilities.queryIntelligence.relevance.liveLeadCardsSentToKimi,
+    false,
+  );
 
   const searchResponse = await worker.fetch(
     new Request("http://localhost/api/search", {
@@ -184,6 +211,8 @@ test("search API exposes health and deterministic demo results", async () => {
   assert.equal(result.mode, "demo");
   assert.equal(result.leads.length, 8);
   assert.equal(result.leads[0].name, "Фулфилмент Про");
+  assert.equal(result.summary.relevance.notChecked, 8);
+  assert.ok(result.leads.every((lead) => lead.relevance.status === "not_checked"));
   assert.match(result.notice, /синтетические данные/i);
 });
 
@@ -259,6 +288,13 @@ test("JSON and NDJSON demo search share one result without Geoapify compilation"
       progress.some((record) => /компилируем разрешённые категории/i.test(record.message)),
       false,
     );
+    const relevanceIndex = progress.findIndex(
+      (record) => record.stage === "relevance_classification",
+    );
+    const detailsIndex = progress.findIndex(
+      (record) => record.stage === "details",
+    );
+    assert.ok(relevanceIndex >= 0 && relevanceIndex < detailsIndex);
   } finally {
     if (previousProvider === undefined) delete process.env.SEARCH_PROVIDER;
     else process.env.SEARCH_PROVIDER = previousProvider;
@@ -476,6 +512,7 @@ test("Geoapify provider normalizes live data without inventing missing websites"
         "provider_compilation",
         "geocoding",
         "places",
+        "relevance_classification",
         "details",
         "normalizing",
         "complete",

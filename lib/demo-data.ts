@@ -274,7 +274,17 @@ export const demoLeads: Lead[] = [
 ];
 
 export function createDemoResponse(query: SearchPayload): SearchResponse {
-  const leads = demoLeads.map((lead) => ({ ...lead }));
+  const leads = demoLeads.map((lead) => ({
+    ...lead,
+    relevance: {
+      candidateId: lead.id,
+      status: "not_checked" as const,
+      confidence: null,
+      evidence: [],
+      reasonCodes: ["SYNTHETIC_DEMO_CARD"],
+      source: "not_checked" as const,
+    },
+  }));
 
   return {
     mode: "demo",
@@ -298,6 +308,12 @@ export function createDemoResponse(query: SearchPayload): SearchResponse {
       foundOnlyExpanded: 125,
       digitalGapCandidates: 63,
       manualReviewCandidates: 28,
+      relevance: {
+        matched: 0,
+        maybe: 0,
+        rejected: 0,
+        notChecked: leads.length,
+      },
     },
     leads,
     notice:

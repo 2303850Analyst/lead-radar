@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  RELEVANCE_EVIDENCE_FIELDS,
+  RELEVANCE_STATUSES,
+} from "../lib/search-planner/relevance.ts";
+
+import {
   expandPlannerCases,
   loadClassifierFixture,
   loadPlannerFixture,
@@ -125,11 +130,15 @@ test("classifier fixture is balanced, synthetic, and evidence-bounded", async ()
     planner.conceptFamilies.map((family) => family.expectedConceptId),
   );
   const allowedPointers = new Set(classifier.allowedEvidencePointers);
+  assert.deepEqual(
+    [...allowedPointers].sort(),
+    [...RELEVANCE_EVIDENCE_FIELDS].sort(),
+  );
   const counts = {
     matched: 0,
-    ambiguous: 0,
+    maybe: 0,
     rejected: 0,
-    insufficient_data: 0,
+    not_checked: 0,
   };
   const ids = new Set();
 
@@ -170,8 +179,9 @@ test("classifier fixture is balanced, synthetic, and evidence-bounded", async ()
 
   assert.deepEqual(counts, {
     matched: 15,
-    ambiguous: 15,
+    maybe: 15,
     rejected: 15,
-    insufficient_data: 15,
+    not_checked: 15,
   });
+  assert.deepEqual(Object.keys(counts), [...RELEVANCE_STATUSES]);
 });

@@ -57,6 +57,23 @@
 
 ### Бизнес-логика и ограничения
 
+- После дедупликации и до Geoapify Details добавлена доказательная проверка
+  релевантности карточки исходному `SemanticIntentV2`. API и UI используют один
+  контракт `matched`, `maybe`, `rejected`, `not_checked`; доказательства могут
+  ссылаться только на фактически полученные `name`, provider categories,
+  locality и короткое source description. Исключения дают объяснимый
+  `rejected`, но карточка остаётся в результате и доступна отдельным фильтром и
+  счётчиком. Details расходуются только на `matched/maybe`, а opportunity score
+  остаётся отдельной коммерческой оценкой и не подменяет relevance.
+- Добавлен feature-flagged seam optional relevance-classifier с максимум 20
+  минимизированными `CandidateEvidence`, 32 уникальными provider categories на
+  кандидата, opaque session ID и deadline 8 секунд. По умолчанию он выключен и
+  реальные карточки Kimi не получает; отсутствие, timeout, oversized/duplicate
+  output или невалидная evidence-ссылка дают `not_checked` и `degraded`
+  metadata без удаления лида. Демо и отключённый Yandex также явно возвращают
+  `not_checked`. Кликабельные URL сайтов и трёхсоставной website status не
+  изменены.
+
 - Семантический план обобщён до bounded retrieval arms: precision, recall,
   adjacent и server-owned name fallback. Каждый arm имеет стабильный ID,
   приоритет, происхождение из `SemanticIntentV2` и отдельный result budget;
@@ -73,8 +90,8 @@
   для точек не дальше 100 метров друг от друга. Это не даёт склеить удалённые
   одноимённые организации с грубым адресом. В результате сохраняются все
   primary/adjacent/fallback причины обнаружения; пользовательские и semantic
-  exclusions проверяются по названию, адресу и категориям до расхода Details-
-  квоты.
+  exclusions проверяются по названию, provider categories и короткому source
+  description до расхода Details-квоты.
 - `SearchPlan.executionPreview` и `Lead.discovery` получили retrieval-arm
   metadata, а provider coverage — число arms, upstream requests и принятых
   уникальных карточек. UI показывает виды стратегий и их максимальные бюджеты.
@@ -217,22 +234,21 @@
 
 ### Бизнес-логика и границы AI
 
-- Kimi используется только как ограниченный semantic resolver. Он не является
-  источником организаций, контактов или provider parameters и не может создать
-  URL или произвольную category ID: модель выбирает только из переданного
-  allowlisted каталога, а сервер повторно проверяет strict JSON Schema и IDs.
-- При слабом lexical match Kimi получает весь компактный каталог, чтобы
-  zero-token-overlap формулировки не получали преждевременный `unsupported`.
+- Kimi используется как open-vocabulary semantic encoder. Он не получает
+  candidate taxonomy и не является источником организаций, контактов или
+  provider parameters: модель возвращает только bounded `SemanticIntentV2`, а
+  URL, координаты, filter и model-authored category ID отклоняются локально.
 - Provider selectors компилируются детерминированным серверным кодом из
-  подтверждённых canonical IDs. Raw output модели не попадает в URL Geoapify.
-- Для неоднозначности используется stateless HMAC-token с TTL. Он связывает
-  нормализованный intent, исходный `planHash`, предложенные IDs и версии
-  taxonomy/catalog/policy; устаревший, изменённый или не предложенный concept
-  подтвердить нельзя.
+  provider-neutral retrieval terms против полного pinned registry. Raw output
+  модели не попадает в URL Geoapify.
+- Для неоднозначности используется stateless HMAC-token V2 с TTL. Он связывает
+  исходные request/plan hashes, полные хэши разрешённых semantic alternatives и
+  версии schema/compiler/provider/policy; изменённый, устаревший или не
+  предложенный intent подтвердить нельзя.
 - Kimi-классификация найденных карточек намеренно не включена. Реальные лиды,
   телефоны, email, сайты и полные адреса модели не передаются до отдельного
-  data-flow и лицензионного решения. Runtime post-search classifier в alpha не
-  реализован, поэтому `Lead.relevance` пока не заполняется.
+  data-flow и лицензионного решения. Runtime deterministic relevance работает
+  локально на разрешённых evidence fields; optional Kimi seam остаётся off.
 
 ### API и совместимость
 
@@ -268,9 +284,10 @@
   копирует значение в репозиторий.
 - Kimi base URL ограничен официальными HTTPS-hosts Moonshot; ошибки не содержат
   Authorization header, prompt, reasoning или raw response.
-- В Kimi отправляется только пользовательское описание категории и
-  минимизированный allowlisted taxonomy catalog. Данные найденных компаний не
-  отправляются.
+- В Kimi planner отправляется только пользовательское описание категории без
+  taxonomy/candidate list. Данные найденных компаний planner не получает;
+  optional post-search seam выключен и ограничен минимальным
+  `CandidateEvidence` отдельным feature flag.
 - Значение `temperature=0` удалено после реального HTTP 400 от `kimi-k3`: модель
   принимает свой поддерживаемый default. На это добавлен регрессионный тест.
 
@@ -293,7 +310,8 @@
   варианта и подписанный token. После подтверждения `logistics.warehouse`
   поиск успешно вернул 2 лида.
 - Fault suite покрывает 401, 429, 5xx, timeout/abort, malformed и оборванный SSE,
-  отсутствие `[DONE]`, неверный finish reason, лишние поля и IDs вне allowlist.
+  отсутствие `[DONE]`, неверный finish reason, лишние поля, исполняемые строки
+  и model-authored provider category IDs.
 
 ### Почему это alpha, а не production
 

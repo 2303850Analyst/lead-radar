@@ -45,6 +45,13 @@ export type SearchProviderMetadata = {
     cardsAccepted?: number;
     detailsRequested: number;
     detailsSucceeded: number;
+    relevance?: {
+      classifier: "disabled" | "completed" | "degraded";
+      matched: number;
+      maybe: number;
+      rejected: number;
+      notChecked: number;
+    };
   };
 };
 
@@ -167,12 +174,33 @@ export type Lead = {
   summary: string;
   recommendedOffer: string;
   possibleBranches: string[];
-  relevance?: {
-    status: "matched" | "not_matched" | "ambiguous" | "not_checked";
-    confidence: number | null;
-    evidence: string[];
-    source: "deterministic" | "kimi" | "not_checked";
-  };
+  relevance?: LeadRelevance;
+};
+
+export type RelevanceStatus =
+  | "matched"
+  | "maybe"
+  | "rejected"
+  | "not_checked";
+
+export type RelevanceEvidenceField =
+  | "name"
+  | "providerCategoryIds"
+  | "locality"
+  | "sourceDescription";
+
+export type RelevanceEvidenceFact = {
+  field: RelevanceEvidenceField;
+  value: string;
+};
+
+export type LeadRelevance = {
+  candidateId: string;
+  status: RelevanceStatus;
+  confidence: number | null;
+  evidence: RelevanceEvidenceFact[];
+  reasonCodes: string[];
+  source: "deterministic" | "kimi" | "not_checked";
 };
 
 export type SearchSummary = {
@@ -183,6 +211,12 @@ export type SearchSummary = {
   foundOnlyExpanded: number;
   digitalGapCandidates: number;
   manualReviewCandidates: number;
+  relevance?: {
+    matched: number;
+    maybe: number;
+    rejected: number;
+    notChecked: number;
+  };
 };
 
 export type SearchResponse = {
