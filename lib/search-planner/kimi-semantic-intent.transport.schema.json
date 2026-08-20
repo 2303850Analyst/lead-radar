@@ -1,0 +1,62 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "normalizedGoal",
+    "entityKind",
+    "physicalLocationRequirement",
+    "industries",
+    "coreBusinessTypes",
+    "adjacentBusinessTypes",
+    "excludedBusinessTypes",
+    "productsAndServices",
+    "includeSignals",
+    "excludeSignals",
+    "retrievalTerms",
+    "brandSearch",
+    "confidence",
+    "ambiguity"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "enum": ["2.1"] },
+    "normalizedGoal": { "type": "string" },
+    "entityKind": {
+      "type": "string",
+      "enum": ["physical_business", "service_location", "mixed", "non_physical", "unclear"]
+    },
+    "physicalLocationRequirement": {
+      "type": "string",
+      "enum": ["required", "optional", "not_applicable"]
+    },
+    "industries": { "type": "array", "items": { "type": "string" } },
+    "coreBusinessTypes": { "type": "array", "items": { "type": "string" } },
+    "adjacentBusinessTypes": { "type": "array", "items": { "type": "string" } },
+    "excludedBusinessTypes": { "type": "array", "items": { "type": "string" } },
+    "productsAndServices": { "type": "array", "items": { "type": "string" } },
+    "includeSignals": { "type": "array", "items": { "type": "string" } },
+    "excludeSignals": { "type": "array", "items": { "type": "string" } },
+    "retrievalTerms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["precision", "recall", "exclude"],
+      "properties": {
+        "precision": { "type": "array", "items": { "type": "string" } },
+        "recall": { "type": "array", "items": { "type": "string" } },
+        "exclude": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "brandSearch": { "type": "string", "enum": ["include", "exclude", "only"] },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "ambiguity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["isAmbiguous", "reason", "clarificationQuestion"],
+      "properties": {
+        "isAmbiguous": { "type": "boolean" },
+        "reason": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "clarificationQuestion": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    }
+  }
+}

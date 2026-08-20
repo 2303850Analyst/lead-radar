@@ -284,6 +284,7 @@ test("live search canary summary enforces fixed-k, unique identity, provider and
   const versionInput = {
     appVersion: "0.4.0-alpha.1",
     modelId: "kimi-k3",
+    modelPolicyVersion: "model-policy-v1",
     promptVersion: "prompt-v2",
     semanticIntentSchemaVersion: "2.1",
     searchPlanSchemaVersion: "2.2",
@@ -308,6 +309,7 @@ test("live search canary summary enforces fixed-k, unique identity, provider and
   assert.deepEqual(report.versions.thresholds, SEARCH_CANARY_THRESHOLDS);
   assert.equal(report.versions.productionBundleSha256, "b".repeat(64));
   assert.equal(report.versions.canaryHarnessSha256, "c".repeat(64));
+  assert.equal(report.versions.modelPolicy, "model-policy-v1");
   assert.equal(report.metrics.schemaPassRate, 1);
   assert.equal(report.metrics.executablePlanRate, 1);
   assert.equal(report.metrics.precisionAt10, 0.9);
@@ -321,6 +323,16 @@ test("live search canary summary enforces fixed-k, unique identity, provider and
   assert.equal(report.metrics.estimatedCostUsd, 0.108);
   assert.equal(report.metrics.firstAttemptSuccessRate, 1);
   assert.equal(report.metrics.retriedCases, 0);
+  assert.equal(report.caseMetrics.length, SEARCH_CANARY_CASES.length);
+  assert.deepEqual(report.caseMetrics[0], {
+    id: SEARCH_CANARY_CASES[0].id,
+    semanticReviewed: 10,
+    semanticRelevant: 9,
+    semanticPrecisionAt10: 0.9,
+    baselineReviewed: 8,
+    baselineRelevant: 6,
+    baselinePrecisionAt10: 0.6,
+  });
   assert.equal(report.hardGates.safetyViolations, 0);
   assert.equal(report.hardGates.baselineComparable, true);
   assert.equal(report.decision, "PASS");
@@ -404,6 +416,7 @@ test("live search canary summary fails closed on weak quality or safety", () => 
   const report = summarizeSearchCanary(records, {
     appVersion: "test",
     modelId: "kimi-k3",
+    modelPolicyVersion: "model-policy-test",
     promptVersion: "test",
     semanticIntentSchemaVersion: "2.1",
     searchPlanSchemaVersion: "2.2",
@@ -464,6 +477,7 @@ test("live search canary fails closed when the literal baseline has no comparabl
   const report = summarizeSearchCanary(records, {
     appVersion: "test",
     modelId: "kimi-k3",
+    modelPolicyVersion: "model-policy-test",
     promptVersion: "test",
     semanticIntentSchemaVersion: "2.1",
     searchPlanSchemaVersion: "2.2",

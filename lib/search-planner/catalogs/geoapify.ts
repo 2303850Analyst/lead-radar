@@ -8,7 +8,7 @@ import capabilitySnapshot from "./geoapify-categories.snapshot.json";
 
 export const GEOAPIFY_PROVIDER_CATALOG_VERSION = capabilitySnapshot.catalogVersion;
 export const GEOAPIFY_COMPILER_POLICY_VERSION =
-  "semantic-retrieval-v2/2026-08-20.4";
+  "semantic-retrieval-v2/2026-08-20.5";
 
 /**
  * Full provider capability registry captured from Geoapify's official Places
@@ -199,6 +199,7 @@ const GENERIC_BUSINESS_SUFFIXES = new Set([
   "clinic",
   "company",
   "office",
+  "salon",
   "shop",
   "store",
   "studio",
@@ -473,6 +474,7 @@ const ARM_BUDGETS: Record<GeoapifyRetrievalArmType, number> = {
   adjacent: 40,
   fallback: 30,
 };
+const MAX_FALLBACK_NAME_SOURCES = 3;
 
 function compactNameQuery(value: string): string | null {
   const normalized = value
@@ -504,6 +506,7 @@ const GENERIC_NAME_TOKENS = new Set([
   "centre",
   "clinic",
   "company",
+  "salon",
   "service",
   "services",
   "shop",
@@ -527,65 +530,117 @@ function usefulFallbackName(value: string): boolean {
   return tokens.some((token) => !GENERIC_NAME_TOKENS.has(token));
 }
 
-function fallbackNameSource(
+function fallbackPhraseRank(value: string): number {
+  const tokens = value.toLocaleLowerCase("ru-RU").split(/\s+/);
+  const wordCount = tokens.length;
+  const hasBusinessForm = tokens.some((token) => GENERIC_NAME_TOKENS.has(token));
+  if (hasBusinessForm && wordCount === 2) return 0;
+  if (hasBusinessForm && wordCount === 3) return 1;
+  if (wordCount === 1) return 2;
+  if (wordCount === 2) return 3;
+  if (wordCount === 3) return 4;
+  return 5 + Math.min(wordCount, 20);
+}
+
+function compareFallbackSources(left: CapabilityTerm, right: CapabilityTerm): number {
+  const originRank: Record<CapabilityTerm["origin"], number> = {
+    "source.primaryQuery": 0,
+    "source.relatedQueries": 1,
+    "retrievalTerms.precision": 2,
+    coreBusinessTypes: 3,
+    normalizedGoal: 4,
+    productsAndServices: 5,
+    industries: 6,
+    adjacentBusinessTypes: 7,
+    "retrievalTerms.recall": 8,
+  };
+  return (
+    fallbackPhraseRank(left.term) - fallbackPhraseRank(right.term) ||
+    originRank[left.origin] - originRank[right.origin] ||
+    left.term.length - right.term.length ||
+    left.term.localeCompare(right.term, "ru")
+  );
+}
+
+function fallbackNameSources(
   semanticIntent: SemanticIntentV2,
   sourceIntent?: Pick<NormalizedSearchIntent, "primaryQuery" | "relatedQueries">,
-): CapabilityTerm | null {
+): CapabilityTerm[] {
   const sourcePrimary = sourceIntent?.primaryQuery
     ? compactSourceNameQuery(sourceIntent.primaryQuery)
     : null;
-  const primaryWords = sourcePrimary?.split(/\s+/).length ?? 0;
-  if (
-    sourcePrimary &&
-    usefulFallbackName(sourcePrimary) &&
-    primaryWords <= 3
-  ) {
-    return { term: sourcePrimary, origin: "source.primaryQuery" };
-  }
-  const relatedCandidates = (sourceIntent?.relatedQueries ?? [])
-    .flatMap((value) => {
+  const sourceCandidates: CapabilityTerm[] = [
+    ...(sourcePrimary && usefulFallbackName(sourcePrimary)
+      ? [{ term: sourcePrimary, origin: "source.primaryQuery" as const }]
+      : []),
+    ...(sourceIntent?.relatedQueries ?? []).flatMap((value) => {
       const term = compactSourceNameQuery(value);
-      return term && usefulFallbackName(term) ? [term] : [];
-    })
-    .sort((left, right) => {
-      const leftWords = left.split(/\s+/).length;
-      const rightWords = right.split(/\s+/).length;
-      return (
-        leftWords - rightWords ||
-        left.length - right.length ||
-        left.localeCompare(right, "ru")
-      );
-    });
-  if (relatedCandidates[0]) {
-    return {
-      term: relatedCandidates[0],
-      origin: "source.relatedQueries",
-    };
-  }
-  if (sourcePrimary && usefulFallbackName(sourcePrimary)) {
-    return { term: sourcePrimary, origin: "source.primaryQuery" };
-  }
-
-  const candidates: CapabilityTerm[] = [
+      return term && usefulFallbackName(term)
+        ? [{ term, origin: "source.relatedQueries" as const }]
+        : [];
+    }),
+  ];
+  const semanticCandidates: CapabilityTerm[] = [
     ...capabilityTerms(
       semanticIntent.retrievalTerms.precision,
       "retrievalTerms.precision",
     ),
     ...capabilityTerms(semanticIntent.coreBusinessTypes, "coreBusinessTypes"),
-  ];
-  const normalized = candidates.flatMap((candidate) => {
+  ].flatMap((candidate) => {
     const term = compactNameQuery(candidate.term);
-    return term ? [{ ...candidate, term }] : [];
+    return term && usefulFallbackName(term) ? [{ ...candidate, term }] : [];
   });
-  const trustedSemantic = normalized.find((candidate) =>
-    usefulFallbackName(candidate.term),
-  );
-  if (trustedSemantic) return trustedSemantic;
-
   const normalizedGoal = compactNameQuery(semanticIntent.normalizedGoal);
-  return normalizedGoal && usefulFallbackName(normalizedGoal)
-    ? { term: normalizedGoal, origin: "normalizedGoal" }
-    : null;
+  const candidates = [
+    ...sourceCandidates,
+    ...semanticCandidates,
+    ...(normalizedGoal && usefulFallbackName(normalizedGoal)
+      ? [{ term: normalizedGoal, origin: "normalizedGoal" as const }]
+      : []),
+  ];
+  const deduped = new Map<string, CapabilityTerm>();
+  for (const candidate of candidates) {
+    const key = candidate.term.toLocaleLowerCase("ru-RU");
+    if (!deduped.has(key)) deduped.set(key, candidate);
+  }
+  const remaining = [...deduped.values()];
+  const selected: CapabilityTerm[] = [];
+  const take = (candidate: CapabilityTerm | undefined) => {
+    if (!candidate || selected.includes(candidate)) return;
+    selected.push(candidate);
+    remaining.splice(remaining.indexOf(candidate), 1);
+  };
+  const sortedSources = remaining
+    .filter((candidate) => candidate.origin.startsWith("source."))
+    .sort(compareFallbackSources);
+  const preferredSemantic = remaining.filter((candidate) =>
+    ["retrievalTerms.precision", "coreBusinessTypes"].includes(
+      candidate.origin,
+    ),
+  );
+  take(
+    sortedSources.find((candidate) => /\p{Script=Cyrillic}/u.test(candidate.term)) ??
+      sortedSources[0] ??
+      preferredSemantic.find((candidate) =>
+        /\p{Script=Cyrillic}/u.test(candidate.term),
+      ) ??
+      preferredSemantic[0],
+  );
+  take(
+    remaining
+      .filter(
+        (candidate) =>
+          ["retrievalTerms.precision", "coreBusinessTypes"].includes(
+            candidate.origin,
+          ) && /[a-z]/i.test(candidate.term),
+      )
+      .sort(compareFallbackSources)[0],
+  );
+  while (selected.length < MAX_FALLBACK_NAME_SOURCES && remaining.length) {
+    remaining.sort(compareFallbackSources);
+    take(remaining[0]);
+  }
+  return selected;
 }
 
 function armHash(parts: readonly string[]): string {
@@ -678,69 +733,77 @@ export function compileGeoapifySemanticIntent(
       !alreadySelected.has(candidate.categoryId) &&
       !conflictsWithExclusion(candidate.categoryId),
   );
-  const batches: GeoapifyCapabilityBatch[] = [];
+  const primaryBatches: Array<Omit<GeoapifyCapabilityBatch, "id" | "priority">> = [];
   if (precision.length) {
-    batches.push(retrievalArm({
+    primaryBatches.push({
       type: "precision",
       mode: "precision",
       role: "primary",
-      priority: 1,
       resultBudget: ARM_BUDGETS.precision,
       categoryIds: precision.map((candidate) => candidate.categoryId),
       nameQuery: null,
       provenance: precision.map((candidate) => candidate.provenance),
-    }));
+    });
   }
   if (recall.length) {
-    batches.push(retrievalArm({
+    primaryBatches.push({
       type: "recall",
       mode: "broad",
       role: "primary",
-      priority: 2,
       resultBudget: ARM_BUDGETS.recall,
       categoryIds: recall.map((candidate) => candidate.categoryId),
       nameQuery: null,
       provenance: recall.map((candidate) => candidate.provenance),
-    }));
+    });
   }
-  if (adjacent.length) {
-    batches.push(retrievalArm({
-      type: "adjacent",
-      mode: "broad",
-      role: "adjacent",
-      priority: 4,
-      resultBudget: ARM_BUDGETS.adjacent,
-      categoryIds: adjacent.map((candidate) => candidate.categoryId),
-      nameQuery: null,
-      provenance: adjacent.map((candidate) => candidate.provenance),
-    }));
-  }
-  const fallbackSource = fallbackNameSource(semanticIntent, sourceIntent);
-  const fallbackName = fallbackSource?.term ?? null;
-  if (fallbackSource && fallbackName) {
-    const fallbackCategoryIds = FALLBACK_CATEGORY_IDS.filter(
-      (categoryId) => !conflictsWithExclusion(categoryId),
-    );
-    batches.push(retrievalArm({
+  const adjacentBatch: Omit<GeoapifyCapabilityBatch, "id" | "priority"> | null =
+    adjacent.length
+      ? {
+          type: "adjacent",
+          mode: "broad",
+          role: "adjacent",
+          resultBudget: ARM_BUDGETS.adjacent,
+          categoryIds: adjacent.map((candidate) => candidate.categoryId),
+          nameQuery: null,
+          provenance: adjacent.map((candidate) => candidate.provenance),
+        }
+      : null;
+  const fallbackCategoryIds = FALLBACK_CATEGORY_IDS.filter(
+    (categoryId) => !conflictsWithExclusion(categoryId),
+  );
+  const fallbackBatches = fallbackNameSources(semanticIntent, sourceIntent).map(
+    (fallbackSource): Omit<GeoapifyCapabilityBatch, "id" | "priority"> => ({
       type: "fallback",
       mode: "broad",
       role: "fallback",
-      priority: 3,
       resultBudget: ARM_BUDGETS.fallback,
       categoryIds: fallbackCategoryIds,
-      nameQuery: fallbackName,
+      nameQuery: fallbackSource.term,
       provenance: fallbackCategoryIds.map((categoryId) => ({
         semanticField: "fallback",
-        semanticTerm: fallbackName,
+        semanticTerm: fallbackSource.term,
         origin: fallbackSource.origin,
         match: "name_fallback",
         categoryId,
       })),
-    }));
+    }),
+  );
+  const selectedDrafts = [...primaryBatches];
+  selectedDrafts.push(
+    ...fallbackBatches.slice(
+      0,
+      Math.max(0, GEOAPIFY_RETRIEVAL_LIMITS.maxArms - selectedDrafts.length),
+    ),
+  );
+  if (
+    adjacentBatch &&
+    selectedDrafts.length < GEOAPIFY_RETRIEVAL_LIMITS.maxArms
+  ) {
+    selectedDrafts.push(adjacentBatch);
   }
-  const boundedBatches = batches
-    .sort((left, right) => left.priority - right.priority)
-    .slice(0, GEOAPIFY_RETRIEVAL_LIMITS.maxArms);
+  const boundedBatches = selectedDrafts.map((batch, index) =>
+    retrievalArm({ ...batch, priority: index + 1 }),
+  );
   const categoryIds = [...new Set(boundedBatches.flatMap((batch) => batch.categoryIds))];
   if (categoryIds.some((categoryId) => !isGeoapifyCategoryId(categoryId))) {
     throw new Error("Semantic compiler produced a category outside the provider registry");

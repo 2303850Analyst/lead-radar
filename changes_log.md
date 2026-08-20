@@ -29,6 +29,33 @@
 
 ### Добавлено
 
+- Добавлена versioned server-side политика Kimi для latency-среза Issue #14:
+  `kimi-k3` получает только совместимый `reasoning_effort=low|high|max`, а
+  `kimi-k2.6` — только `thinking={type:disabled}`. Неизвестная модель,
+  несовместимая пара model/effort и несовпадающий model ID в SSE отклоняются до
+  использования результата. Runtime cache разделён по точному model-mode-effort
+  identity, а эффективная prompt/hash version включает точные model-mode-effort.
+  SSE явно запрашивает usage и прекращает чтение сразу после `[DONE]`, включая
+  отдельный terminal usage chunk. Opt-in aggregate-only A/B harness сравнивает
+  эти два профиля на десяти зафиксированных mixed open-world CIS cases (ready,
+  ambiguous, non-place и injection; 60 encoder attempts по умолчанию), считает
+  exact outcome/execution-contract, p50/p95 и tokens. Без свежего подходящего
+  production journey canary результат остаётся `PARTIAL/NON_BLOCKING`, даже
+  если encoder-профиль прошёл; release gate также требует first progress p95
+  <=500ms, terminal p95 <=55s и каждую попытку <=60s. Journey report принимается
+  только при точном совпадении текущих model/prompt/policy/schema/catalog,
+  corpus/rubric и production bundle/harness fingerprints. Production canary
+  выбирает только один из двух server-owned профилей (`k3-low` или
+  `k2.6-thinking-disabled`), фиксирует фактический plan prompt/cache identity и
+  использует закреплённую для профиля цену. Стоимость A/B учитывает reported
+  cache hits, а при отсутствующем `cached_tokens` консервативно тарифицирует
+  весь prompt как cache miss и отдельно считает неизвестный cached usage.
+  Первичный aggregate-only A/B выявил несовместимость сложной Structured Output
+  схемы с `kimi-k2.6` и не выбрал профиль; после разделения MFJS transport-схемы
+  и строгой локальной валидации одиночный K2.6 JSON-mode pilot прошёл schema gate
+  за 15 454 мс. Финальный полный A/B на исправленном протоколе остаётся
+  обязательным перед production canary и закрытием Issue #14.
+
 - Добавлен opt-in production search canary через фактический NDJSON-orchestrator
   с реальными Kimi и Geoapify и консервативной ручной оценкой относительно
   literal baseline. Набор покрывает 12 сценариев, пять городов, три страны,

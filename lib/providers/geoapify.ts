@@ -44,7 +44,7 @@ const PLACES_STAGE_BUDGET_MS = 7_000;
 const CATEGORY_HINT_TIMEOUT_MS = 1_500;
 const MIN_CATEGORY_HINT_BUDGET_MS = 300;
 const MAX_CATEGORY_HINT_RESPONSE_BYTES = 128 * 1024;
-const MIN_RECOMMENDED_PRIMARY_RESULTS_BEFORE_FALLBACK = 10;
+const MIN_MATCHED_RESULTS_BEFORE_EXPANSION_STOP = 10;
 const MIN_REQUEST_INTERVAL_MS = 225;
 const MAX_GEOAPIFY_RESPONSE_BYTES = 8 * 1024 * 1024;
 
@@ -157,7 +157,10 @@ function emitGeoapifyCanaryFacts(features: GeoapifyFeature[]): void {
   const facts: GeoapifyObservedFact[] = features.map((feature) => {
     const properties = feature.properties ?? {};
     const coordinates = featureCoordinates(feature);
-    const categories = stringArray(properties.categories).slice(0, 32);
+    const categories = boundedProviderCategoryIds(
+      properties.categories,
+      properties.category,
+    );
     const contact = detailContact(properties);
     return {
       externalId: externalId(feature),
@@ -284,10 +287,17 @@ function stringArray(value: unknown): string[] {
     .filter((item): item is string => Boolean(item));
 }
 
-function boundedProviderCategoryIds(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
+function boundedProviderCategoryIds(
+  value: unknown,
+  singularValue?: unknown,
+): string[] {
+  const singular = stringValue(singularValue, 2_048);
+  const candidates = [
+    ...stringArray(value),
+    ...(singular ? singular.split(/[;,]/u) : []),
+  ];
   const result: string[] = [];
-  for (const item of value) {
+  for (const item of candidates) {
     const categoryId = stringValue(item, 200);
     if (
       categoryId &&
@@ -897,7 +907,7 @@ function compiledPlanIsCoherent(
     }
     flattened.push(...batch.categoryIds);
   }
-  return sameStringSet(plan.categoryIds, flattened);
+  return sameStringSet(plan.categoryIds, [...new Set(flattened)]);
 }
 
 function categoryPlanFromCompiled(
@@ -1001,7 +1011,10 @@ function normalizeMetroStationObservation(
   feature: GeoapifyFeature,
 ): MetroStationObservation | null {
   const properties = feature.properties ?? {};
-  const categories = stringArray(properties.categories);
+  const categories = boundedProviderCategoryIds(
+    properties.categories,
+    properties.category,
+  );
   if (
     !categories.includes(METRO_STATION_CATEGORY) ||
     categories.includes(METRO_STATION_ENTRANCE_CATEGORY) ||
@@ -1701,7 +1714,10 @@ function normalizeLead(
   relevance: LeadRelevance,
 ): Lead {
   const properties = observation.feature.properties ?? {};
-  const categories = stringArray(properties.categories);
+  const categories = boundedProviderCategoryIds(
+    properties.categories,
+    properties.category,
+  );
   const rawCoordinates = observation.feature.geometry?.coordinates;
   const coordinates: [number, number] = validCoordinates(rawCoordinates)
     ? [rawCoordinates[0], rawCoordinates[1]]
@@ -2082,11 +2098,8 @@ export class GeoapifyProvider implements SearchProvider {
           ),
       ),
     ];
-    const recommendedPrimaryCount = () =>
+    const matchedCandidateCount = () =>
       [...observations.values()].filter((observation, index) => {
-        if (!observation.retrievalArms.some((arm) => arm.role === "primary")) {
-          return false;
-        }
         const relevance = classifyCandidateRelevance(
           candidateEvidence(observation, `preflight-${index + 1}`),
           {
@@ -2094,10 +2107,12 @@ export class GeoapifyProvider implements SearchProvider {
             precisionCategoryIds,
             broadCategoryIds,
             exclusionTerms: effectiveExclusions,
-            expansionOnly: false,
+            expansionOnly: observation.retrievalArms.every(
+              (arm) => arm.type === "fallback" || arm.type === "adjacent",
+            ),
           },
         );
-        return relevance.status === "matched" || relevance.status === "maybe";
+        return relevance.status === "matched";
       }).length;
     let completedRetrievalArms = 0;
     await reportProgress({
@@ -2113,11 +2128,10 @@ export class GeoapifyProvider implements SearchProvider {
     );
     for (const categoryBatch of retrievalArms) {
       if (
-        categoryBatch.type === "fallback" &&
-        recommendedPrimaryCount() >=
-          MIN_RECOMMENDED_PRIMARY_RESULTS_BEFORE_FALLBACK
+        completedRetrievalArms > 0 &&
+        matchedCandidateCount() >= MIN_MATCHED_RESULTS_BEFORE_EXPANSION_STOP
       ) {
-        continue;
+        break;
       }
       if (
         upstreamRequests >=
@@ -2323,6 +2337,7 @@ export class GeoapifyProvider implements SearchProvider {
             placeId: stringValue(feature.properties?.place_id, 500),
             providerCategoryIds: boundedProviderCategoryIds(
               feature.properties?.categories,
+              feature.properties?.category,
             ),
             retrievalArms: [armObservation],
           });
@@ -2340,6 +2355,7 @@ export class GeoapifyProvider implements SearchProvider {
           }
           for (const categoryId of boundedProviderCategoryIds(
             feature.properties?.categories,
+            feature.properties?.category,
           )) {
             if (!existing.providerCategoryIds.includes(categoryId)) {
               existing.providerCategoryIds.push(categoryId);
@@ -2673,10 +2689,30 @@ export class GeoapifyProvider implements SearchProvider {
       lead.relevance?.evidence.filter(
         (fact) => fact.field === "name" || fact.field === "sourceDescription",
       ).length ?? 0;
+    const corroboratingArmCount = (lead: Lead) =>
+      new Set(
+        (lead.discovery.retrievalArms ?? [])
+          .filter((arm) => arm.type !== "adjacent")
+          .map((arm) => arm.id),
+      ).size;
+    const retrievalTier = (lead: Lead) => {
+      const tier: Record<LeadRetrievalArm["type"], number> = {
+        precision: 0,
+        legacy: 0,
+        recall: 1,
+        fallback: 2,
+        adjacent: 3,
+      };
+      return Math.min(
+        ...(lead.discovery.retrievalArms ?? []).map((arm) => tier[arm.type]),
+      );
+    };
     leads.sort(
       (left, right) =>
         relevancePriority[left.relevance?.status ?? "not_checked"] -
           relevancePriority[right.relevance?.status ?? "not_checked"] ||
+        corroboratingArmCount(right) - corroboratingArmCount(left) ||
+        retrievalTier(left) - retrievalTier(right) ||
         textEvidenceCount(right) - textEvidenceCount(left) ||
         (right.relevance?.confidence ?? -1) -
           (left.relevance?.confidence ?? -1) ||

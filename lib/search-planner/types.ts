@@ -214,6 +214,7 @@ export type SearchPlan = {
 
 export type KimiUsage = {
   inputTokens: number | null;
+  cachedInputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
 };
@@ -227,6 +228,7 @@ export type KimiEncodeResult = {
   semanticIntent: SemanticIntentV2;
   modelId: string;
   finishReason: "stop";
+  firstSseEventLatencyMs: number;
   latencyMs: number;
   usage: KimiUsage;
 };

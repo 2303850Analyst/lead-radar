@@ -312,6 +312,32 @@ test("Geoapify generic suffix narrowing requires one unambiguous leaf", () => {
     );
   }
 
+  const opticianSalon = compileGeoapifySemanticIntent({
+    ...semanticIntentFor("optician salon"),
+    coreBusinessTypes: ["optician salon"],
+    productsAndServices: [],
+    retrievalTerms: { precision: ["optician salon"], recall: [], exclude: [] },
+  });
+  assert.deepEqual(
+    opticianSalon.batches
+      .filter((batch) => batch.type === "precision")
+      .flatMap((batch) => batch.categoryIds),
+    ["commercial.health_and_beauty.optician"],
+  );
+
+  const ambiguousSalon = compileGeoapifySemanticIntent({
+    ...semanticIntentFor("spa salon"),
+    coreBusinessTypes: ["spa salon"],
+    productsAndServices: [],
+    retrievalTerms: { precision: ["spa salon"], recall: [], exclude: [] },
+  });
+  assert.deepEqual(
+    ambiguousSalon.batches
+      .filter((batch) => batch.type === "precision")
+      .flatMap((batch) => batch.categoryIds),
+    [],
+  );
+
   for (const term of ["petstore", "tattoo equipment store"]) {
     const plan = compileGeoapifySemanticIntent({
       ...semanticIntentFor(term),
@@ -347,7 +373,7 @@ test("Geoapify fallback provenance uses only provider-accepted semantic fields",
   );
 });
 
-test("Geoapify fallback prefers a concise primary business phrase deterministically", () => {
+test("Geoapify fallback prefers a concise source-language business phrase deterministically", () => {
   const musicPlan = compileGeoapifySemanticIntent(
     {
       ...semanticIntentFor("music school"),
@@ -379,7 +405,7 @@ test("Geoapify fallback prefers a concise primary business phrase deterministica
   );
   assert.equal(
     tanningPlan.batches.find((batch) => batch.type === "fallback")?.nameQuery,
-    "студия загара солярий",
+    "салон загара",
   );
 
   const opticianPlan = compileGeoapifySemanticIntent(
@@ -417,6 +443,84 @@ test("Geoapify fallback prefers a concise primary business phrase deterministica
     fallback?.provenance.every(
       (item) => item.origin === "source.relatedQueries",
     ),
+  );
+});
+
+test("Geoapify compiler emits a deterministic bounded trusted fallback portfolio", () => {
+  const semanticIntent = {
+    ...semanticIntentFor("tanning salon"),
+    normalizedGoal: "найти студии загара",
+    coreBusinessTypes: ["tanning salon"],
+    adjacentBusinessTypes: [],
+    productsAndServices: ["beauty equipment store"],
+    retrievalTerms: {
+      precision: ["tanning salon"],
+      recall: ["beauty services"],
+      exclude: ["tanning equipment store"],
+    },
+  };
+  const sourceIntent = {
+    primaryQuery: "студия загара солярий",
+    relatedQueries: ["солярий", "салон загара"],
+  };
+  const reorderedSourceIntent = {
+    ...sourceIntent,
+    relatedQueries: [...sourceIntent.relatedQueries].reverse(),
+  };
+
+  const plan = compileGeoapifySemanticIntent(semanticIntent, sourceIntent);
+  const reordered = compileGeoapifySemanticIntent(
+    semanticIntent,
+    reorderedSourceIntent,
+  );
+  const fallbackQueries = plan.batches
+    .filter((batch) => batch.type === "fallback")
+    .map((batch) => batch.nameQuery);
+
+  assert.deepEqual(fallbackQueries, [
+    "салон загара",
+    "tanning salon",
+    "студия загара солярий",
+  ]);
+  assert.deepEqual(reordered, plan);
+  assert.equal(plan.batches.length, 4);
+  assert.equal(new Set(plan.batches.map((batch) => batch.id)).size, 4);
+  assert.deepEqual(
+    plan.batches.map((batch) => batch.priority),
+    [1, 2, 3, 4],
+  );
+  assert.ok(
+    plan.batches.every(
+      (batch) =>
+        batch.categoryIds.length >= 1 &&
+        batch.categoryIds.length <= 8 &&
+        batch.categoryIds.every((categoryId) =>
+          GEOAPIFY_CATEGORY_IDS.includes(categoryId),
+        ),
+    ),
+  );
+  assert.ok(
+    plan.batches
+      .filter((batch) => batch.type === "fallback")
+      .flatMap((batch) => batch.provenance)
+      .every(
+        (item) =>
+          [
+            "source.primaryQuery",
+            "source.relatedQueries",
+            "retrievalTerms.precision",
+            "coreBusinessTypes",
+            "normalizedGoal",
+          ].includes(item.origin) &&
+          item.semanticTerm !== "beauty equipment store" &&
+          item.semanticTerm !== "beauty services",
+      ),
+  );
+  assert.ok(plan.batches.length <= plan.limits.maxArms);
+  assert.ok(plan.batches.length <= plan.limits.maxUpstreamRequests);
+  assert.ok(
+    plan.batches.reduce((sum, batch) => sum + batch.resultBudget, 0) <=
+      plan.limits.maxCards,
   );
 });
 
@@ -476,8 +580,11 @@ test("Geoapify exact recall category suppresses native hints and uses local fall
     },
   };
   const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
-  const fallback = capabilityPlan.batches.find((batch) => batch.type === "fallback");
-  assert.equal(fallback?.nameQuery, "салон оптики");
+  const fallbackQueries = capabilityPlan.batches
+    .filter((batch) => batch.type === "fallback")
+    .map((batch) => batch.nameQuery);
+  assert.equal(fallbackQueries[0], "салон оптики");
+  assert.ok(fallbackQueries.length >= 1 && fallbackQueries.length <= 3);
 
   try {
     for (const scenario of [
@@ -507,6 +614,7 @@ test("Geoapify exact recall category suppresses native hints and uses local fall
       },
     ]) {
       const seenPaths = [];
+      const seenFallbackQueries = [];
       globalThis.fetch = async (input) => {
         const url = new URL(typeof input === "string" ? input : input.url);
         seenPaths.push(url.pathname);
@@ -521,7 +629,7 @@ test("Geoapify exact recall category suppresses native hints and uses local fall
                 place_id: `primary-${scenario.id}-${index}`,
                 name: scenario.id === "raw-but-irrelevant"
                   ? `Магазин одежды ${index + 1}`
-                  : `Оптика ${index + 1}`,
+                  : `Салон оптики ${index + 1}`,
                 formatted: "Москва, Россия",
                 country_code: "ru",
                 categories: [scenario.observedCategory],
@@ -534,22 +642,26 @@ test("Geoapify exact recall category suppresses native hints and uses local fall
           });
         }
         if (url.pathname === "/v1/geocode/search") {
-          assert.match(
-            url.searchParams.get("text") ?? "",
-            /^салон оптики(?:,|$)/iu,
+          const query = (url.searchParams.get("text") ?? "").replace(
+            /, Москва$/u,
+            "",
           );
+          assert.ok(fallbackQueries.includes(query));
+          seenFallbackQueries.push(query);
           return Response.json({
             type: "FeatureCollection",
-            features: [{
-              properties: {
-                place_id: `fallback-${scenario.id}`,
-                name: "Салон оптики Резерв",
-                formatted: "Москва, Россия",
-                country_code: "ru",
-                categories: ["commercial.health_and_beauty.optician"],
-              },
-              geometry: { type: "Point", coordinates: [37.62, 55.76] },
-            }],
+            features: query === fallbackQueries[0]
+              ? [{
+                  properties: {
+                    place_id: `fallback-${scenario.id}`,
+                    name: "Салон оптики Резерв",
+                    formatted: "Москва, Россия",
+                    country_code: "ru",
+                    categories: ["commercial.health_and_beauty.optician"],
+                  },
+                  geometry: { type: "Point", coordinates: [37.62, 55.76] },
+                }]
+              : [],
           });
         }
         throw new Error(`Unexpected URL: ${url.pathname}`);
@@ -576,6 +688,10 @@ test("Geoapify exact recall category suppresses native hints and uses local fall
         seenPaths.includes("/v1/geocode/search"),
         scenario.expectFallback,
       );
+      assert.deepEqual(
+        seenFallbackQueries,
+        scenario.expectFallback ? fallbackQueries : [],
+      );
       assert.equal(
         result.leads.some((lead) => lead.name === "Салон оптики Резерв"),
         scenario.expectFallback,
@@ -587,6 +703,177 @@ test("Geoapify exact recall category suppresses native hints and uses local fall
     else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
     if (previousCategoryHints === undefined) delete process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
     else process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = previousCategoryHints;
+  }
+});
+
+test("Geoapify stops every expansion arm after ten exact primary matches", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousDetailsLimit = process.env.GEOAPIFY_DETAILS_LIMIT;
+  const previousCategoryHints = process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "false";
+  const semanticIntent = {
+    ...semanticIntentFor("gym"),
+    normalizedGoal: "gym",
+    industries: [],
+    coreBusinessTypes: ["gym"],
+    adjacentBusinessTypes: ["fitness centre"],
+    productsAndServices: [],
+    retrievalTerms: {
+      precision: ["gym"],
+      recall: ["sports centre"],
+      exclude: [],
+    },
+  };
+  const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+  assert.deepEqual(
+    capabilityPlan.batches.map((batch) => batch.type),
+    ["precision", "recall", "fallback", "adjacent"],
+  );
+  const upstreamUrls = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    upstreamUrls.push(url);
+    if (url.pathname === "/v2/places" && upstreamUrls.length === 1) {
+      return Response.json({
+        type: "FeatureCollection",
+        features: Array.from({ length: 10 }, (_, index) => ({
+          properties: {
+            place_id: `exact-gym-${index + 1}`,
+            name: `Gym ${index + 1}`,
+            formatted: "Москва, Россия",
+            country_code: "ru",
+            categories: ["sport.fitness.gym"],
+          },
+          geometry: {
+            type: "Point",
+            coordinates: [37.61 + index * 0.001, 55.75],
+          },
+        })),
+      });
+    }
+    return Response.json({ type: "FeatureCollection", features: [] });
+  };
+
+  try {
+    const result = await new GeoapifyProvider("test-only-key").search(
+      geoapifySearchPayload(),
+      {
+        semanticIntent,
+        compiledPlan: {
+          ...capabilityPlan,
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+      },
+    );
+
+    assert.equal(upstreamUrls.length, 1);
+    assert.equal(upstreamUrls[0].pathname, "/v2/places");
+    assert.equal(result.leads.length, 10);
+    assert.ok(result.leads.every((lead) => lead.relevance.status === "matched"));
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
+    else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
+    if (previousCategoryHints === undefined) {
+      delete process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+    } else {
+      process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = previousCategoryHints;
+    }
+  }
+});
+
+test("Geoapify stops the fallback portfolio once ten cards have independent text evidence", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousDetailsLimit = process.env.GEOAPIFY_DETAILS_LIMIT;
+  const previousCategoryHints = process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "false";
+  const semanticIntent = {
+    ...semanticIntentFor("engraving workshop"),
+    normalizedGoal: "engraving workshop",
+    industries: [],
+    coreBusinessTypes: ["engraving workshop"],
+    adjacentBusinessTypes: [],
+    productsAndServices: [],
+    retrievalTerms: {
+      precision: ["engraving workshop"],
+      recall: [],
+      exclude: [],
+    },
+  };
+  const sourceIntent = {
+    primaryQuery: "мастерская гравировки",
+    relatedQueries: ["лазерная гравировка"],
+  };
+  const capabilityPlan = compileGeoapifySemanticIntent(
+    semanticIntent,
+    sourceIntent,
+  );
+  assert.equal(
+    capabilityPlan.batches.filter((batch) => batch.type === "fallback").length,
+    3,
+  );
+  let geocodeRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.pathname, "/v1/geocode/search");
+    geocodeRequests += 1;
+    if (geocodeRequests > 2) {
+      throw new Error("the third fallback must be skipped after ten matches");
+    }
+    const start = geocodeRequests === 1 ? 1 : 7;
+    const count = geocodeRequests === 1 ? 6 : 4;
+    return Response.json({
+      type: "FeatureCollection",
+      features: Array.from({ length: count }, (_, index) => ({
+        properties: {
+          place_id: `engraving-${start + index}`,
+          name: `Engraving Workshop ${start + index}`,
+          description: "Engraving workshop services",
+          formatted: "Москва, Россия",
+          country_code: "ru",
+        },
+        geometry: {
+          type: "Point",
+          coordinates: [37.61 + (start + index) * 0.001, 55.75],
+        },
+      })),
+    });
+  };
+
+  try {
+    const result = await new GeoapifyProvider("test-only-key").search(
+      {
+        ...geoapifySearchPayload(),
+        primaryQuery: sourceIntent.primaryQuery,
+        relatedQueries: sourceIntent.relatedQueries,
+      },
+      {
+        semanticIntent,
+        compiledPlan: {
+          ...capabilityPlan,
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+      },
+    );
+
+    assert.equal(geocodeRequests, 2);
+    assert.equal(result.leads.length, 10);
+    assert.ok(result.leads.every((lead) => lead.relevance.status === "matched"));
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
+    else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
+    if (previousCategoryHints === undefined) {
+      delete process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+    } else {
+      process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = previousCategoryHints;
+    }
   }
 });
 
@@ -916,6 +1203,9 @@ test("Geoapify category resolution fails soft to the bounded name fallback", { c
       retrievalTerms: { precision: ["optical shop"], recall: [], exclude: [] },
     };
     const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+    const fallbackCount = capabilityPlan.batches.filter(
+      (batch) => batch.type === "fallback",
+    ).length;
     const result = await new GeoapifyProvider("test-only-key").search(
       {
         ...geoapifySearchPayload(),
@@ -932,15 +1222,18 @@ test("Geoapify category resolution fails soft to the bounded name fallback", { c
         },
       },
     );
-    assert.deepEqual(seenPaths, [
-      "/v1/geocode/autocomplete",
-      "/v1/geocode/search",
-    ]);
+    assert.equal(seenPaths[0], "/v1/geocode/autocomplete");
+    assert.equal(
+      seenPaths.filter((path) => path === "/v1/geocode/search").length,
+      fallbackCount,
+    );
+    assert.equal(seenPaths.length, fallbackCount + 1);
     assert.equal(result.leads[0]?.name, "Optical Shop");
     assert.deepEqual(result.provider.coverage?.categoryResolution, {
       status: "degraded",
       requests: 1,
     });
+    assert.equal(result.provider.coverage?.upstreamRequests, fallbackCount);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
@@ -962,6 +1255,9 @@ test("Geoapify native retrieval failure, empty, and unusable results fail soft",
     retrievalTerms: { precision: ["optical shop"], recall: [], exclude: [] },
   };
   const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+  const fallbackCount = capabilityPlan.batches.filter(
+    (batch) => batch.type === "fallback",
+  ).length;
   try {
     for (const placesOutcome of ["error", "empty", "unusable"]) {
       const seenPaths = [];
@@ -1037,17 +1333,24 @@ test("Geoapify native retrieval failure, empty, and unusable results fail soft",
           },
         },
       );
-      assert.deepEqual(seenPaths, [
+      assert.deepEqual(seenPaths.slice(0, 2), [
         "/v1/geocode/autocomplete",
         "/v2/places",
-        "/v1/geocode/search",
       ]);
+      assert.equal(
+        seenPaths.filter((path) => path === "/v1/geocode/search").length,
+        fallbackCount,
+      );
+      assert.equal(seenPaths.length, fallbackCount + 2);
       assert.equal(result.leads[0]?.name, "Optical Shop");
       assert.deepEqual(result.provider.coverage?.categoryResolution, {
         status: "degraded",
         requests: 1,
       });
-      assert.equal(result.provider.coverage?.upstreamRequests, 2);
+      assert.equal(
+        result.provider.coverage?.upstreamRequests,
+        fallbackCount + 1,
+      );
     }
   } finally {
     globalThis.fetch = previousFetch;
@@ -1308,7 +1611,7 @@ test("Geoapify merges duplicate organizations across arms before Details", { con
           category === "sport.sports_centre"
             ? [
                 excluded,
-                ...common.slice(0, 19).map((feature, index) =>
+                ...common.map((feature, index) =>
                   index < 2
                     ? {
                         ...feature,
@@ -1324,7 +1627,7 @@ test("Geoapify merges duplicate organizations across arms before Details", { con
                 ),
                 distantSameNameAndAddress,
               ]
-            : common,
+            : common.slice(0, 9),
       });
     }
     if (url.pathname === "/v2/place-details") {
@@ -1367,7 +1670,7 @@ test("Geoapify merges duplicate organizations across arms before Details", { con
     arm("precision", 1, "sport.fitness.gym", "precision"),
     {
       ...arm("adjacent", 3, "sport.sports_centre", "adjacent"),
-      resultBudget: 21,
+      resultBudget: 22,
     },
   ];
   const provider = new GeoapifyProvider("test-only-placeholder-key");
@@ -1408,7 +1711,7 @@ test("Geoapify merges duplicate organizations across arms before Details", { con
     );
 
     assert.equal(placeCalls.length, 2);
-    assert.ok(placeCalls.every((url) => Number(url.searchParams.get("limit")) <= 21));
+    assert.ok(placeCalls.every((url) => Number(url.searchParams.get("limit")) <= 22));
     assert.equal(result.leads.length, 22);
     assert.equal(result.leads[0].name, "Кроссфит Север");
     assert.equal(
@@ -1417,7 +1720,7 @@ test("Geoapify merges duplicate organizations across arms before Details", { con
           lead.discovery.retrievalArms.map((item) => item.type).join(",") ===
           "precision,adjacent",
       ).length,
-      19,
+      9,
     );
     const labelledOrganizations = result.leads.map((lead) => {
       const labels = new Set(
@@ -1504,18 +1807,22 @@ test("rare physical intent uses a server-owned category scope with bounded name 
     },
   };
   const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+  const fallbackQueries = capabilityPlan.batches
+    .filter((batch) => batch.type === "fallback")
+    .map((batch) => batch.nameQuery);
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
     upstreamUrls.push(url);
     assert.equal(url.pathname, "/v1/geocode/search");
-    assert.equal(url.searchParams.get("text"), "recording studio, Москва");
+    const query = (url.searchParams.get("text") ?? "").replace(/, Москва$/u, "");
+    assert.ok(fallbackQueries.includes(query));
     assert.equal(url.searchParams.get("type"), "amenity");
     assert.match(url.searchParams.get("filter") ?? "", /^circle:/);
     assert.equal(url.searchParams.has("categories"), false);
     assert.equal(url.searchParams.has("name"), false);
     return Response.json({
       type: "FeatureCollection",
-      features: [
+      features: query === "recording studio" ? [
         {
           properties: {
             place_id: "unrelated-1",
@@ -1536,7 +1843,7 @@ test("rare physical intent uses a server-owned category scope with bounded name 
           },
           geometry: { type: "Point", coordinates: [37.61, 55.75] },
         },
-      ],
+      ] : [],
     });
   };
 
@@ -1584,11 +1891,184 @@ test("rare physical intent uses a server-owned category scope with bounded name 
     assert.equal(result.leads[0]?.relevance?.status, "maybe");
     assert.equal(result.leads[1]?.name, "Flower Shop North");
     assert.equal(result.provider.coverage.upstreamRequests, upstreamUrls.length);
-    assert.equal(upstreamUrls.length, 1);
+    assert.equal(upstreamUrls.length, fallbackQueries.length);
+    assert.ok(upstreamUrls.length >= 1 && upstreamUrls.length <= 3);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
     else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
+  }
+});
+
+test("Geoapify bounds singular geocoder categories without laundering fallback relevance", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousDetailsLimit = process.env.GEOAPIFY_DETAILS_LIMIT;
+  const previousCategoryHints = process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "false";
+  const semanticIntent = {
+    ...semanticIntentFor("body art atelier"),
+    normalizedGoal: "body art atelier",
+    industries: [],
+    coreBusinessTypes: ["body art atelier"],
+    adjacentBusinessTypes: [],
+    productsAndServices: [],
+    retrievalTerms: {
+      precision: ["body art atelier"],
+      recall: [],
+      exclude: [],
+    },
+  };
+  const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+  assert.ok(capabilityPlan.batches.every((batch) => batch.type === "fallback"));
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.pathname, "/v1/geocode/search");
+    return Response.json({
+      type: "FeatureCollection",
+      features: [{
+        properties: {
+          place_id: "singular-category-fallback",
+          name: "Opaque Atelier",
+          formatted: "Москва, Россия",
+          country_code: "ru",
+          category:
+            "commercial;service.beauty.tattoo;model.authored.invalid;service.beauty.tattoo",
+        },
+        geometry: { type: "Point", coordinates: [37.61, 55.75] },
+      }],
+    });
+  };
+
+  try {
+    const result = await new GeoapifyProvider("test-only-key").search(
+      geoapifySearchPayload(),
+      {
+        semanticIntent,
+        compiledPlan: {
+          ...capabilityPlan,
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+      },
+    );
+    const lead = result.leads[0];
+
+    assert.deepEqual(lead.tags, ["commercial", "service.beauty.tattoo"]);
+    assert.notEqual(lead.relevance.status, "matched");
+    assert.equal(
+      lead.relevance.evidence.some(
+        (fact) => fact.field === "providerCategoryIds",
+      ),
+      false,
+    );
+    assert.equal(JSON.stringify(lead).includes("model.authored.invalid"), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
+    else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
+    if (previousCategoryHints === undefined) {
+      delete process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+    } else {
+      process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = previousCategoryHints;
+    }
+  }
+});
+
+test("Geoapify uses cross-fallback corroboration only to break ranking ties", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousDetailsLimit = process.env.GEOAPIFY_DETAILS_LIMIT;
+  const previousCategoryHints = process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "false";
+  const semanticIntent = {
+    ...semanticIntentFor("engraving workshop"),
+    normalizedGoal: "engraving workshop",
+    industries: [],
+    coreBusinessTypes: ["engraving workshop"],
+    adjacentBusinessTypes: [],
+    productsAndServices: [],
+    includeSignals: ["engraving workshop"],
+    retrievalTerms: {
+      precision: ["engraving workshop"],
+      recall: [],
+      exclude: [],
+    },
+  };
+  const sourceIntent = {
+    primaryQuery: "мастерская гравировки",
+    relatedQueries: ["лазерная гравировка"],
+  };
+  const capabilityPlan = compileGeoapifySemanticIntent(
+    semanticIntent,
+    sourceIntent,
+  );
+  assert.equal(
+    capabilityPlan.batches.filter((batch) => batch.type === "fallback").length,
+    3,
+  );
+  let geocodeRequest = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.pathname, "/v1/geocode/search");
+    geocodeRequest += 1;
+    const feature = (placeId, name, longitude) => ({
+      properties: {
+        place_id: placeId,
+        name,
+        formatted: "Москва, Россия",
+        country_code: "ru",
+      },
+      geometry: { type: "Point", coordinates: [longitude, 55.75] },
+    });
+    return Response.json({
+      type: "FeatureCollection",
+      features:
+        geocodeRequest === 1
+          ? [
+              feature("single-fallback", "Opaque Single", 37.61),
+              feature("corroborated-fallback", "Opaque Shared", 37.62),
+            ]
+          : geocodeRequest === 2
+            ? [feature("corroborated-fallback", "Opaque Shared", 37.62)]
+            : [],
+    });
+  };
+
+  try {
+    const result = await new GeoapifyProvider("test-only-key").search(
+      {
+        ...geoapifySearchPayload(),
+        primaryQuery: sourceIntent.primaryQuery,
+        relatedQueries: sourceIntent.relatedQueries,
+      },
+      {
+        semanticIntent,
+        compiledPlan: {
+          ...capabilityPlan,
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+      },
+    );
+
+    assert.equal(geocodeRequest, 3);
+    assert.equal(result.leads[0].name, "Opaque Shared");
+    assert.equal(result.leads[0].relevance.status, "not_checked");
+    assert.equal(result.leads[0].discovery.retrievalArms.length, 2);
+    assert.equal(result.leads[1].name, "Opaque Single");
+    assert.equal(result.leads[1].relevance.status, "not_checked");
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
+    else process.env.GEOAPIFY_DETAILS_LIMIT = previousDetailsLimit;
+    if (previousCategoryHints === undefined) {
+      delete process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+    } else {
+      process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = previousCategoryHints;
+    }
   }
 });
 
@@ -2361,7 +2841,7 @@ function kimiSseResponse({
   content,
   finishReason = "stop",
   done = true,
-  model = "kimi-test-model",
+  model = "kimi-k3",
   firstChunk,
 } = {}) {
   const chunks = firstChunk
@@ -2411,7 +2891,7 @@ test("runtime planner cache never preserves a transient Kimi failure", { concurr
   const env = {
     QUERY_INTELLIGENCE_MODE: "kimi",
     KIMI_API_KEY: "test-only-placeholder-key",
-    KIMI_PLANNER_MODEL: "kimi-test-model",
+    KIMI_PLANNER_MODEL: "kimi-k3",
     SEARCH_PLAN_SIGNING_SECRET: signingSecret,
   };
   let calls = 0;
@@ -2445,7 +2925,7 @@ test("Kimi client accepts a strict response and performs no hidden retry", async
   const request = kimiRequestFor("привести бороду в порядок");
   const client = createKimiClient({
     apiKey: "test-only-placeholder-key",
-    model: "kimi-test-model",
+    model: "kimi-k3",
     fetchImpl: async (input, init) => {
       calls += 1;
       assert.equal(new URL(String(input)).hostname, "api.moonshot.ai");
@@ -2472,6 +2952,7 @@ test("Kimi client accepts a strict response and performs no hidden retry", async
   assert.equal(result.semanticIntent.coreBusinessTypes[0], "барбершоп");
   assert.deepEqual(result.usage, {
     inputTokens: 100,
+    cachedInputTokens: null,
     outputTokens: 30,
     totalTokens: 130,
   });
@@ -2588,7 +3069,7 @@ for (const fault of [
     let calls = 0;
     const client = createKimiClient({
       apiKey: "test-only-placeholder-key",
-      model: "kimi-test-model",
+      model: "kimi-k3",
       fetchImpl: async (...args) => {
         calls += 1;
         return fault.fetchImpl(...args);

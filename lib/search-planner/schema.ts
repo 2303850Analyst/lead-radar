@@ -1,11 +1,14 @@
 import Ajv, { type ErrorObject } from "ajv";
 
 import semanticIntentSchemaArtifact from "./kimi-semantic-intent.schema.json";
+import semanticIntentTransportSchemaArtifact from "./kimi-semantic-intent.transport.schema.json";
 import type { SemanticIntentV2 } from "./types";
 
 type JsonSchema = Record<string, unknown>;
 
 export const KIMI_SEMANTIC_INTENT_SCHEMA = semanticIntentSchemaArtifact as JsonSchema;
+export const KIMI_SEMANTIC_INTENT_TRANSPORT_SCHEMA =
+  semanticIntentTransportSchemaArtifact as JsonSchema;
 
 const ajv = new Ajv({ allErrors: true, strict: true });
 const validateSemanticIntentArtifact = ajv.compile(KIMI_SEMANTIC_INTENT_SCHEMA);

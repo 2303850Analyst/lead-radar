@@ -16,6 +16,7 @@ import {
 import { hashCanonicalJson, type CanonicalJsonValue } from "./hashing";
 import {
   createKimiClientFromEnv,
+  KIMI_MODEL_POLICY_VERSION,
   KimiClientError,
   type KimiClient,
 } from "./kimi-client";
@@ -53,11 +54,23 @@ import {
 } from "./types";
 
 export const DECISION_POLICY_VERSION = "2026-08-20.2";
-export const KIMI_PROMPT_VERSION = "semantic-intent-v2/2026-08-17.3";
+export const KIMI_PROMPT_CONTENT_VERSION =
+  "semantic-intent-v2/2026-08-20.4";
+export const KIMI_PROMPT_VERSION =
+  `${KIMI_PROMPT_CONTENT_VERSION}+${KIMI_MODEL_POLICY_VERSION}`;
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;
 export const SEARCH_PLAN_RUNTIME_CACHE_MAX_ENTRIES = 200;
 
-export type PlannerKimiClient = Pick<KimiClient, "modelId" | "encode">;
+const CURRENT_KIMI_PROMPT_VERSIONS = new Set([
+  KIMI_PROMPT_VERSION,
+  ...["low", "high", "max"].map(
+    (effort) => `${KIMI_PROMPT_VERSION}:kimi-k3:k3-reasoning:${effort}`,
+  ),
+  `${KIMI_PROMPT_VERSION}:kimi-k2.6:k2.6-thinking-disabled:none`,
+]);
+
+export type PlannerKimiClient = Pick<KimiClient, "modelId" | "encode"> &
+  Partial<Pick<KimiClient, "cacheIdentity">>;
 
 export type CreateSearchPlanOptions = {
   mode?: PlannerMode;
@@ -419,6 +432,7 @@ function baseDraft(
   requestCacheKey: string,
   semanticIntent: SemanticIntentV2,
   providerCoverage: ConfidenceBand | "unknown" = "unknown",
+  promptVersion = KIMI_PROMPT_VERSION,
 ): Pick<
   PlanDraft,
   | "schemaVersion"
@@ -437,7 +451,7 @@ function baseDraft(
     taxonomyVersion: CANONICAL_TAXONOMY_VERSION,
     providerCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
     decisionPolicyVersion: DECISION_POLICY_VERSION,
-    promptVersion: KIMI_PROMPT_VERSION,
+    promptVersion,
     requestCacheKey,
     parentPlanHash: null,
     intent,
@@ -519,6 +533,11 @@ export async function createSearchPlan(
   const requestCacheKey = await createRequestCacheKey(intent);
   const deterministic = resolveDeterministically(intent);
   const mode = options.mode ?? "deterministic";
+  const kimiClient = options.kimiClient;
+  const promptVersion =
+    mode === "kimi" && kimiClient?.cacheIdentity
+      ? `${KIMI_PROMPT_CONTENT_VERSION}+${kimiClient.cacheIdentity}`
+      : KIMI_PROMPT_VERSION;
   const common = baseDraft(
     intent,
     requestCacheKey,
@@ -527,6 +546,7 @@ export async function createSearchPlan(
       deterministic.decision === "ready" ? "high" : "low",
     ),
     deterministic.decision === "ready" ? "high" : "unknown",
+    promptVersion,
   );
   const signingOptions = {
     signingSecret: options.signingSecret,
@@ -593,7 +613,6 @@ export async function createSearchPlan(
     );
   }
 
-  const kimiClient = options.kimiClient;
   if (!kimiClient) {
     if (deterministic.decision === "ready" && deterministic.selectedConceptId) {
       const selectedConceptIds = [deterministic.selectedConceptId];
@@ -658,6 +677,7 @@ export async function createSearchPlan(
           : semanticResolution.decision === "ready"
             ? semanticResolution.method === "exact" ? "high" : "medium"
             : "unknown",
+      promptVersion,
     );
 
     if (
@@ -750,6 +770,7 @@ export async function createSearchPlan(
         requestCacheKey,
         semanticIntent,
         executableResolution.method === "exact" ? "high" : "medium",
+        promptVersion,
       );
       return finalizePlan(
         {
@@ -847,7 +868,7 @@ export async function createSearchPlanFromEnv(
   const runtimeCacheKey = [
     requestCacheKey,
     mode,
-    kimiClient?.modelId ?? "no-model",
+    kimiClient?.cacheIdentity ?? "no-model-policy",
     SEARCH_PLAN_SCHEMA_VERSION,
     DECISION_POLICY_VERSION,
     GEOAPIFY_PROVIDER_CATALOG_VERSION,
@@ -879,6 +900,7 @@ export async function createSearchPlanFromEnv(
   const scheduledKimiClient = kimiClient
     ? {
         modelId: kimiClient.modelId,
+        cacheIdentity: kimiClient.cacheIdentity,
         encode: (request: Parameters<PlannerKimiClient["encode"]>[0]) =>
           scheduler.run(() => kimiClient.encode(request), {
             signal: request.signal,
@@ -1006,8 +1028,13 @@ export async function confirmSearchPlan(
     expectedSemanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
     expectedProviderCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
     expectedDecisionPolicyVersion: DECISION_POLICY_VERSION,
-    expectedPromptVersion: KIMI_PROMPT_VERSION,
   });
+  if (!CURRENT_KIMI_PROMPT_VERSIONS.has(claims.promptVersion)) {
+    throw new ConfirmationTokenError(
+      "CONFIRMATION_CONTEXT_MISMATCH",
+      "Confirmation token prompt policy does not match the current planner",
+    );
+  }
   const selected = request.selectedAlternative;
   if (
     !selected ||
@@ -1052,6 +1079,7 @@ export async function confirmSearchPlan(
     requestCacheKey,
     semanticIntent,
     "high",
+    claims.promptVersion,
   );
   return finalizePlan(
     {

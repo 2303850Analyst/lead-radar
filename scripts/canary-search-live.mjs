@@ -3,7 +3,7 @@ import {
   readFile,
   writeFile,
 } from "node:fs/promises";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
 import {
@@ -12,8 +12,9 @@ import {
 } from "../lib/search-planner/catalogs/geoapify.ts";
 import {
   DECISION_POLICY_VERSION,
-  KIMI_PROMPT_VERSION,
+  KIMI_PROMPT_CONTENT_VERSION,
 } from "../lib/search-planner/planner.ts";
+import { KIMI_MODEL_POLICY_VERSION } from "../lib/search-planner/kimi-client.ts";
 import {
   SEARCH_PLAN_SCHEMA_VERSION,
   SEMANTIC_INTENT_SCHEMA_VERSION,
@@ -29,6 +30,15 @@ import {
   summarizeSearchCanary,
   validateSearchCanaryCoverage,
 } from "./lib/search-live-canary.mjs";
+import {
+  currentSearchCanaryArtifactFingerprints,
+  SEARCH_CANARY_PRODUCTION_BUNDLE_URL,
+} from "./lib/search-canary-artifacts.mjs";
+import {
+  applySearchCanaryKimiProfileToEnv,
+  resolveSearchCanaryKimiProfile,
+  searchCanaryRuntimeProfile,
+} from "./lib/search-canary-profile.mjs";
 
 if (process.env.RUN_SEARCH_LIVE_CANARY !== "1") {
   process.stdout.write(
@@ -51,8 +61,11 @@ process.env.GEOAPIFY_DETAILS_LIMIT = "3";
 process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "true";
 process.env.KIMI_LEAD_CLASSIFICATION_ENABLED = "0";
 process.env.KIMI_BASE_URL = "https://api.moonshot.ai/v1";
-process.env.KIMI_PLANNER_MODEL = "kimi-k3";
-process.env.KIMI_PLANNER_REASONING_EFFORT = "low";
+const canaryProfile = resolveSearchCanaryKimiProfile(
+  process.env.SEARCH_CANARY_KIMI_PROFILE,
+);
+process.env.SEARCH_CANARY_KIMI_PROFILE = canaryProfile.id;
+applySearchCanaryKimiProfileToEnv(canaryProfile, process.env);
 process.env.KIMI_MIN_START_INTERVAL_MS = "20000";
 process.env.KIMI_ADMISSION_TIMEOUT_MS = "20000";
 process.env.KIMI_CIRCUIT_FAILURE_THRESHOLD = "3";
@@ -72,41 +85,12 @@ const packageMetadata = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 );
 
-async function checksumArtifacts(artifacts) {
-  const hash = createHash("sha256");
-  for (const [label, url] of artifacts) {
-    hash.update(label);
-    hash.update("\0");
-    hash.update(await readFile(url));
-    hash.update("\0");
-  }
-  return hash.digest("hex");
-}
-
-const productionBundleUrl = new URL("../dist/server/index.js", import.meta.url);
-const productionBundleSha256 = await checksumArtifacts([
-  ["dist/server/index.js", productionBundleUrl],
-]);
-const canaryHarnessSha256 = await checksumArtifacts([
-  ["scripts/canary-search-live.mjs", new URL(import.meta.url)],
-  [
-    "scripts/lib/search-live-canary.mjs",
-    new URL("./lib/search-live-canary.mjs", import.meta.url),
-  ],
-  [
-    "scripts/run-search-live-canary.ps1",
-    new URL("./run-search-live-canary.ps1", import.meta.url),
-  ],
-  [
-    "scripts/run-with-kimi-secret.ps1",
-    new URL("./run-with-kimi-secret.ps1", import.meta.url),
-  ],
-  ["package.json", new URL("../package.json", import.meta.url)],
-]);
+const { productionBundleSha256, canaryHarnessSha256 } =
+  await currentSearchCanaryArtifactFingerprints();
 
 validateSearchCanaryCoverage(SEARCH_CANARY_CASES);
 
-const workerUrl = new URL(productionBundleUrl);
+const workerUrl = new URL(SEARCH_CANARY_PRODUCTION_BUNDLE_URL);
 workerUrl.searchParams.set("search-canary", `${process.pid}-${Date.now()}`);
 const { default: worker } = await import(workerUrl.href);
 const runtimeEnv = {
@@ -481,6 +465,7 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
     baselineRelevant: 0,
     baselineRelevantIdentityGroups: [],
     modelId: plan?.ai?.modelId ?? null,
+    promptVersion: plan?.promptVersion ?? null,
     errorCode,
   };
   runtimeRecords.push(record);
@@ -664,23 +649,27 @@ for (const record of runtimeRecords) {
 }
 
 const modelIds = [...new Set(runtimeRecords.map((record) => record.modelId).filter(Boolean))];
-if (modelIds.length !== 1 || modelIds[0] !== "kimi-k3") {
-  throw new Error("Canary model identity does not match the frozen kimi-k3 profile");
+if (modelIds.length !== 1 || modelIds[0] !== canaryProfile.model) {
+  throw new Error("Canary model identity does not match the selected server profile");
 }
-const inputUsdPerMillion = Number(process.env.KIMI_INPUT_USD_PER_MILLION ?? 3);
-const outputUsdPerMillion = Number(process.env.KIMI_OUTPUT_USD_PER_MILLION ?? 15);
+const effectivePromptVersion =
+  `${KIMI_PROMPT_CONTENT_VERSION}+${canaryProfile.cacheIdentity}`;
+const promptVersions = [
+  ...new Set(runtimeRecords.map((record) => record.promptVersion).filter(Boolean)),
+];
 if (
-  !Number.isFinite(inputUsdPerMillion) ||
-  inputUsdPerMillion < 0 ||
-  !Number.isFinite(outputUsdPerMillion) ||
-  outputUsdPerMillion < 0
+  promptVersions.length !== 1 ||
+  promptVersions[0] !== effectivePromptVersion
 ) {
-  throw new Error("Canary pricing must contain finite non-negative values");
+  throw new Error("Canary prompt identity does not match the selected server profile");
 }
+const inputUsdPerMillion = canaryProfile.pricingUsdPerMillion.input;
+const outputUsdPerMillion = canaryProfile.pricingUsdPerMillion.output;
 const versions = {
   appVersion: packageMetadata.version,
   modelId: modelIds.length === 1 ? modelIds[0] : "mixed-or-unreported",
-  promptVersion: KIMI_PROMPT_VERSION,
+  modelPolicyVersion: KIMI_MODEL_POLICY_VERSION,
+  promptVersion: promptVersions[0],
   semanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
   searchPlanSchemaVersion: SEARCH_PLAN_SCHEMA_VERSION,
   decisionPolicyVersion: DECISION_POLICY_VERSION,
@@ -689,25 +678,7 @@ const versions = {
   providerCatalogChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
   productionBundleSha256,
   canaryHarnessSha256,
-  runtimeProfile: {
-    baseHost: "api.moonshot.ai",
-    model: "kimi-k3",
-    reasoningEffort: "low",
-    kimiTimeoutMs: 45_000,
-    kimiMinStartIntervalMs: 20_000,
-    kimiAdmissionTimeoutMs: 20_000,
-    kimiCircuitFailureThreshold: 3,
-    searchRequestDeadlineMs: 60_000,
-    placesLimit: 20,
-    detailsLimit: 3,
-    geoapifyRequestIntervalMs: 225,
-    categoryHintTimeoutMs: 1_500,
-    categoryHintsEnabled: true,
-    maxAttemptsPerCase: 2,
-    retryBackoffMs: 2_000,
-    literalBaselineLimit: 10,
-    literalBaselineTimeoutMs: 10_000,
-  },
+  runtimeProfile: searchCanaryRuntimeProfile(canaryProfile),
   inputUsdPerMillion,
   outputUsdPerMillion,
 };

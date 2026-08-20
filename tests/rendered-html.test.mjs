@@ -1341,9 +1341,18 @@ test("search plan encodes an unseen business intent without canonical candidates
     assert.equal(Object.hasOwn(modelInput, "location"), false);
     assert.equal(Object.hasOwn(modelInput, "center"), false);
     const responseSchema = capturedRequest.response_format.json_schema.schema;
+    assert.equal(capturedRequest.response_format.type, "json_schema");
+    assert.equal(capturedRequest.response_format.json_schema.strict, true);
     assert.equal(responseSchema.additionalProperties, false);
-    assert.equal(responseSchema.properties.coreBusinessTypes.maxItems, 8);
-    assert.equal(responseSchema.definitions.term.maxLength, 120);
+    assert.deepEqual(responseSchema.properties.schemaVersion, {
+      type: "string",
+      enum: ["2.1"],
+    });
+    assert.deepEqual(responseSchema.properties.coreBusinessTypes, {
+      type: "array",
+      items: { type: "string" },
+    });
+    assert.equal(Object.hasOwn(responseSchema, "definitions"), false);
     const events = [
       {
         model: "kimi-k3",
@@ -1573,7 +1582,12 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
     assert.equal(kimiCalls, 1);
     assert.ok(requestedBatches.length >= 1 && requestedBatches.length <= 4);
     assert.ok(requestedBatches.flat().includes("sport.fitness.gym"));
-    assert.equal(fallbackCalls, 1);
+    assert.equal(
+      fallbackCalls,
+      result.plan.executionPreview.retrievalArms.filter(
+        (arm) => arm.type === "fallback",
+      ).length,
+    );
     assert.equal(
       result.plan.executionPreview.retrievalArms.length,
       requestedBatches.length + fallbackCalls,

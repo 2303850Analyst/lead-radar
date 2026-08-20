@@ -868,6 +868,15 @@ export function summarizeSearchCanary(records, versions) {
       metrics.terminalP95Ms <= SEARCH_CANARY_THRESHOLDS.terminalP95Ms,
     globalDeadlineMet: hardGates.deadline,
   };
+  const caseMetrics = records.map((entry) => ({
+    id: entry.id,
+    semanticReviewed: entry.semanticReviewed,
+    semanticRelevant: entry.semanticRelevant,
+    semanticPrecisionAt10: round(ratio(entry.semanticRelevant, 10)),
+    baselineReviewed: entry.baselineReviewed,
+    baselineRelevant: entry.baselineRelevant,
+    baselinePrecisionAt10: round(ratio(entry.baselineRelevant, 10)),
+  }));
   const decision =
     Object.entries(hardGates).every(([key, value]) =>
       key === "safetyViolations" ? value === 0 : value === true,
@@ -881,6 +890,7 @@ export function summarizeSearchCanary(records, versions) {
     versions: {
       app: versions.appVersion,
       model: versions.modelId,
+      modelPolicy: versions.modelPolicyVersion,
       prompt: versions.promptVersion,
       semanticIntentSchema: versions.semanticIntentSchemaVersion,
       searchPlanSchema: versions.searchPlanSchemaVersion,
@@ -912,6 +922,7 @@ export function summarizeSearchCanary(records, versions) {
       semanticReviewed,
       baselineReviewed,
     },
+    caseMetrics,
     metrics,
     hardGates,
     sloObservations,
@@ -920,7 +931,7 @@ export function summarizeSearchCanary(records, versions) {
 }
 
 export const SEARCH_CANARY_EVALUATION_POLICY_VERSION =
-  "search-live-canary-v2/2026-08-20.2";
+  "search-live-canary-v2/2026-08-20.3";
 export const SEARCH_CANARY_RUBRIC_VERSION =
   "search-live-rubric-v1/2026-08-20.1";
 export const SEARCH_CANARY_THRESHOLDS = Object.freeze({
