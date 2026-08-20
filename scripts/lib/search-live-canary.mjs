@@ -1122,6 +1122,7 @@ export function summarizeSearchCanary(records, versions) {
   ).length;
   const fixedPrecisionSlots = total * SEARCH_CANARY_ATTAINABLE_POLICY.topK;
   const precisionAt10 = ratio(semanticRelevant, fixedPrecisionSlots);
+  const attainableAt10 = ratio(attainableRelevantSlots, fixedPrecisionSlots);
   const baselinePrecisionAt10 = ratio(baselineRelevant, fixedPrecisionSlots);
   const precisionAmongRetrieved = ratio(semanticRelevant, semanticReviewed);
   const baselinePrecisionAmongRetrieved = ratio(
@@ -1204,6 +1205,13 @@ export function summarizeSearchCanary(records, versions) {
         entry.terminalMs <= SEARCH_CANARY_THRESHOLDS.requestDeadlineMs,
     ) &&
     safetyViolations === 0;
+  const qualityGapClassification = !attainableMeasurementValid
+    ? "invalid_measurement"
+    : attainableAt10 < SEARCH_CANARY_ATTAINABLE_POLICY.attainableAt10Threshold
+      ? "retrieval_or_source_gap"
+      : precisionAt10 < SEARCH_CANARY_THRESHOLDS.precisionAt10
+        ? "ranking_or_fusion_gap"
+        : "fixed_k_precision_target_met";
   const metrics = {
     schemaPassRate: round(ratio(schemaPassCount, total)),
     executablePlanRate: round(ratio(executablePlanCount, total)),
@@ -1214,7 +1222,7 @@ export function summarizeSearchCanary(records, versions) {
     baselinePrecisionAt10: round(baselinePrecisionAt10),
     precisionAmongRetrieved: round(precisionAmongRetrieved),
     baselinePrecisionAmongRetrieved: round(baselinePrecisionAmongRetrieved),
-    attainableAt10: round(ratio(attainableRelevantSlots, fixedPrecisionSlots)),
+    attainableAt10: round(attainableAt10),
     conditionalRankerRecallAt10: round(
       ratio(semanticRelevant, attainableRelevantSlots),
     ),
@@ -1376,9 +1384,10 @@ export function summarizeSearchCanary(records, versions) {
         attainableAt10Threshold:
           SEARCH_CANARY_ATTAINABLE_POLICY.attainableAt10Threshold,
         measurementValid: attainableMeasurementValid,
+        qualityGapClassification,
         rankerOnlyTuningEligible:
           attainableMeasurementValid &&
-          metrics.attainableAt10 >=
+          attainableAt10 >=
           SEARCH_CANARY_ATTAINABLE_POLICY.attainableAt10Threshold,
         addedProviderWork: SEARCH_CANARY_ATTAINABLE_POLICY.addedProviderWork,
         providerCoverageLimits: SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS,
@@ -1407,7 +1416,7 @@ export function summarizeSearchCanary(records, versions) {
 }
 
 export const SEARCH_CANARY_EVALUATION_POLICY_VERSION =
-  "search-live-canary-v2/2026-08-20.4";
+  "search-live-canary-v2/2026-08-21.1";
 export const SEARCH_CANARY_RUBRIC_VERSION =
   "search-live-rubric-v1/2026-08-20.2";
 export const SEARCH_CANARY_THRESHOLDS = Object.freeze({

@@ -196,6 +196,11 @@ ranker recall без новых provider-вызовов. Это потолок �
 retrieval arms, а не полный recall Geoapify или рынка; он не меняет release
 hard gates и итоговый canary verdict. Provider counters различают planned и
 completed arms и включают retrieval, Details и category-resolution запросы.
+И отчёт, и финальная console-сводка явно классифицируют measured gap:
+невалидное измерение, retrieval/source gap, ranking/fusion gap либо достижение
+порога fixed-k Precision@10. Низкий executed-arm ceiling останавливает ranker-
+only tuning, но сам ещё не доказывает необходимость второго источника: для
+этого нужен отдельный Geoapify-only union ceiling и письменное license-решение.
 Опубликованный результат находится в
 [`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md).
 

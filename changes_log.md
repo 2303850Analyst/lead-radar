@@ -156,7 +156,7 @@
   только frozen top-10, но и уже возвращённый production candidate pool — до
   50 дедуплицированных карточек на кейс. Top-10 labels выводятся сервером из
   тех же 1-based ranks; дубли, неполная разметка и pool overflow отклоняются
-  fail-closed. Отчёт с evaluation policy `2026-08-20.4` считает
+  fail-closed. Отчёт с evaluation policy `2026-08-21.1` считает
   `attainable@10 = sum(min(10, relevant in pool)) / 120` и conditional ranker
   recall, но не меняет прежние hard gates, fixed-k Precision@10 или итоговый
   verdict Issue #11. Это decision-support ceiling только для фактически
@@ -170,7 +170,13 @@
   effective arm IDs проверяются только transient и в aggregate не попадают.
   Candidate ranks, session-salted identities и карточки остаются в памяти,
   manual review получает 45 минут, а новый attainable policy входит в version
-  identity production/A-B gate.
+  identity production/A-B gate. Сохранённый aggregate и финальная console-
+  сводка теперь классифицируют measured gap как невалидное измерение,
+  retrieval/source gap, ranking/fusion gap или уже достигнутый порог fixed-k
+  Precision@10. Низкий executed-arm ceiling прекращает ranker-only tuning, но
+  не объявляет конкретный второй источник обязательным без отдельного полного
+  Geoapify ceiling и письменного license-решения. Развилка использует сырые
+  aggregate counts до округления и не добавляет нового hard gate.
 
 - Добавлен frozen deterministic relevance gate на 600 явно размеченных
   синтетических `CandidateEvidence` по 150 различным provider-категориям: по

@@ -433,6 +433,7 @@ test("live search canary summary enforces fixed-k, unique identity, provider and
     maxCandidatesPerCase: 50,
     attainableAt10Threshold: 0.95,
     measurementValid: true,
+    qualityGapClassification: "retrieval_or_source_gap",
     rankerOnlyTuningEligible: false,
     addedProviderWork: { requests: 0, cards: 0, details: 0 },
     providerCoverageLimits: SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS,
@@ -1029,6 +1030,93 @@ test("live search canary keeps old quality metrics and decision independent of a
   assert.equal(Object.hasOwn(report.hardGates, "attainableAt10"), false);
   assert.equal(Object.hasOwn(SEARCH_CANARY_THRESHOLDS, "attainableAt10"), false);
   assert.equal(report.decision, "FAIL");
+});
+
+test("live search canary classifies an invalid attainable measurement", () => {
+  const records = attainableRecords({
+    poolCandidateCount: 20,
+    poolRelevant: 20,
+    top10Relevant: 10,
+  });
+  records[0].inventedFactViolations = 1;
+
+  const report = summarizeSearchCanary(records, attainableVersionInput);
+
+  assert.equal(
+    report.decisionSupport.executedArmPool.qualityGapClassification,
+    "invalid_measurement",
+  );
+});
+
+test("live search canary routes a valid low attainable ceiling to retrieval or source work", () => {
+  const report = summarizeSearchCanary(
+    attainableRecords({
+      poolCandidateCount: 10,
+      poolRelevant: 9,
+      top10Relevant: 9,
+    }),
+    attainableVersionInput,
+  );
+
+  assert.equal(report.metrics.attainableAt10, 0.9);
+  assert.equal(
+    report.decisionSupport.executedArmPool.qualityGapClassification,
+    "retrieval_or_source_gap",
+  );
+});
+
+test("live search canary routes sufficient attainable headroom and low fixed-k quality to ranking", () => {
+  const report = summarizeSearchCanary(
+    attainableRecords({
+      poolCandidateCount: 12,
+      poolRelevant: 10,
+      top10Relevant: 8,
+    }),
+    attainableVersionInput,
+  );
+
+  assert.equal(report.metrics.attainableAt10, 1);
+  assert.equal(report.metrics.precisionAt10, 0.8);
+  assert.equal(
+    report.decisionSupport.executedArmPool.qualityGapClassification,
+    "ranking_or_fusion_gap",
+  );
+});
+
+test("live search canary reports when the fixed-k precision target is already met", () => {
+  const report = summarizeSearchCanary(
+    attainableRecords({
+      poolCandidateCount: 12,
+      poolRelevant: 10,
+      top10Relevant: 9,
+    }),
+    attainableVersionInput,
+  );
+
+  assert.equal(report.metrics.precisionAt10, 0.9);
+  assert.equal(
+    report.decisionSupport.executedArmPool.qualityGapClassification,
+    "fixed_k_precision_target_met",
+  );
+});
+
+test("live search canary treats the exact attainable threshold as ranking headroom", () => {
+  const records = attainableRecords({
+    poolCandidateCount: 12,
+    poolRelevant: 10,
+    top10Relevant: 8,
+  });
+  for (let index = 0; index < records.length / 2; index += 1) {
+    records[index].attainablePoolRelevant = 9;
+  }
+
+  const report = summarizeSearchCanary(records, attainableVersionInput);
+
+  assert.equal(report.metrics.attainableAt10, 0.95);
+  assert.equal(
+    report.decisionSupport.executedArmPool.qualityGapClassification,
+    "ranking_or_fusion_gap",
+  );
 });
 
 test("live search canary never approves ranker tuning on unsafe pool evidence", () => {

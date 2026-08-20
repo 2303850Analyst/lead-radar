@@ -792,6 +792,7 @@ await new Promise((resolve) => process.stdout.write(
     metrics: finalReport.metrics,
     hardGates: finalReport.hardGates,
     sloObservations: finalReport.sloObservations,
+    decisionSupport: finalReport.decisionSupport,
     reportFile: reportUrl.pathname,
   }, null, 2)}\n`,
   resolve,
