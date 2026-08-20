@@ -399,6 +399,40 @@ test("Geoapify generic suffix narrowing requires one unambiguous leaf", () => {
     );
   }
 
+  for (const term of [
+    "climbing gym",
+    "climbing park",
+    "spa center",
+    "women's gym",
+    "generic business center",
+    "indoor climbing training gym",
+    "climbing workshop",
+    "climbing equipment",
+    "pottery park",
+    "pottery workshop",
+    "pottery supplies",
+    "music venue",
+    "cinema gym",
+    "bank workshop",
+    "massage workshop",
+    "police workshop",
+    "sauna park",
+  ]) {
+    const plan = compileGeoapifySemanticIntent({
+      ...semanticIntentFor(term),
+      coreBusinessTypes: [term],
+      productsAndServices: [],
+      retrievalTerms: { precision: [term], recall: [], exclude: [] },
+    });
+    assert.deepEqual(
+      plan.batches
+        .filter((batch) => batch.type === "precision")
+        .flatMap((batch) => batch.categoryIds),
+      [],
+      term,
+    );
+  }
+
 });
 
 test("Geoapify fallback provenance uses only provider-accepted semantic fields", () => {
@@ -2703,6 +2737,34 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
     }),
     false,
     "a non-physical response cannot require a physical location",
+  );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: {
+        ...renderablePlan.semanticIntent,
+        physicalLocationRequirement: "not_applicable",
+      },
+    }),
+    false,
+    "a physical response cannot claim that location is not applicable",
+  );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: {
+        ...renderablePlan.semanticIntent,
+        entityKind: "unclear",
+        physicalLocationRequirement: "optional",
+        ambiguity: {
+          isAmbiguous: true,
+          reason: "The business purpose is unresolved",
+          clarificationQuestion: "Which type of place do you mean?",
+        },
+      },
+    }),
+    false,
+    "an unclear response must require a physical location before clarification",
   );
   assert.equal(
     isSearchPlan({

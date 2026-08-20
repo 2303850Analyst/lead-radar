@@ -1337,7 +1337,9 @@ test("search plan encodes an unseen business intent without canonical candidates
       "locale",
       "primaryQuery",
       "relatedQueries",
+      "taskContext",
     ]);
+    assert.equal(modelInput.taskContext, "business_place_search");
     assert.equal(Object.hasOwn(modelInput, "location"), false);
     assert.equal(Object.hasOwn(modelInput, "center"), false);
     const responseSchema = capturedRequest.response_format.json_schema.schema;

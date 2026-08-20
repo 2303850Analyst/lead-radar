@@ -166,6 +166,10 @@ test("K3 request uses only its server-owned reasoning effort policy", async () =
     payload.messages[0].content,
     /minimal lexical business-type head.*not a venue description/i,
   );
+  assert.equal(
+    JSON.parse(payload.messages[1].content).taskContext,
+    "business_place_search",
+  );
   assert.match(payload.messages[0].content, /do not enumerate interpretations in positive arrays/);
   assert.equal(result.usage.cachedInputTokens, 20);
   assert.ok(
@@ -296,7 +300,18 @@ test("an unresolved, parent, or colliding wire head cannot be laundered through 
       exclude: [],
     },
   };
-  for (const head of ["unfindable trade", "sport fitness", "spa"]) {
+  for (const head of [
+    "unfindable trade",
+    "sport fitness",
+    "spa",
+    "climbing gym",
+    "climbing workshop",
+    "pottery workshop",
+    "music venue",
+    "cinema gym",
+    "bank workshop",
+    "massage workshop",
+  ]) {
     const client = createKimiClient({
       apiKey,
       model: "kimi-k3",
@@ -782,8 +797,12 @@ test("K2.6 request disables thinking without a K3-only field", async () => {
   const cardinalityContractAt = systemPrompt.lastIndexOf(
     "K2.6 cardinality contract",
   );
+  const stateContractAt = systemPrompt.lastIndexOf(
+    "K2.6 semantic state contract",
+  );
   assert.ok(serializedSchemaAt >= 0);
   assert.ok(cardinalityContractAt > serializedSchemaAt);
+  assert.ok(stateContractAt > cardinalityContractAt);
   assert.match(
     systemPrompt.slice(cardinalityContractAt),
     /unambiguous physical intent.*retrievalTerms\.precision MUST contain 1 to 8 items/i,
@@ -795,6 +814,22 @@ test("K2.6 request disables thinking without a K3-only field", async () => {
   assert.match(
     systemPrompt.slice(cardinalityContractAt),
     /never compensate by enumerating synonyms/i,
+  );
+  assert.match(
+    systemPrompt.slice(stateContractAt),
+    /decision precedence.*bare place-form noun.*ambiguous.*not non-physical/i,
+  );
+  assert.match(
+    systemPrompt.slice(stateContractAt),
+    /entityKind unclear, physicalLocationRequirement required, ambiguity\.isAmbiguous true/i,
+  );
+  assert.match(
+    systemPrompt.slice(stateContractAt),
+    /missing valid category head.*ambiguity, never non_physical/i,
+  );
+  assert.match(
+    systemPrompt.slice(stateContractAt),
+    /entityKind non_physical.*physicalLocationRequirement not_applicable only/i,
   );
   assert.equal(
     client.cacheIdentity,
@@ -942,6 +977,7 @@ test("non-executable semantic outcomes may omit positive retrieval terms", async
   const ambiguous = {
     ...semanticIntentFor(),
     normalizedGoal: "понять, что означает площадка",
+    industries: [],
     coreBusinessTypes: [],
     includeSignals: [],
     retrievalTerms: { precision: [], recall: [], exclude: [] },
@@ -955,14 +991,90 @@ test("non-executable semantic outcomes may omit positive retrieval terms", async
 
   assert.deepEqual(validateKimiSemanticIntent(nonPhysical), nonPhysical);
   assert.deepEqual(validateKimiSemanticIntent(ambiguous), ambiguous);
+  for (const entityKind of ["physical_business", "unclear"]) {
+    assert.throws(
+      () =>
+        validateKimiSemanticIntent({
+          ...ambiguous,
+          entityKind,
+          physicalLocationRequirement: "not_applicable",
+        }),
+      /not_applicable.*non_physical/i,
+      entityKind,
+    );
+  }
+  assert.throws(
+    () =>
+      validateKimiSemanticIntent({
+        ...ambiguous,
+        entityKind: "unclear",
+        physicalLocationRequirement: "optional",
+      }),
+    /unclear intent.*required/i,
+  );
+  const invalidLocationState = createKimiClient({
+    apiKey,
+    model: "kimi-k2.6",
+    fetchImpl: async () =>
+      kimiSseResponse(
+        "kimi-k2.6",
+        {
+          ...ambiguous,
+          entityKind: "unclear",
+          physicalLocationRequirement: "not_applicable",
+        },
+        [],
+      ),
+  });
+  await assert.rejects(
+    invalidLocationState.encode(kimiRequest()),
+    (error) =>
+      error instanceof KimiClientError &&
+      error.reason === "semantic_schema_invalid" &&
+      error.semanticValidationIssueCodes.includes(
+        "non_physical_location_invariant",
+      ),
+  );
+  const invalidUnclearRequirement = createKimiClient({
+    apiKey,
+    model: "kimi-k2.6",
+    fetchImpl: async () =>
+      kimiSseResponse(
+        "kimi-k2.6",
+        {
+          ...ambiguous,
+          entityKind: "unclear",
+          physicalLocationRequirement: "optional",
+        },
+        [],
+      ),
+  });
+  await assert.rejects(
+    invalidUnclearRequirement.encode(kimiRequest()),
+    (error) =>
+      error instanceof KimiClientError &&
+      error.reason === "semantic_schema_invalid" &&
+      error.semanticValidationIssueCodes.includes("unclear_intent_invariant"),
+  );
 
-  for (const [semanticIntent, expectedStatus] of [
-    [nonPhysical, "unsupported"],
-    [ambiguous, "needs_confirmation"],
+  const unclearPhysical = {
+    ...ambiguous,
+    entityKind: "unclear",
+    physicalLocationRequirement: "required",
+  };
+  assert.deepEqual(
+    validateKimiSemanticIntent(unclearPhysical),
+    unclearPhysical,
+  );
+
+  for (const [semanticIntent, expectedStatus, primaryQuery] of [
+    [nonPhysical, "unsupported", "получить инвестиционный совет"],
+    [ambiguous, "needs_confirmation", "студия"],
+    [unclearPhysical, "needs_confirmation", "зал"],
   ]) {
     const plan = await createSearchPlan(
       {
-        primaryQuery: "неопределённый открытый запрос",
+        primaryQuery,
         locale: "ru-RU",
         countryCodes: ["RU"],
       },

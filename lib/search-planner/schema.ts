@@ -326,6 +326,18 @@ export function validateKimiSemanticIntent(value: unknown): SemanticIntentV2 {
   ) {
     issues.push("non_physical intent must use not_applicable location requirement");
   }
+  if (
+    intent.physicalLocationRequirement === "not_applicable" &&
+    intent.entityKind !== "non_physical"
+  ) {
+    issues.push("not_applicable location requirement requires non_physical intent");
+  }
+  if (
+    intent.entityKind === "unclear" &&
+    intent.physicalLocationRequirement !== "required"
+  ) {
+    issues.push("unclear intent must use required location requirement");
+  }
   if (intent.entityKind === "unclear" && !intent.ambiguity.isAmbiguous) {
     issues.push("unclear intent must be marked ambiguous before execution");
   }

@@ -56,7 +56,7 @@ import {
 
 export const DECISION_POLICY_VERSION = "2026-08-20.3";
 export const KIMI_PROMPT_CONTENT_VERSION =
-  "semantic-intent-v2/2026-08-20.8";
+  "semantic-intent-v2/2026-08-20.9";
 export const KIMI_PROMPT_VERSION =
   `${KIMI_PROMPT_CONTENT_VERSION}+${KIMI_MODEL_POLICY_VERSION}`;
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;

@@ -52,16 +52,26 @@
   список синонимов переполнял wire precision. Prompt теперь явно считает
   `primaryQuery` уже находящимся в контексте поиска мест, отправляет generic
   place-form nouns на clarification и после сериализованной K2.6 структуры
-  повторяет компактный cardinality contract. Локальная граница по-прежнему
-  отклоняет девятый precision item вместо усечения. Aggregate-only A/B сохраняет
+  повторяет компактный cardinality contract. Следующий aggregate-only K2.6
+  срез подтвердил schema-pass `10/10`, но локализовал оставшиеся отказы в
+  semantic state и provider grounding. User payload теперь явно несёт
+  server-owned `business_place_search` context, а поздняя K2.6 state matrix
+  различает unresolved physical purpose (`unclear/required/ambiguous`) и
+  настоящий non-place (`non_physical/not_applicable`). Обратный локальный
+  инвариант запрещает `not_applicable` для любого другого entity kind.
+  Составной provider-neutral head по-прежнему не сокращается эвристически:
+  same-root сочетания вроде `cinema gym` или `bank workshop` остаются
+  fail-closed, пока wire-контракт не передаст semantic roles отдельно.
+  Локальная граница по-прежнему отклоняет девятый precision item вместо
+  усечения. Aggregate-only A/B сохраняет
   только allowlisted plan reason-code counts, чтобы отличать non-place от
   provider-coverage отказа без model text. Для дешёвой повторной диагностики
   harness может запускать один строго allowlisted профиль через
   `KIMI_COMPARISON_PROFILE_ID`; такой неполный запуск остаётся `PARTIAL` и не
   может выбрать release-профиль. Изменение
   поднимает Kimi model policy до `2026-08-20.6`, prompt content до
-  `2026-08-20.8`, MFJS transport schema до `2026-08-20.4`, provider compiler
-  policy до `2026-08-20.6` и decision policy до `2026-08-20.3`, тем самым
+  `2026-08-20.9`, MFJS transport schema до `2026-08-20.5`, provider compiler
+  policy остаётся `2026-08-20.6`, а decision policy — `2026-08-20.3`, тем самым
   инвалидируя старые runtime cache/confirmation contexts. В публичный план,
   persistent storage и live aggregate не попадают ни wire field, ни raw
   model/provider responses; production canary теперь отдельно связывает отчёт

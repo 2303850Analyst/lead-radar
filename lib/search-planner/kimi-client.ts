@@ -17,7 +17,7 @@ export const DEFAULT_KIMI_TIMEOUT_MS = 30_000;
 export const KIMI_MODEL_POLICY_VERSION =
   "kimi-model-policy/2026-08-20.6";
 export const KIMI_TRANSPORT_SCHEMA_VERSION =
-  "mfjs-semantic-intent/2026-08-20.4";
+  "mfjs-semantic-intent/2026-08-20.5";
 
 const ALLOWED_KIMI_HOSTS = new Set(["api.moonshot.ai", "api.moonshot.cn"]);
 const MAX_KIMI_CONTENT_CHARS = 30_000;
@@ -411,11 +411,13 @@ function plannerPrompt(
     systemInstructions.push(
       `The JSON object must conform to this exact field structure: ${JSON.stringify(KIMI_SEMANTIC_INTENT_TRANSPORT_SCHEMA)}`,
       "K2.6 cardinality contract: for an unambiguous physical intent, providerNeutralCategoryHeads MUST contain 1 to 4 items and retrievalTerms.precision MUST contain 1 to 8 items. For an ambiguous or non-physical intent, both arrays MUST contain exactly 0 items. Use only the distinct highest-signal source-language and English phrases; never compensate by enumerating synonyms. Put any additional semantic breadth in retrievalTerms.recall within its 16-item limit, and count every array before emitting JSON.",
+      "K2.6 semantic state contract and decision precedence: taskContext means the user is searching for real-world business or service locations. Decide the real-world location goal independently from whether the business purpose is resolved. A bare place-form noun with an unresolved or materially plural business purpose is ambiguous, not non-physical: use entityKind unclear, physicalLocationRequirement required, ambiguity.isAmbiguous true, and keep positive arrays and providerNeutralCategoryHeads empty. A missing valid category head for a real-world location goal means ambiguity, never non_physical. Use entityKind non_physical with physicalLocationRequirement not_applicable only when the requested outcome is information, advice, calculation, writing, or another action rather than finding locations.",
     );
   }
   return {
     system: systemInstructions.join(" "),
     user: JSON.stringify({
+      taskContext: "business_place_search",
       locale: request.intent.locale,
       countryCodes: request.intent.countryCodes,
       primaryQuery: request.intent.primaryQuery,
@@ -550,7 +552,7 @@ function semanticValidationIssueCodes(
     ) {
       return "enum_or_const";
     }
-    if (normalized.includes("unclear intent must be marked ambiguous")) {
+    if (normalized.includes("unclear intent must")) {
       return "unclear_intent_invariant";
     }
     if (normalized.includes("must be ")) return "type_mismatch";

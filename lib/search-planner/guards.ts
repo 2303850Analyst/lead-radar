@@ -154,11 +154,15 @@ function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
   const ambiguityIsCoherent = ambiguity.isAmbiguous
     ? Boolean(ambiguity.reason && ambiguity.clarificationQuestion)
     : ambiguity.reason === null && ambiguity.clarificationQuestion === null;
-  const nonPhysicalLocationIsCoherent =
-    value.entityKind !== "non_physical" ||
-    value.physicalLocationRequirement === "not_applicable";
+  const physicalLocationIsCoherent =
+    (value.entityKind !== "non_physical" ||
+      value.physicalLocationRequirement === "not_applicable") &&
+    (value.physicalLocationRequirement !== "not_applicable" ||
+      value.entityKind === "non_physical");
   const unclearIntentIsCoherent =
-    value.entityKind !== "unclear" || ambiguity.isAmbiguous;
+    value.entityKind !== "unclear" ||
+    (ambiguity.isAmbiguous &&
+      value.physicalLocationRequirement === "required");
   const permitsEmptyPositiveTerms =
     ambiguity.isAmbiguous ||
     value.entityKind === "unclear" ||
@@ -174,7 +178,7 @@ function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
     );
   return (
     ambiguityIsCoherent &&
-    nonPhysicalLocationIsCoherent &&
+    physicalLocationIsCoherent &&
     unclearIntentIsCoherent &&
     executableTermsArePresent &&
     providerNeutralTermIsPresent
