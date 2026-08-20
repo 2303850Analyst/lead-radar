@@ -5,6 +5,7 @@ import {
   issueConfirmationToken,
   verifyConfirmationToken,
 } from "./confirmation-token";
+import { projectGeoapifyNativeRecovery } from "../geoapify-native-recovery";
 import {
   compileGeoapifySemanticIntent,
   compileGeoapifySelectors,
@@ -54,7 +55,7 @@ import {
   type SemanticIntentV2,
 } from "./types";
 
-export const DECISION_POLICY_VERSION = "2026-08-20.3";
+export const DECISION_POLICY_VERSION = "2026-08-21.1";
 export const KIMI_PROMPT_CONTENT_VERSION =
   "semantic-intent-v2/2026-08-20.9";
 export const KIMI_PROMPT_VERSION =
@@ -750,6 +751,30 @@ export async function createSearchPlan(
               clarificationQuestion(intent.locale),
           },
           executionPreview: null,
+          ai: aiMetadata(result),
+        },
+        signingOptions,
+      );
+    }
+
+    const nativeRecovery =
+      !categoryHeadIsGrounded && semanticIntent.confidence === "high"
+        ? projectGeoapifyNativeRecovery(capabilityPlan)
+        : null;
+    if (nativeRecovery) {
+      return finalizePlan(
+        {
+          ...semanticCommon,
+          status: "ready",
+          resolution: {
+            method: "kimi",
+            selectedConceptIds: [],
+            alternatives: [],
+            confidenceBand: semanticIntent.confidence,
+            reasonCodes: ["SEMANTIC_MATCH", "PROVIDER_COVERAGE_GAP"],
+            clarificationQuestion: null,
+          },
+          executionPreview: nativeRecovery.executionPreview,
           ai: aiMetadata(result),
         },
         signingOptions,

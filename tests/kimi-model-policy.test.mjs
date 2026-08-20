@@ -290,7 +290,7 @@ test("Kimi wire category heads become bounded precision semantics without leakin
   assert.equal(JSON.stringify(plan).includes("providerNeutralCategoryHeads"), false);
 });
 
-test("an unresolved, parent, or colliding wire head cannot be laundered through fallback", async () => {
+test("an unresolved wire head can authorize only a source-native recovery arm", async () => {
   const semanticIntent = {
     ...semanticIntentFor("unfindable artisan destination"),
     coreBusinessTypes: ["unfindable artisan destination"],
@@ -324,12 +324,22 @@ test("an unresolved, parent, or colliding wire head cannot be laundered through 
       { mode: "kimi", kimiClient: client },
     );
 
-    assert.equal(plan.status, "unsupported", head);
-    assert.equal(plan.executionPreview, null, head);
+    assert.equal(plan.status, "ready", head);
+    assert.equal(plan.executionPreview?.retrievalArms.length, 1, head);
+    assert.equal(plan.executionPreview?.retrievalArms[0].type, "fallback", head);
+    assert.ok(
+      plan.executionPreview?.retrievalArms[0].provenance.every(
+        (item) =>
+          item.origin === "source.primaryQuery" &&
+          item.match === "name_fallback",
+      ),
+      head,
+    );
+    assert.equal(JSON.stringify(plan.executionPreview).includes(head), false, head);
     assert.equal(plan.confidence.providerCoverage, "unknown", head);
     assert.deepEqual(
       plan.resolution.reasonCodes,
-      ["PROVIDER_COVERAGE_GAP"],
+      ["SEMANTIC_MATCH", "PROVIDER_COVERAGE_GAP"],
       head,
     );
   }
@@ -353,8 +363,9 @@ test("an unresolved, parent, or colliding wire head cannot be laundered through 
     { primaryQuery: "qzxv неизвестная услуга" },
     { mode: "kimi", kimiClient: legacyClient },
   );
-  assert.equal(legacyPlan.status, "unsupported");
-  assert.equal(legacyPlan.executionPreview, null);
+  assert.equal(legacyPlan.status, "ready");
+  assert.equal(legacyPlan.executionPreview?.retrievalArms.length, 1);
+  assert.equal(legacyPlan.executionPreview?.retrievalArms[0].type, "fallback");
 });
 
 test("Kimi wire category heads fail closed without truncation or executable syntax", async () => {

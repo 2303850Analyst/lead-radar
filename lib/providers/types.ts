@@ -58,6 +58,11 @@ export type CompiledGeoapifyPlan = {
   countryCode: SupportedCountryCode;
   language: "ru" | "be" | "kk";
   conceptIds: string[];
+  /**
+   * Requires one provider-native category resolution before any retrieval.
+   * The route sets this only after matching the signed source-fallback preview.
+   */
+  nativeCategoryResolutionRequired?: boolean;
 };
 
 export type SearchProgressCallback = (

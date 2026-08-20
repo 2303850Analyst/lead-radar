@@ -37,7 +37,7 @@ LeadRadar — **discovery-система, а не полный реестр ры
 - живой прогресс поиска через NDJSON без изменения обычного JSON-контракта;
 - отдельный `POST /api/search/plan`, который не расходует квоту Geoapify;
 - детерминированный demo-режим без ключа;
-- live-поиск через Geoapify Geocoding и Places API;
+- live-поиск через Geoapify Geocoding, Autocomplete, Places и Place Details API;
 - серверное хранение API-ключа без передачи в браузер;
 - provider-метаданные, происхождение каждой карточки и обязательная атрибуция;
 - подготовленный контракт для будущих поставщиков данных без реализованного
@@ -183,6 +183,8 @@ Remove-Item Env:RUN_SEARCH_LIVE_CANARY
 
 Canary намеренно включает category hints только внутри своего процесса для
 измерения. Рабочий default остаётся `GEOAPIFY_CATEGORY_HINTS_ENABLED=false`.
+Флаг управляет только optional fail-soft refinement. Подписанный recovery-план
+всегда выполняет один обязательный fail-closed Autocomplete resolver до Places.
 Production worker собирается до загрузки Kimi key, а SHA-256 фактически
 запущенного bundle и canary harness входят в агрегатный отчёт. После сбора
 выдачи команда печатает transient URL: откройте его, примените
@@ -480,6 +482,11 @@ retrieval terms полному зафиксированному каталогу
 Категорийные arms используют Places, а unresolved name-fallback — bounded
 Forward Geocoding `type=amenity`; восемь корневых категорий fallback-плана
 остаются внутренней provenance/budget границей, а не строкой provider filter.
+Исключение — high-confidence recovery arm из исходного пользовательского
+запроса: сервер сверяет его с подписанным preview и допускает Places только
+после одного Autocomplete-запроса, подтвердившего allowlisted leaf минимум
+двумя различными same-country/in-radius наблюдениями. No-match или upstream
+ошибка завершают поиск до name geocoder, Places и Details.
 Если узкой категории нет, сервер использует фиксированный широкий scope из
 registry вместе с ограниченным `name`, а не исполняет категорию из текста
 модели. Каждый category ID повторно проверяется перед отправкой провайдеру.

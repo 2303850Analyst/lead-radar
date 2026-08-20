@@ -29,6 +29,20 @@
 
 ### Добавлено
 
+- Для schema-valid high-confidence физического intent без grounded Geoapify
+  leaf planner формирует `ready` план с reason codes `SEMANTIC_MATCH` и
+  `PROVIDER_COVERAGE_GAP`, содержащий ровно один подписанный recovery arm из
+  исходного `primaryQuery`/`relatedQueries`. Runtime повторно сверяет этот arm
+  с подписанным preview, делает максимум один bounded Autocomplete-запрос и
+  допускает Places только после quorum из двух различных same-country,
+  in-radius наблюдений одной allowlisted leaf-category. Model-authored terms и
+  provider IDs не становятся recovery-запросом; no-match и upstream failure
+  завершаются до Forward Geocoding, Places и Details. Флаг
+  `GEOAPIFY_CATEGORY_HINTS_ENABLED` по-прежнему управляет только отдельным
+  optional fail-soft refinement. Decision policy повышена до `2026-08-21.1`,
+  compiler policy — до `semantic-retrieval-v2/2026-08-21.1`; публичная схема
+  SearchPlan остаётся `2.2`.
+
 - Production search canary теперь немедленно сводит `plan` из terminal error
   event к bounded диагностике: allowlisted status/reason codes, AI validation,
   latency, usage и version identity. Полный план, пользовательский intent и

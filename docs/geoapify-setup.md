@@ -1,10 +1,12 @@
 # Настройка Geoapify Places для LeadRadar
 
 Geoapify добавлен в `0.2.0` и остаётся единственным live-источником
-`0.4.0-alpha.1`. Приложение использует два его endpoint:
+`0.4.0-alpha.1`. Приложение использует четыре API surface:
 
 - Geocoding API преобразует введённый город или адрес в координаты;
-- Places API ищет POI заданных категорий в выбранном радиусе.
+- Autocomplete подтверждает provider-native leaf для подписанного recovery arm;
+- Places API ищет POI заданных категорий в выбранном радиусе;
+- Place Details дополняет bounded набор найденных POI.
 
 Ключ передаётся Geoapify только серверным маршрутом LeadRadar. Он не должен
 попадать в React-компоненты, HTML, browser storage, логи или Git.

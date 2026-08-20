@@ -27,6 +27,13 @@ import {
 } from "../search-planner/relevance";
 import type { SemanticIntentV2 } from "../search-planner/types";
 import {
+  GeoapifyNativeRecoveryError,
+  projectGeoapifyNativeRecovery,
+  resolveGeoapifyNativeRecovery,
+  type GeoapifyAutocompleteFailureCode,
+  type GeoapifyCategoryObservation,
+} from "../geoapify-native-recovery";
+import {
   SearchProviderError,
   type CompiledGeoapifyPlan,
   type SearchProvider,
@@ -791,7 +798,9 @@ function compiledPlanIsCoherent(
     !plan.limits ||
     !Array.isArray(plan.batches) ||
     !Array.isArray(plan.categoryIds) ||
-    !Array.isArray(plan.exclusionTerms)
+    !Array.isArray(plan.exclusionTerms) ||
+    (plan.nativeCategoryResolutionRequired !== undefined &&
+      typeof plan.nativeCategoryResolutionRequired !== "boolean")
   ) {
     return false;
   }
@@ -908,11 +917,25 @@ function compiledPlanIsCoherent(
     }
     flattened.push(...batch.categoryIds);
   }
-  return sameStringSet(plan.categoryIds, [...new Set(flattened)]);
+  if (!sameStringSet(plan.categoryIds, [...new Set(flattened)])) return false;
+  if (plan.nativeCategoryResolutionRequired) {
+    const authorization = projectGeoapifyNativeRecovery(plan);
+    if (
+      !authorization ||
+      plan.batches.length !== 1 ||
+      authorization.planArmId !== plan.batches[0]?.id
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function categoryPlanFromCompiled(
-  plan: NonNullable<SearchProviderOptions["compiledPlan"]>,
+  plan: Pick<
+    NonNullable<SearchProviderOptions["compiledPlan"]>,
+    "categoryIds" | "batches" | "limits" | "exclusionTerms"
+  >,
 ): CategoryPlan {
   return {
     categories: [...plan.categoryIds],
@@ -924,6 +947,68 @@ function categoryPlanFromCompiled(
     limits: { ...plan.limits },
     exclusionTerms: [...plan.exclusionTerms],
   };
+}
+
+function nativeRecoveryFailureCode(
+  error: SearchProviderError,
+): GeoapifyAutocompleteFailureCode {
+  switch (error.code) {
+    case "GEOAPIFY_FORBIDDEN":
+      return "forbidden";
+    case "GEOAPIFY_RATE_LIMIT":
+      return "rate_limited";
+    case "GEOAPIFY_TIMEOUT":
+      return "timeout";
+    case "GEOAPIFY_NETWORK_ERROR":
+      return "network";
+    case "GEOAPIFY_UPSTREAM_ERROR":
+      return "upstream";
+    default:
+      return "invalid_response";
+  }
+}
+
+function providerErrorForNativeRecovery(
+  error: GeoapifyNativeRecoveryError,
+): SearchProviderError {
+  switch (error.code) {
+    case "forbidden":
+      return new SearchProviderError(
+        "Ключ Geoapify недействителен или не имеет доступа к выбранному API",
+        "GEOAPIFY_FORBIDDEN",
+      );
+    case "rate_limited":
+      return new SearchProviderError(
+        "Превышен лимит запросов Geoapify",
+        "GEOAPIFY_RATE_LIMIT",
+      );
+    case "timeout":
+      return new SearchProviderError(
+        "Geoapify не успел подтвердить категорию",
+        "GEOAPIFY_TIMEOUT",
+      );
+    case "network":
+      return new SearchProviderError(
+        "Не удалось подключиться к Geoapify",
+        "GEOAPIFY_NETWORK_ERROR",
+      );
+    case "upstream":
+      return new SearchProviderError(
+        "Geoapify временно недоступен",
+        "GEOAPIFY_UPSTREAM_ERROR",
+      );
+    case "invalid_response":
+      return new SearchProviderError(
+        "Geoapify вернул ответ неизвестного формата",
+        "GEOAPIFY_INVALID_RESPONSE",
+      );
+    case "budget":
+    case "no_match":
+      return new SearchProviderError(
+        "Geoapify не подтвердил исполняемую категорию",
+        "GEOAPIFY_UNSUPPORTED_CATEGORY",
+      );
+  }
 }
 
 function needsNativeCategoryResolution(
@@ -1915,6 +2000,17 @@ export class GeoapifyProvider implements SearchProvider {
         "GEOAPIFY_INVALID_COMPILED_PLAN",
       );
     }
+    const nativeCategoryResolutionRequired =
+      compiledPlan?.nativeCategoryResolutionRequired === true;
+    const nativeRecoveryAuthorization = nativeCategoryResolutionRequired
+      ? projectGeoapifyNativeRecovery(compiledPlan)
+      : null;
+    if (nativeCategoryResolutionRequired && !nativeRecoveryAuthorization) {
+      throw new SearchProviderError(
+        "Скомпилированный план Geoapify не содержит допустимого recovery arm",
+        "GEOAPIFY_INVALID_COMPILED_PLAN",
+      );
+    }
     let categoryPlan = compiledPlan
       ? categoryPlanFromCompiled(compiledPlan)
       : resolveGeoapifyCategories(payload);
@@ -1986,9 +2082,92 @@ export class GeoapifyProvider implements SearchProvider {
         message: "География поиска определена",
       });
     }
+    if (nativeRecoveryAuthorization) {
+      const hintTimeoutMs =
+        options.runtime?.stageTimeoutMs(
+          CATEGORY_HINT_TIMEOUT_MS,
+          PLACES_STAGE_BUDGET_MS + NORMALIZATION_RESERVE_MS,
+        ) ?? CATEGORY_HINT_TIMEOUT_MS;
+      try {
+        const resolved = await resolveGeoapifyNativeRecovery(
+          {
+            authorization: nativeRecoveryAuthorization,
+            center,
+            radiusMeters: payload.radiusKm * 1_000,
+            countryCode,
+            language,
+            timeoutMs: Math.min(CATEGORY_HINT_TIMEOUT_MS, hintTimeoutMs),
+            signal: options.signal,
+          },
+          {
+            async autocomplete(request) {
+              try {
+                const collection = await requestGeoapify(
+                  AUTOCOMPLETE_ENDPOINT,
+                  {
+                    text: request.text,
+                    type: "amenity",
+                    filter: `circle:${request.center[0]},${request.center[1]},${Math.round(
+                      request.radiusMeters,
+                    )}`,
+                    bias: `proximity:${request.center[0]},${request.center[1]}`,
+                    lang: request.language,
+                    format: "geojson",
+                    limit: String(request.limit),
+                  },
+                  apiKey,
+                  request.timeoutMs,
+                  request.signal,
+                  MAX_CATEGORY_HINT_RESPONSE_BYTES,
+                );
+                const observations: GeoapifyCategoryObservation[] = (
+                  collection.features ?? []
+                )
+                  .slice(0, request.limit)
+                  .map((feature) => ({
+                    categoryId: stringValue(
+                      feature.properties?.category,
+                      200,
+                    ),
+                    countryCode: stringValue(
+                      feature.properties?.country_code,
+                      8,
+                    ),
+                    coordinates: featureCoordinates(feature),
+                    providerPlaceId: stringValue(
+                      feature.properties?.place_id,
+                      500,
+                    ),
+                  }));
+                return { kind: "observations" as const, observations };
+              } catch (error) {
+                if (options.signal?.aborted) throw abortedSearchError();
+                if (error instanceof SearchProviderError) {
+                  return {
+                    kind: "failure" as const,
+                    code: nativeRecoveryFailureCode(error),
+                  };
+                }
+                return { kind: "failure" as const, code: "network" as const };
+              }
+            },
+          },
+        );
+        categoryPlan = categoryPlanFromCompiled(resolved.categoryPlan);
+        resolvedFallbackArmId = resolved.armBinding.runtimeArmId;
+        resolvedFallbackPlanArmId = resolved.armBinding.planArmId;
+        categoryResolution = resolved.categoryResolution;
+      } catch (error) {
+        if (error instanceof GeoapifyNativeRecoveryError) {
+          throw providerErrorForNativeRecovery(error);
+        }
+        throw error;
+      }
+    }
     if (
       compiledPlan &&
       options.semanticIntent &&
+      !nativeCategoryResolutionRequired &&
       process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED === "true" &&
       needsNativeCategoryResolution(compiledPlan)
     ) {
@@ -2205,6 +2384,7 @@ export class GeoapifyProvider implements SearchProvider {
         );
       } catch (error) {
         const canFailSoft =
+          !nativeCategoryResolutionRequired &&
           isResolvedNativeFallback &&
           error instanceof SearchProviderError &&
           [
@@ -2260,6 +2440,7 @@ export class GeoapifyProvider implements SearchProvider {
         }
       }
       if (
+        !nativeCategoryResolutionRequired &&
         isResolvedNativeFallback &&
         !(collection.features ?? []).some(
           (feature) => placeName(feature) && isCountryPlace(feature, countryCode),

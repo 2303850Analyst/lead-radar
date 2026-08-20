@@ -16,6 +16,8 @@ import {
   GEOAPIFY_CAPABILITY_REGISTRY,
   GEOAPIFY_RETRIEVAL_LIMITS,
 } from "@/lib/search-planner/catalogs/geoapify";
+import { canonicalJson, type CanonicalJsonValue } from "@/lib/search-planner/hashing";
+import { projectGeoapifyNativeRecovery } from "@/lib/geoapify-native-recovery";
 import { ConfirmationTokenError } from "@/lib/search-planner/confirmation-token";
 import {
   confirmSearchPlan,
@@ -64,6 +66,13 @@ import packageMetadata from "@/package.json";
 const YANDEX_ENDPOINT = "https://search-maps.yandex.ru/v1/";
 const MAX_QUERY_TERMS = 8;
 const FETCH_TIMEOUT_MS = 15_000;
+
+function requiresGeoapifyNativeRecovery(plan: SearchPlan): boolean {
+  return (
+    plan.resolution.reasonCodes.includes("SEMANTIC_MATCH") &&
+    plan.resolution.reasonCodes.includes("PROVIDER_COVERAGE_GAP")
+  );
+}
 
 function selectedProvider(): "demo" | "geoapify" | "yandex" {
   const configuredName = process.env.SEARCH_PROVIDER?.trim().toLocaleLowerCase("en-US");
@@ -1165,7 +1174,13 @@ const searchOrchestrator = createSearchOrchestrator({
   providers: {
     demo: {
       preparationMessage: "Источник demo не требует категорий Geoapify",
-      async prepare() {
+      async prepare(plan) {
+        if (requiresGeoapifyNativeRecovery(plan)) {
+          throw new SearchProviderError(
+            "Для подтверждения категории требуется настроенный Geoapify",
+            "GEOAPIFY_NOT_CONFIGURED",
+          );
+        }
         return {
           completedMessage: "Источник demo выбран без Geoapify compilation",
           execute: (payload, { onProgress }) => demoSearch(payload, onProgress),
@@ -1175,12 +1190,37 @@ const searchOrchestrator = createSearchOrchestrator({
     geoapify: {
       preparationMessage: "Компилируем разрешённые категории источника",
       async prepare(plan) {
+        const nativeCategoryResolutionRequired =
+          requiresGeoapifyNativeRecovery(plan);
         const useSemanticCompiler =
           plan.ai.validation === "passed" ||
           plan.resolution.selectedConceptIds.length === 0;
-        const semanticSelectors = useSemanticCompiler
+        const compiledSemanticSelectors = useSemanticCompiler
           ? compileGeoapifySemanticIntent(plan.semanticIntent, plan.intent)
           : null;
+        const nativeRecoveryAuthorization =
+          nativeCategoryResolutionRequired && compiledSemanticSelectors
+            ? projectGeoapifyNativeRecovery(compiledSemanticSelectors)
+            : null;
+        if (nativeCategoryResolutionRequired) {
+          if (
+            !nativeRecoveryAuthorization ||
+            !plan.executionPreview ||
+            canonicalJson(
+              nativeRecoveryAuthorization.executionPreview as unknown as CanonicalJsonValue,
+            ) !==
+              canonicalJson(
+                plan.executionPreview as unknown as CanonicalJsonValue,
+              )
+          ) {
+            throw new SearchProviderError(
+              "Подписанный recovery-план не совпадает с серверной компиляцией",
+              "GEOAPIFY_INVALID_COMPILED_PLAN",
+            );
+          }
+        }
+        const semanticSelectors = nativeRecoveryAuthorization?.capabilityPlan ??
+          compiledSemanticSelectors;
         const legacySelectors = semanticSelectors
           ? null
           : compileGeoapifySelectors(plan.resolution.selectedConceptIds);
@@ -1226,6 +1266,7 @@ const searchOrchestrator = createSearchOrchestrator({
                 ? "kk"
                 : "ru",
           conceptIds: [...plan.resolution.selectedConceptIds],
+          nativeCategoryResolutionRequired,
         };
         return {
           completedMessage: `Подготовлено категорий: ${compiledPlan.categoryIds.length}`,
