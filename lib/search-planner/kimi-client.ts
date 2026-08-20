@@ -17,7 +17,7 @@ export const DEFAULT_KIMI_TIMEOUT_MS = 30_000;
 export const KIMI_MODEL_POLICY_VERSION =
   "kimi-model-policy/2026-08-20.6";
 export const KIMI_TRANSPORT_SCHEMA_VERSION =
-  "mfjs-semantic-intent/2026-08-20.6";
+  "mfjs-semantic-intent/2026-08-20.5";
 
 const ALLOWED_KIMI_HOSTS = new Set(["api.moonshot.ai", "api.moonshot.cn"]);
 const MAX_KIMI_CONTENT_CHARS = 30_000;
@@ -81,23 +81,21 @@ export const KIMI_SEMANTIC_VALIDATION_ISSUE_CODES = Object.freeze([
   "array_max_include_signals",
   "array_max_industries",
   "array_max_products_and_services",
+  "array_max_provider_neutral_category_heads",
   "array_max_retrieval_exclude",
   "array_max_retrieval_precision",
   "array_max_retrieval_recall",
   "array_max_size",
   "array_min_size",
   "array_size",
-  "category_cue_invalid",
-  "category_cue_phrase_invalid",
-  "category_cue_state_invariant",
-  "category_cue_venue_form_invalid",
+  "category_head_invalid",
   "english_retrieval_term_missing",
   "enum_or_const",
-  "executable_category_cue_missing",
+  "executable_heads_missing",
   "executable_terms_missing",
   "executable_value_forbidden",
   "non_physical_location_invariant",
-  "nonready_category_cue_present",
+  "nonready_heads_present",
   "nonready_terms_present",
   "payload_size",
   "required_field_missing",
@@ -389,20 +387,20 @@ function plannerPrompt(
     "You are the LeadRadar semantic encoder for business-place discovery in CIS countries.",
     "Interpret the user's ordinary language into open-vocabulary business semantics.",
     "Use concise natural-language business types, industries, services, synonyms, and retrieval terms.",
-    "Return providerNeutralCategoryCue as one separate open-vocabulary object; it is not a provider category and you are not given any registry or provider category list.",
-    "For every unambiguous physical intent, essentialCategoryPhrase must be the shortest unambiguous English category phrase that preserves the distinguishing business type, using 1 to 5 natural words.",
-    "Put a trailing physical container or place-form noun in surfaceVenueForm only when removing it does not change which businesses satisfy the request; otherwise keep it inside essentialCategoryPhrase. Use null when there is no safely removable venue form.",
-    "Keep all meaning-bearing qualifiers and business-type words inside essentialCategoryPhrase; surfaceVenueForm is explanatory only and can never repair or broaden an essential phrase.",
-    "In retrievalTerms.precision, include concise source-language and English retrieval phrases alongside the separate category cue; put richer paraphrases in precision or recall.",
+    "Return providerNeutralCategoryHeads as a separate open-vocabulary array; it is not a provider category list and you are not given any registry or provider category list.",
+    "For every unambiguous physical intent, providerNeutralCategoryHeads must contain 1 to 4 of the shortest unambiguous English head phrases that preserve the distinguishing business type; use 1 to 5 natural words per head and keep modifiers whenever a shorter head would change the meaning.",
+    "Do not use generic wrappers such as business, venue, centre, center, studio, club, shop, or service as a head unless that wrapper is itself the complete distinguishing business type.",
+    "In retrievalTerms.precision, include concise source-language and English retrieval phrases alongside the separate heads; put richer paraphrases in precision or recall, not in providerNeutralCategoryHeads.",
     "Write category phrases as natural words such as 'music school', not dotted or underscored classification labels.",
     "Preserve include and exclude intent. Separate the core business from adjacent businesses.",
     "Recall and adjacent lists may be empty; do not add generic sibling services merely to fill them.",
     "The primaryQuery is already a place-search phrase. First decide whether its subject is a physical business or service location; only then evaluate business-type ambiguity.",
     "A bare business or place-form noun is an implicit request to find such places; never classify it as non_physical merely because it has no verb. If it names only a generic place form with several materially different business purposes, mark it ambiguous instead of inventing a modifier or selecting one purpose.",
-    "For non-physical intent, set both providerNeutralCategoryCue fields to null, keep all positive business and retrieval arrays empty, and use non_physical with not_applicable location requirement.",
-    "For materially ambiguous intent, do not enumerate interpretations in positive arrays: set both providerNeutralCategoryCue fields to null and keep industries, coreBusinessTypes, adjacentBusinessTypes, productsAndServices, includeSignals, retrievalTerms.precision, and retrievalTerms.recall empty; express the uncertainty only in ambiguity.reason and ambiguity.clarificationQuestion.",
-    "For every other intent, essentialCategoryPhrase, coreBusinessTypes, and retrievalTerms.precision must contain the strongest physical-business interpretation.",
-    "Keep every array concise and unique: at most 8 coreBusinessTypes, at most 8 retrievalTerms.precision, and at most 16 items in every other array.",
+    "Each provider-neutral head must be the minimal lexical business-type head, not a venue description. Remove setting adjectives and container nouns when the remaining words still preserve the distinguishing type; keep them when removal would change the business type.",
+    "For non-physical intent, keep providerNeutralCategoryHeads and all positive business and retrieval arrays empty and use non_physical with not_applicable location requirement.",
+    "For materially ambiguous intent, do not enumerate interpretations in positive arrays: keep providerNeutralCategoryHeads, industries, coreBusinessTypes, adjacentBusinessTypes, productsAndServices, includeSignals, retrievalTerms.precision, and retrievalTerms.recall empty; express the uncertainty only in ambiguity.reason and ambiguity.clarificationQuestion.",
+    "For every other intent, providerNeutralCategoryHeads, coreBusinessTypes, and retrievalTerms.precision must contain the strongest physical-business interpretation.",
+    "Keep every array concise and unique: at most 4 providerNeutralCategoryHeads, at most 8 coreBusinessTypes, at most 8 retrievalTerms.precision, and at most 16 items in every other array.",
     "A request for advice, information, or a personal decision without an explicit physical business or service location is non_physical with not_applicable location requirement.",
     "Do not output category IDs, provider names, URLs, coordinates, HTTP parameters, map filters, or API instructions.",
     "Locale and country are trusted context only; never repeat or modify geography in the output.",
@@ -412,8 +410,8 @@ function plannerPrompt(
   if (mode === "k2.6-thinking-disabled") {
     systemInstructions.push(
       `The JSON object must conform to this exact field structure: ${JSON.stringify(KIMI_SEMANTIC_INTENT_TRANSPORT_SCHEMA)}`,
-      "K2.6 cardinality contract: for an unambiguous physical intent, essentialCategoryPhrase MUST be non-null and retrievalTerms.precision MUST contain 1 to 8 items. For an ambiguous or non-physical intent, all positive arrays MUST contain exactly 0 items and the category cue fields MUST both be null. Use only the distinct highest-signal source-language and English phrases; never compensate by enumerating synonyms. Put any additional semantic breadth in retrievalTerms.recall within its 16-item limit, and count every array before emitting JSON.",
-      "K2.6 semantic state contract and decision precedence: taskContext means the user is searching for real-world business or service locations. Decide the real-world location goal independently from whether the business purpose is resolved. A bare place-form noun with an unresolved or materially plural business purpose is ambiguous, not non-physical: use entityKind unclear, physicalLocationRequirement required, ambiguity.isAmbiguous true, keep positive arrays empty, and set both category cue fields to null. A missing valid essential category phrase for a real-world location goal means ambiguity, never non_physical. Use entityKind non_physical with physicalLocationRequirement not_applicable only when the requested outcome is information, advice, calculation, writing, or another action rather than finding locations.",
+      "K2.6 cardinality contract: for an unambiguous physical intent, providerNeutralCategoryHeads MUST contain 1 to 4 items and retrievalTerms.precision MUST contain 1 to 8 items. For an ambiguous or non-physical intent, both arrays MUST contain exactly 0 items. Use only the distinct highest-signal source-language and English phrases; never compensate by enumerating synonyms. Put any additional semantic breadth in retrievalTerms.recall within its 16-item limit, and count every array before emitting JSON.",
+      "K2.6 semantic state contract and decision precedence: taskContext means the user is searching for real-world business or service locations. Decide the real-world location goal independently from whether the business purpose is resolved. A bare place-form noun with an unresolved or materially plural business purpose is ambiguous, not non-physical: use entityKind unclear, physicalLocationRequirement required, ambiguity.isAmbiguous true, and keep positive arrays and providerNeutralCategoryHeads empty. A missing valid category head for a real-world location goal means ambiguity, never non_physical. Use entityKind non_physical with physicalLocationRequirement not_applicable only when the requested outcome is information, advice, calculation, writing, or another action rather than finding locations.",
     );
   }
   return {
@@ -478,42 +476,28 @@ function semanticValidationIssueCodes(
   }
   const codes = error.issues.map((issue): KimiSemanticValidationIssueCode => {
     const normalized = issue.toLowerCase();
-    if (normalized.includes("providerneutralcategorycue is required")) {
+    if (normalized.includes("providerneutralcategoryheads is required")) {
       return "required_field_missing";
     }
     if (
-      normalized.includes("providerneutralcategorycue must be an exact object")
+      normalized.includes("providerneutralcategoryheads must contain at most 4")
     ) {
-      return "category_cue_invalid";
+      return "array_max_provider_neutral_category_heads";
     }
     if (
       normalized.includes(
-        "providerneutralcategorycue essentialcategoryphrase must be a bounded english",
+        "providerneutralcategoryheads must contain bounded english",
       )
     ) {
-      return "category_cue_phrase_invalid";
-    }
-    if (
-      normalized.includes(
-        "providerneutralcategorycue surfacevenueform must be a bounded english",
-      )
-    ) {
-      return "category_cue_venue_form_invalid";
-    }
-    if (
-      normalized.includes(
-        "providerneutralcategorycue surfacevenueform requires an essentialcategoryphrase",
-      )
-    ) {
-      return "category_cue_state_invariant";
+      return "category_head_invalid";
     }
     if (normalized.includes("non-executable kimi intent must not contain")) {
       return normalized.includes("positive semantic terms")
         ? "nonready_terms_present"
-        : "nonready_category_cue_present";
+        : "nonready_heads_present";
     }
     if (normalized.includes("executable kimi intent requires")) {
-      return "executable_category_cue_missing";
+      return "executable_heads_missing";
     }
     if (
       normalized.includes(
@@ -884,8 +868,8 @@ export function createKimiClient(config: KimiClientConfig): KimiClient {
       }
       return {
         semanticIntent: parsedSemanticIntent.semanticIntent,
-        providerNeutralCategoryCue:
-          parsedSemanticIntent.providerNeutralCategoryCue,
+        providerNeutralCategoryHeads:
+          parsedSemanticIntent.providerNeutralCategoryHeads,
         modelId: streamed.modelId ?? modelId,
         finishReason: streamed.finishReason,
         firstSseEventLatencyMs: streamed.firstSseEventLatencyMs,

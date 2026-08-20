@@ -1354,7 +1354,7 @@ test("search plan encodes an unseen business intent without canonical candidates
       type: "array",
       items: { type: "string" },
     });
-    assert.ok(responseSchema.required.includes("providerNeutralCategoryCue"));
+    assert.ok(responseSchema.required.includes("providerNeutralCategoryHeads"));
     assert.equal(Object.hasOwn(responseSchema, "definitions"), false);
     const events = [
       {
@@ -1364,10 +1364,11 @@ test("search plan encodes an unseen business intent without canonical candidates
           delta: {
             content: JSON.stringify({
               ...semanticIntent,
-              providerNeutralCategoryCue: {
-                essentialCategoryPhrase: "sports hall",
-                surfaceVenueForm: null,
-              },
+              providerNeutralCategoryHeads: [
+                "sports hall",
+                "gym",
+                "fitness centre",
+              ],
             }),
           },
           finish_reason: null,
@@ -1518,10 +1519,11 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
               delta: {
                 content: JSON.stringify({
                   ...semanticIntent,
-                  providerNeutralCategoryCue: {
-                    essentialCategoryPhrase: "sports hall",
-                    surfaceVenueForm: null,
-                  },
+                  providerNeutralCategoryHeads: [
+                    "sports hall",
+                    "gym",
+                    "fitness centre",
+                  ],
                 }),
               },
               finish_reason: null,
@@ -1771,10 +1773,7 @@ test("warehouse semantic confirmation executes only the signed selected preview"
               delta: {
                 content: JSON.stringify({
                   ...semanticIntent,
-                  providerNeutralCategoryCue: {
-                    essentialCategoryPhrase: null,
-                    surfaceVenueForm: null,
-                  },
+                  providerNeutralCategoryHeads: [],
                 }),
               },
               finish_reason: null,
@@ -2002,10 +2001,7 @@ test("SemanticIntentV2 executes through the production search orchestrator", { c
             delta: {
               content: JSON.stringify({
                 ...encoded,
-                providerNeutralCategoryCue: {
-                  essentialCategoryPhrase: "hairdresser",
-                  surfaceVenueForm: null,
-                },
+                providerNeutralCategoryHeads: ["hairdresser"],
               }),
             },
             finish_reason: null,

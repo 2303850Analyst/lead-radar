@@ -2,10 +2,7 @@ import Ajv, { type ErrorObject } from "ajv";
 
 import semanticIntentSchemaArtifact from "./kimi-semantic-intent.schema.json";
 import semanticIntentTransportSchemaArtifact from "./kimi-semantic-intent.transport.schema.json";
-import type {
-  ProviderNeutralCategoryCue,
-  SemanticIntentV2,
-} from "./types";
+import type { SemanticIntentV2 } from "./types";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -18,17 +15,11 @@ const validateSemanticIntentArtifact = ajv.compile(KIMI_SEMANTIC_INTENT_SCHEMA);
 
 const MAX_SEMANTIC_INTENT_JSON_CHARS = 30_000;
 const MAX_TERM_CHARS = 120;
-const MAX_ESSENTIAL_CATEGORY_PHRASE_CHARS = 64;
-const MAX_SURFACE_VENUE_FORM_CHARS = 32;
+const MAX_PROVIDER_NEUTRAL_CATEGORY_HEADS = 4;
+const MAX_PROVIDER_NEUTRAL_CATEGORY_HEAD_CHARS = 64;
 const MAX_KIMI_WIRE_PRECISION_TERMS = 8;
-const ESSENTIAL_CATEGORY_PHRASE =
+const PROVIDER_NEUTRAL_CATEGORY_HEAD =
   /^(?=.*[A-Za-z])[A-Za-z0-9]+(?:[ '-][A-Za-z0-9]+){0,4}$/;
-const SURFACE_VENUE_FORM =
-  /^(?=.*[A-Za-z])[A-Za-z0-9]+(?:[ '-][A-Za-z0-9]+){0,2}$/;
-const PROVIDER_NEUTRAL_CATEGORY_CUE_KEYS = new Set([
-  "essentialCategoryPhrase",
-  "surfaceVenueForm",
-]);
 const SEMANTIC_TERM_ARRAY_FIELDS = Object.freeze([
   "industries",
   "coreBusinessTypes",
@@ -147,80 +138,53 @@ function canonicalizeSemanticIntentArrays(value: unknown): unknown {
 
 type ParsedKimiSemanticIntentWire = Readonly<{
   semanticIntent: SemanticIntentV2;
-  providerNeutralCategoryCue: ProviderNeutralCategoryCue | null;
+  providerNeutralCategoryHeads: readonly string[];
 }>;
 
 function semanticIntentFromKimiWire(value: unknown): {
   semanticValue: unknown;
-  providerNeutralCategoryCue: ProviderNeutralCategoryCue | null;
+  providerNeutralCategoryHeads: string[];
 } {
   if (!isRecord(value)) {
-    return { semanticValue: value, providerNeutralCategoryCue: null };
+    return { semanticValue: value, providerNeutralCategoryHeads: [] };
   }
-  if (!Object.hasOwn(value, "providerNeutralCategoryCue")) {
+  if (!Object.hasOwn(value, "providerNeutralCategoryHeads")) {
     throw new KimiSchemaValidationError([
-      "providerNeutralCategoryCue is required in Kimi wire output",
+      "providerNeutralCategoryHeads is required in Kimi wire output",
     ]);
   }
-  const rawCue = value.providerNeutralCategoryCue;
+  const rawHeads = value.providerNeutralCategoryHeads;
+  if (Array.isArray(rawHeads) && rawHeads.length > MAX_PROVIDER_NEUTRAL_CATEGORY_HEADS) {
+    throw new KimiSchemaValidationError([
+      "providerNeutralCategoryHeads must contain at most 4 items",
+    ]);
+  }
+  const canonicalHeads = canonicalTermArray(rawHeads);
+  if (!Array.isArray(canonicalHeads)) {
+    throw new KimiSchemaValidationError([
+      "providerNeutralCategoryHeads must be an array",
+    ]);
+  }
+  if (canonicalHeads.length > MAX_PROVIDER_NEUTRAL_CATEGORY_HEADS) {
+    throw new KimiSchemaValidationError([
+      "providerNeutralCategoryHeads must contain at most 4 items",
+    ]);
+  }
   if (
-    !isRecord(rawCue) ||
-    Object.keys(rawCue).length !== PROVIDER_NEUTRAL_CATEGORY_CUE_KEYS.size ||
-    !Object.keys(rawCue).every((key) =>
-      PROVIDER_NEUTRAL_CATEGORY_CUE_KEYS.has(key),
+    !canonicalHeads.every(
+      (head) =>
+        typeof head === "string" &&
+        head.length <= MAX_PROVIDER_NEUTRAL_CATEGORY_HEAD_CHARS &&
+        PROVIDER_NEUTRAL_CATEGORY_HEAD.test(head),
     )
   ) {
     throw new KimiSchemaValidationError([
-      "providerNeutralCategoryCue must be an exact object with essentialCategoryPhrase and surfaceVenueForm",
+      "providerNeutralCategoryHeads must contain bounded English natural-word category heads",
     ]);
   }
-  const rawEssentialCategoryPhrase = rawCue.essentialCategoryPhrase;
-  const rawSurfaceVenueForm = rawCue.surfaceVenueForm;
-  const essentialCategoryPhrase =
-    typeof rawEssentialCategoryPhrase === "string"
-      ? canonicalTerm(rawEssentialCategoryPhrase)
-      : rawEssentialCategoryPhrase;
-  const surfaceVenueForm =
-    typeof rawSurfaceVenueForm === "string"
-      ? canonicalTerm(rawSurfaceVenueForm)
-      : rawSurfaceVenueForm;
-  if (
-    essentialCategoryPhrase !== null &&
-    (typeof essentialCategoryPhrase !== "string" ||
-      essentialCategoryPhrase.length < 1 ||
-      essentialCategoryPhrase.length > MAX_ESSENTIAL_CATEGORY_PHRASE_CHARS ||
-      !ESSENTIAL_CATEGORY_PHRASE.test(essentialCategoryPhrase))
-  ) {
-    throw new KimiSchemaValidationError([
-      "providerNeutralCategoryCue essentialCategoryPhrase must be a bounded English natural-word phrase",
-    ]);
-  }
-  if (
-    surfaceVenueForm !== null &&
-    (typeof surfaceVenueForm !== "string" ||
-      surfaceVenueForm.length < 1 ||
-      surfaceVenueForm.length > MAX_SURFACE_VENUE_FORM_CHARS ||
-      !SURFACE_VENUE_FORM.test(surfaceVenueForm))
-  ) {
-    throw new KimiSchemaValidationError([
-      "providerNeutralCategoryCue surfaceVenueForm must be a bounded English natural-word phrase",
-    ]);
-  }
-  if (essentialCategoryPhrase === null && surfaceVenueForm !== null) {
-    throw new KimiSchemaValidationError([
-      "providerNeutralCategoryCue surfaceVenueForm requires an essentialCategoryPhrase",
-    ]);
-  }
-  const canonicalCue: ProviderNeutralCategoryCue | null =
-    essentialCategoryPhrase === null
-      ? null
-      : Object.freeze({
-          essentialCategoryPhrase,
-          surfaceVenueForm,
-        });
 
   const semanticValue: Record<string, unknown> = { ...value };
-  delete semanticValue.providerNeutralCategoryCue;
+  delete semanticValue.providerNeutralCategoryHeads;
   const rawRetrievalTerms = semanticValue.retrievalTerms;
   if (
     isRecord(rawRetrievalTerms) &&
@@ -235,14 +199,14 @@ function semanticIntentFromKimiWire(value: unknown): {
   if (!isRecord(canonical) || !isRecord(canonical.retrievalTerms)) {
     return {
       semanticValue: canonical,
-      providerNeutralCategoryCue: canonicalCue,
+      providerNeutralCategoryHeads: canonicalHeads,
     };
   }
   const precision = canonical.retrievalTerms.precision;
   if (!Array.isArray(precision)) {
     return {
       semanticValue: canonical,
-      providerNeutralCategoryCue: canonicalCue,
+      providerNeutralCategoryHeads: canonicalHeads,
     };
   }
   if (precision.length > MAX_KIMI_WIRE_PRECISION_TERMS) {
@@ -267,14 +231,14 @@ function semanticIntentFromKimiWire(value: unknown): {
     canonical.entityKind === "unclear" ||
     (canonical.entityKind === "non_physical" &&
       canonical.physicalLocationRequirement === "not_applicable");
-  if (isNonExecutableWireIntent && canonicalCue !== null) {
+  if (isNonExecutableWireIntent && canonicalHeads.length > 0) {
     throw new KimiSchemaValidationError([
-      "non-executable Kimi intent must not contain providerNeutralCategoryCue values",
+      "non-executable Kimi intent must not contain providerNeutralCategoryHeads",
     ]);
   }
-  if (!isNonExecutableWireIntent && canonicalCue === null) {
+  if (!isNonExecutableWireIntent && canonicalHeads.length === 0) {
     throw new KimiSchemaValidationError([
-      "executable Kimi intent requires providerNeutralCategoryCue essentialCategoryPhrase",
+      "executable Kimi intent requires providerNeutralCategoryHeads",
     ]);
   }
   const positiveSemanticArrays = [
@@ -298,7 +262,7 @@ function semanticIntentFromKimiWire(value: unknown): {
   }
 
   const mergedPrecision = canonicalTermArray([
-    ...(canonicalCue ? [canonicalCue.essentialCategoryPhrase] : []),
+    ...canonicalHeads,
     ...precision,
   ]);
   canonical.retrievalTerms = {
@@ -307,7 +271,7 @@ function semanticIntentFromKimiWire(value: unknown): {
   };
   return {
     semanticValue: canonical,
-    providerNeutralCategoryCue: canonicalCue,
+    providerNeutralCategoryHeads: canonicalHeads,
   };
 }
 
@@ -325,7 +289,9 @@ export function parseKimiSemanticIntentWire(
   const parsed = semanticIntentFromKimiWire(value);
   return Object.freeze({
     semanticIntent: validateKimiSemanticIntent(parsed.semanticValue),
-    providerNeutralCategoryCue: parsed.providerNeutralCategoryCue,
+    providerNeutralCategoryHeads: Object.freeze([
+      ...parsed.providerNeutralCategoryHeads,
+    ]),
   });
 }
 

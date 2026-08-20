@@ -6,7 +6,6 @@ import {
   GEOAPIFY_CAPABILITY_REGISTRY,
   GEOAPIFY_CATEGORY_IDS,
   GEOAPIFY_COMPILER_POLICY_VERSION,
-  compileGroundedGeoapifyIntent,
   compileGeoapifySemanticIntent,
   compileGeoapifySelectors,
   validateGeoapifyCatalogCoverage,
@@ -109,16 +108,10 @@ function semanticIntentFor(coreBusinessType = "барбершоп") {
   };
 }
 
-function kimiWireIntent(
-  semanticIntent,
-  cue = {
-    essentialCategoryPhrase: "business location",
-    surfaceVenueForm: null,
-  },
-) {
+function kimiWireIntent(semanticIntent, heads = ["business location"]) {
   return {
     ...semanticIntent,
-    providerNeutralCategoryCue: cue,
+    providerNeutralCategoryHeads: heads,
   };
 }
 
@@ -250,18 +243,18 @@ test("Geoapify name fallback prefers a concise source-language business type", (
   assert.equal(fallback?.nameQuery, "салон оптики");
 });
 
-test("Geoapify compiles model-supplied essential category phrases without niche aliases", () => {
+test("Geoapify compiles model-supplied category heads without niche aliases", () => {
   for (const fixture of [
     {
       sourceQuery: "скалодром",
       core: "indoor rock wall venue",
-      essentialCategoryPhrase: "climbing",
+      head: "climbing",
       expectedCategory: "entertainment.activity_park.climbing",
     },
     {
       sourceQuery: "гончарная мастерская",
       core: "ceramic craft workshop",
-      essentialCategoryPhrase: "pottery",
+      head: "pottery",
       expectedCategory: "production.pottery",
     },
   ]) {
@@ -271,7 +264,7 @@ test("Geoapify compiles model-supplied essential category phrases without niche 
         coreBusinessTypes: [fixture.core],
         productsAndServices: [],
         retrievalTerms: {
-          precision: [fixture.essentialCategoryPhrase, fixture.core],
+          precision: [fixture.head, fixture.core],
           recall: [],
           exclude: [],
         },
@@ -286,72 +279,6 @@ test("Geoapify compiles model-supplied essential category phrases without niche 
       fixture.expectedCategory,
     );
   }
-});
-
-test("Geoapify distinguishes a trusted adapter from an explicit missing production cue", () => {
-  const semanticIntent = semanticIntentFor("sports hall");
-  const trusted = compileGroundedGeoapifyIntent(
-    semanticIntent,
-    plannerInput("спортивный зал"),
-    undefined,
-  );
-  const missingProductionCue = compileGroundedGeoapifyIntent(
-    semanticIntent,
-    plannerInput("спортивный зал"),
-    null,
-  );
-
-  assert.equal(trusted.kind, "grounded");
-  assert.equal(trusted.grounding, "trusted_adapter");
-  assert.equal(missingProductionCue.kind, "coverage_gap");
-  assert.equal(missingProductionCue.reason, "CATEGORY_CUE_MISSING");
-});
-
-test("Geoapify cue grounding checks exact uniqueness against the full registry", () => {
-  const semanticIntent = {
-    ...semanticIntentFor("spa"),
-    retrievalTerms: {
-      precision: [
-        "spa",
-        "doors",
-        "flooring",
-        "glaziery",
-        "paint",
-        "tiles",
-        "windows",
-        "mural",
-      ],
-      recall: [],
-      exclude: [],
-    },
-  };
-  const result = compileGroundedGeoapifyIntent(
-    semanticIntent,
-    plannerInput("спа"),
-    { essentialCategoryPhrase: "spa", surfaceVenueForm: null },
-  );
-
-  assert.equal(result.kind, "coverage_gap");
-  assert.equal(result.reason, "CATEGORY_PHRASE_UNRESOLVED");
-});
-
-test("Geoapify cue grounding never treats plural stemming as an exact phrase", () => {
-  const semanticIntent = {
-    ...semanticIntentFor("potteries"),
-    retrievalTerms: {
-      precision: ["potteries"],
-      recall: [],
-      exclude: [],
-    },
-  };
-  const result = compileGroundedGeoapifyIntent(
-    semanticIntent,
-    plannerInput("гончарные мастерские"),
-    { essentialCategoryPhrase: "potteries", surfaceVenueForm: null },
-  );
-
-  assert.equal(result.kind, "coverage_gap");
-  assert.equal(result.reason, "CATEGORY_PHRASE_UNRESOLVED");
 });
 
 test("Geoapify matcher does not infer a leaf from unordered generic path tokens", () => {
@@ -2747,27 +2674,13 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
   assert.equal(
     isSearchPlan({
       ...renderablePlan,
-      providerNeutralCategoryCue: {
-        essentialCategoryPhrase: "climbing",
-        surfaceVenueForm: "gym",
-      },
-    }),
-    false,
-    "the wire-only cue cannot leak onto the public SearchPlan envelope",
-  );
-  assert.equal(
-    isSearchPlan({
-      ...renderablePlan,
       semanticIntent: {
         ...renderablePlan.semanticIntent,
-        providerNeutralCategoryCue: {
-          essentialCategoryPhrase: "climbing",
-          surfaceVenueForm: "gym",
-        },
+        providerNeutralCategoryHeads: ["climbing"],
       },
     }),
     false,
-    "the wire-only cue cannot leak into a public SearchPlan",
+    "the wire-only head field cannot leak into a public SearchPlan",
   );
   assert.equal(
     isSearchPlan({
@@ -3163,10 +3076,7 @@ test("runtime planner cache never preserves a transient Kimi failure", { concurr
     if (calls === 1) return new Response("rate limited", { status: 429 });
     return kimiSseResponse({
       content: JSON.stringify(
-        kimiWireIntent(semanticIntentFor("sports hall"), {
-          essentialCategoryPhrase: "sports hall",
-          surfaceVenueForm: null,
-        }),
+        kimiWireIntent(semanticIntentFor("sports hall"), ["sports hall"]),
       ),
     });
   };
@@ -3213,10 +3123,7 @@ test("Kimi client accepts a strict response and performs no hidden retry", async
       );
       return kimiSseResponse({
         content: JSON.stringify(
-          kimiWireIntent(semanticIntentFor("барбершоп"), {
-            essentialCategoryPhrase: "barbershop",
-            surfaceVenueForm: null,
-          }),
+          kimiWireIntent(semanticIntentFor("барбершоп"), ["barbershop"]),
         ),
       });
     },
@@ -3282,10 +3189,7 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify(
-          kimiWireIntent(semanticIntentFor("барбершоп"), {
-            essentialCategoryPhrase: "barbershop",
-            surfaceVenueForm: null,
-          }),
+          kimiWireIntent(semanticIntentFor("барбершоп"), ["barbershop"]),
         ),
         done: false,
       }),
@@ -3297,10 +3201,7 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify(
-          kimiWireIntent(semanticIntentFor("барбершоп"), {
-            essentialCategoryPhrase: "barbershop",
-            surfaceVenueForm: null,
-          }),
+          kimiWireIntent(semanticIntentFor("барбершоп"), ["barbershop"]),
         ),
         finishReason: "length",
       }),
@@ -3319,10 +3220,7 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify({
-          ...kimiWireIntent(semanticIntentFor("барбершоп"), {
-            essentialCategoryPhrase: "barbershop",
-            surfaceVenueForm: null,
-          }),
+          ...kimiWireIntent(semanticIntentFor("барбершоп"), ["barbershop"]),
           providerUrl: "https://evil.invalid",
         }),
       }),
@@ -3335,10 +3233,9 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify(
-          kimiWireIntent(semanticIntentFor("https://evil.invalid"), {
-            essentialCategoryPhrase: "business location",
-            surfaceVenueForm: null,
-          }),
+          kimiWireIntent(semanticIntentFor("https://evil.invalid"), [
+            "business location",
+          ]),
         ),
       }),
     expectedCode: "KIMI_INVALID_RESPONSE",
@@ -3349,10 +3246,7 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify({
-          ...kimiWireIntent(semanticIntentFor("склад"), {
-            essentialCategoryPhrase: "warehouse",
-            surfaceVenueForm: null,
-          }),
+          ...kimiWireIntent(semanticIntentFor("склад"), ["warehouse"]),
           ambiguity: {
             isAmbiguous: false,
             reason: "Есть разные трактовки",

@@ -6,7 +6,7 @@
     "normalizedGoal",
     "entityKind",
     "physicalLocationRequirement",
-    "providerNeutralCategoryCue",
+    "providerNeutralCategoryHeads",
     "industries",
     "coreBusinessTypes",
     "adjacentBusinessTypes",
@@ -30,18 +30,9 @@
       "type": "string",
       "enum": ["required", "optional", "not_applicable"]
     },
-    "providerNeutralCategoryCue": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["essentialCategoryPhrase", "surfaceVenueForm"],
-      "properties": {
-        "essentialCategoryPhrase": {
-          "anyOf": [{ "type": "string" }, { "type": "null" }]
-        },
-        "surfaceVenueForm": {
-          "anyOf": [{ "type": "string" }, { "type": "null" }]
-        }
-      }
+    "providerNeutralCategoryHeads": {
+      "type": "array",
+      "items": { "type": "string" }
     },
     "industries": { "type": "array", "items": { "type": "string" } },
     "coreBusinessTypes": { "type": "array", "items": { "type": "string" } },
