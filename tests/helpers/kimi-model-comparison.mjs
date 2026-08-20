@@ -4,6 +4,7 @@ import {
   roundMetric,
 } from "./evaluation-metrics.mjs";
 import { GEOAPIFY_CAPABILITY_REGISTRY } from "../../lib/search-planner/catalogs/geoapify.ts";
+import { RESOLUTION_REASON_CODES } from "../../lib/search-planner/types.ts";
 
 export const KIMI_COMPARISON_CASE_IDS = Object.freeze([
   "physical-music-school-01",
@@ -17,6 +18,10 @@ export const KIMI_COMPARISON_CASE_IDS = Object.freeze([
   "non-11",
   "inj-14",
 ]);
+export const KIMI_COMPARISON_PROFILE_IDS = Object.freeze([
+  "k3-low",
+  "k2.6-thinking-disabled",
+]);
 export const KIMI_MINIMUM_EXPECTED_OUTCOME_RATE = 1;
 const KIMI_OUTCOME_STATUSES = new Set([
   "ready",
@@ -27,6 +32,56 @@ const KIMI_OUTCOME_STATUSES = new Set([
 const GEOAPIFY_CATEGORY_ID_SET = new Set(
   GEOAPIFY_CAPABILITY_REGISTRY.categories,
 );
+const RESOLUTION_REASON_CODE_SET = new Set(RESOLUTION_REASON_CODES);
+
+export function resolveKimiComparisonProfileIds(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized || normalized === "both") {
+    return [...KIMI_COMPARISON_PROFILE_IDS];
+  }
+  if (KIMI_COMPARISON_PROFILE_IDS.includes(normalized)) {
+    return [normalized];
+  }
+  throw new Error(
+    "KIMI_COMPARISON_PROFILE_ID must be both, k3-low, or k2.6-thinking-disabled",
+  );
+}
+
+export function allKimiComparisonProfilesMeasured(profileIds, summaries) {
+  if (!Array.isArray(profileIds) || !Array.isArray(summaries)) return false;
+  const requested = new Set(profileIds);
+  const measured = new Set(summaries.map((profile) => profile?.profileId));
+  if (
+    profileIds.length !== KIMI_COMPARISON_PROFILE_IDS.length ||
+    requested.size !== KIMI_COMPARISON_PROFILE_IDS.length ||
+    summaries.length !== KIMI_COMPARISON_PROFILE_IDS.length ||
+    measured.size !== KIMI_COMPARISON_PROFILE_IDS.length
+  ) {
+    return false;
+  }
+  return KIMI_COMPARISON_PROFILE_IDS.every(
+    (profileId) =>
+      requested.has(profileId) &&
+      summaries.some(
+        (profile) =>
+          profile?.profileId === profileId &&
+          profile.baseGates?.completeSample === true,
+      ),
+  );
+}
+
+export function releaseSafeKimiComparisonSelection(profileIds, selection) {
+  if (
+    selection &&
+    allKimiComparisonProfilesMeasured(profileIds, selection.profiles)
+  ) {
+    return selection;
+  }
+  return {
+    ...selection,
+    selectedProfileId: null,
+  };
+}
 
 export function nextKimiComparisonStartAt({
   now,
@@ -279,6 +334,19 @@ export function summarizeKimiProfile({
               caseAttempts
                 .map((attempt) => attempt.actualOutcome)
                 .filter((value) => KIMI_OUTCOME_STATUSES.has(value)),
+            ),
+            planReasonCodes: countBy(
+              caseAttempts.flatMap((attempt) =>
+                Array.isArray(attempt.planReasonCodes)
+                  ? [
+                      ...new Set(
+                        attempt.planReasonCodes.filter((value) =>
+                          RESOLUTION_REASON_CODE_SET.has(value),
+                        ),
+                      ),
+                    ]
+                  : [],
+              ),
             ),
             compiledProviderCategories: countBy(
               caseAttempts.flatMap((attempt) =>

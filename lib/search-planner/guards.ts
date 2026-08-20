@@ -1,4 +1,5 @@
 import {
+  RESOLUTION_REASON_CODES,
   SEMANTIC_INTENT_SCHEMA_VERSION,
   type SearchPlan,
   type SemanticIntentV2,
@@ -41,21 +42,9 @@ const RETRIEVAL_MATCHES = new Set([
 ]);
 const SUPPORTED_LOCALES = new Set(["ru-RU", "ru-BY", "be-BY", "ru-KZ", "kk-KZ"]);
 const SUPPORTED_COUNTRIES = new Set(["RU", "BY", "KZ"]);
-const RESOLUTION_REASONS = new Set([
-  "EXACT_ALIAS",
-  "FUZZY_MATCH",
-  "SEMANTIC_MATCH",
-  "AMBIGUOUS_SCOPE",
-  "NEGATIVE_CONFLICT",
-  "NO_SUPPORTED_CONCEPT",
-  "PROVIDER_COVERAGE_GAP",
-  "PHYSICAL_PLACE_UNCLEAR",
-  "LOCALE_UNCERTAIN",
-  "KIMI_UNAVAILABLE",
-  "KIMI_INVALID_RESPONSE",
-  "KIMI_ADMISSION_TIMEOUT",
-  "USER_CONFIRMED",
-]);
+const RESOLUTION_REASONS: ReadonlySet<string> = new Set(
+  RESOLUTION_REASON_CODES,
+);
 const SEMANTIC_INTENT_KEYS = new Set([
   "schemaVersion",
   "normalizedGoal",

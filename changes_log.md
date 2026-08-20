@@ -46,9 +46,21 @@
   общим name-fallback. Dotted/underscored provider syntax, включая ID в скобках
   и иной пунктуации, отклоняется до compiler. Wire precision ограничен восемью
   исходными элементами, heads — четырьмя, а объединённый внутренний precision —
-  прежними двенадцатью; raw overflow и exclusions не обрезаются. Изменение
+  прежними двенадцатью; raw overflow и exclusions не обрезаются. Короткий
+  post-checkpoint live-срез показал две дополнительные системные ошибки K2.6:
+  голая поисковая фраза ошибочно считалась неявным non-place запросом, а длинный
+  список синонимов переполнял wire precision. Prompt теперь явно считает
+  `primaryQuery` уже находящимся в контексте поиска мест, отправляет generic
+  place-form nouns на clarification и после сериализованной K2.6 структуры
+  повторяет компактный cardinality contract. Локальная граница по-прежнему
+  отклоняет девятый precision item вместо усечения. Aggregate-only A/B сохраняет
+  только allowlisted plan reason-code counts, чтобы отличать non-place от
+  provider-coverage отказа без model text. Для дешёвой повторной диагностики
+  harness может запускать один строго allowlisted профиль через
+  `KIMI_COMPARISON_PROFILE_ID`; такой неполный запуск остаётся `PARTIAL` и не
+  может выбрать release-профиль. Изменение
   поднимает Kimi model policy до `2026-08-20.6`, prompt content до
-  `2026-08-20.7`, MFJS transport schema до `2026-08-20.4`, provider compiler
+  `2026-08-20.8`, MFJS transport schema до `2026-08-20.4`, provider compiler
   policy до `2026-08-20.6` и decision policy до `2026-08-20.3`, тем самым
   инвалидируя старые runtime cache/confirmation contexts. В публичный план,
   persistent storage и live aggregate не попадают ни wire field, ни raw

@@ -394,7 +394,9 @@ function plannerPrompt(
     "Write category phrases as natural words such as 'music school', not dotted or underscored classification labels.",
     "Preserve include and exclude intent. Separate the core business from adjacent businesses.",
     "Recall and adjacent lists may be empty; do not add generic sibling services merely to fill them.",
-    "First decide whether the user explicitly asks to find a physical business or service location; only then evaluate business-type ambiguity.",
+    "The primaryQuery is already a place-search phrase. First decide whether its subject is a physical business or service location; only then evaluate business-type ambiguity.",
+    "A bare business or place-form noun is an implicit request to find such places; never classify it as non_physical merely because it has no verb. If it names only a generic place form with several materially different business purposes, mark it ambiguous instead of inventing a modifier or selecting one purpose.",
+    "Each provider-neutral head must be the minimal lexical business-type head, not a venue description. Remove setting adjectives and container nouns when the remaining words still preserve the distinguishing type; keep them when removal would change the business type.",
     "For non-physical intent, keep providerNeutralCategoryHeads and all positive business and retrieval arrays empty and use non_physical with not_applicable location requirement.",
     "For materially ambiguous intent, do not enumerate interpretations in positive arrays: keep providerNeutralCategoryHeads, industries, coreBusinessTypes, adjacentBusinessTypes, productsAndServices, includeSignals, retrievalTerms.precision, and retrievalTerms.recall empty; express the uncertainty only in ambiguity.reason and ambiguity.clarificationQuestion.",
     "For every other intent, providerNeutralCategoryHeads, coreBusinessTypes, and retrievalTerms.precision must contain the strongest physical-business interpretation.",
@@ -408,6 +410,7 @@ function plannerPrompt(
   if (mode === "k2.6-thinking-disabled") {
     systemInstructions.push(
       `The JSON object must conform to this exact field structure: ${JSON.stringify(KIMI_SEMANTIC_INTENT_TRANSPORT_SCHEMA)}`,
+      "K2.6 cardinality contract: for an unambiguous physical intent, providerNeutralCategoryHeads MUST contain 1 to 4 items and retrievalTerms.precision MUST contain 1 to 8 items. For an ambiguous or non-physical intent, both arrays MUST contain exactly 0 items. Use only the distinct highest-signal source-language and English phrases; never compensate by enumerating synonyms. Put any additional semantic breadth in retrievalTerms.recall within its 16-item limit, and count every array before emitting JSON.",
     );
   }
   return {

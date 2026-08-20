@@ -60,20 +60,23 @@ export type NormalizedSearchIntent = {
   countryCodes: [SupportedCountryCode];
 };
 
-export type ResolutionReasonCode =
-  | "EXACT_ALIAS"
-  | "FUZZY_MATCH"
-  | "SEMANTIC_MATCH"
-  | "AMBIGUOUS_SCOPE"
-  | "NEGATIVE_CONFLICT"
-  | "NO_SUPPORTED_CONCEPT"
-  | "PROVIDER_COVERAGE_GAP"
-  | "PHYSICAL_PLACE_UNCLEAR"
-  | "LOCALE_UNCERTAIN"
-  | "KIMI_UNAVAILABLE"
-  | "KIMI_INVALID_RESPONSE"
-  | "KIMI_ADMISSION_TIMEOUT"
-  | "USER_CONFIRMED";
+export const RESOLUTION_REASON_CODES = Object.freeze([
+  "EXACT_ALIAS",
+  "FUZZY_MATCH",
+  "SEMANTIC_MATCH",
+  "AMBIGUOUS_SCOPE",
+  "NEGATIVE_CONFLICT",
+  "NO_SUPPORTED_CONCEPT",
+  "PROVIDER_COVERAGE_GAP",
+  "PHYSICAL_PLACE_UNCLEAR",
+  "LOCALE_UNCERTAIN",
+  "KIMI_UNAVAILABLE",
+  "KIMI_INVALID_RESPONSE",
+  "KIMI_ADMISSION_TIMEOUT",
+  "USER_CONFIRMED",
+] as const);
+
+export type ResolutionReasonCode = (typeof RESOLUTION_REASON_CODES)[number];
 
 export type ConceptCandidate = {
   conceptId: string;

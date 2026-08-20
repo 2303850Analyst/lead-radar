@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  allKimiComparisonProfilesMeasured,
   buildKimiComparisonDecision,
   evaluateProductionJourneyGate,
   evaluateKimiOutcomeContract,
   KIMI_COMPARISON_CASE_IDS,
   KIMI_MINIMUM_EXPECTED_OUTCOME_RATE,
   nextKimiComparisonStartAt,
+  releaseSafeKimiComparisonSelection,
+  resolveKimiComparisonProfileIds,
   selectKimiProfile,
   summarizeKimiProfile,
 } from "./helpers/kimi-model-comparison.mjs";
@@ -22,6 +25,68 @@ import {
 } from "../scripts/lib/search-canary-profile.mjs";
 
 const pricing = Object.freeze({ cachedInput: 0.3, input: 3, output: 15 });
+
+test("comparison diagnostics can select one allowlisted profile fail-closed", () => {
+  assert.deepEqual(resolveKimiComparisonProfileIds(undefined), [
+    "k3-low",
+    "k2.6-thinking-disabled",
+  ]);
+  assert.deepEqual(resolveKimiComparisonProfileIds("both"), [
+    "k3-low",
+    "k2.6-thinking-disabled",
+  ]);
+  assert.deepEqual(resolveKimiComparisonProfileIds(" k2.6-thinking-disabled "), [
+    "k2.6-thinking-disabled",
+  ]);
+  assert.throws(
+    () => resolveKimiComparisonProfileIds("kimi-k2.6"),
+    /KIMI_COMPARISON_PROFILE_ID/i,
+  );
+});
+
+test("a single-profile diagnostic can never satisfy the full-profile gate", () => {
+  const completeK3 = summary("k3-low", attempts(30));
+  const completeK2 = summary("k2.6-thinking-disabled", attempts(30));
+
+  assert.equal(
+    allKimiComparisonProfilesMeasured(["k3-low"], [completeK3]),
+    false,
+  );
+  assert.equal(
+    allKimiComparisonProfilesMeasured(
+      ["k3-low", "k2.6-thinking-disabled"],
+      [completeK3, completeK2],
+    ),
+    true,
+  );
+  assert.equal(
+    allKimiComparisonProfilesMeasured(
+      ["k3-low", "k3-low"],
+      [completeK3, completeK3],
+    ),
+    false,
+  );
+
+  const measuredSelection = selectKimiProfile([completeK3]);
+  assert.equal(measuredSelection.selectedProfileId, "k3-low");
+  const releaseSelection = releaseSafeKimiComparisonSelection(
+    ["k3-low"],
+    measuredSelection,
+  );
+  const journeyGate = evaluateProductionJourneyGate(
+    productionCanary(),
+    productionGateOptions(releaseSelection.selectedProfileId),
+  );
+  const decision = buildKimiComparisonDecision(releaseSelection, journeyGate, {
+    encoderHardGates: { allProfilesMeasured: false },
+  });
+  assert.equal(releaseSelection.selectedProfileId, null);
+  assert.equal(journeyGate.passed, false);
+  assert.equal(decision.encoderDecision, "FAIL");
+  assert.equal(decision.releaseDecision, "FAIL");
+  assert.equal(decision.evaluationStatus, "PARTIAL");
+  assert.equal(decision.canUnblockIssue14, false);
+});
 
 function attempts(
   count,
@@ -182,6 +247,7 @@ test("comparison report keeps only bounded synthetic per-case aggregates", () =>
   measured[0].caseId = "physical-music-school-01";
   measured[0].actualOutcome = "ready";
   measured[0].compiledProviderCategoryIds = ["education.music_school"];
+  measured[0].planReasonCodes = ["SEMANTIC_MATCH"];
   measured[1] = {
     ...measured[1],
     caseId: "physical-music-school-01",
@@ -200,6 +266,10 @@ test("comparison report keeps only bounded synthetic per-case aggregates", () =>
     errorCode: "KIMI_INVALID_RESPONSE",
     invalidResponseReason: "semantic_schema_invalid",
     semanticValidationIssueCodes: ["array_min_size"],
+    planReasonCodes: [
+      "PROVIDER_COVERAGE_GAP",
+      "model-authored-invalid-reason",
+    ],
     retryable: true,
   };
   measured.push({
@@ -219,6 +289,10 @@ test("comparison report keeps only bounded synthetic per-case aggregates", () =>
       invalidResponseReasons: { semantic_schema_invalid: 1 },
       semanticValidationIssues: { array_min_size: 1 },
       statusCounts: { ready: 1 },
+      planReasonCodes: {
+        SEMANTIC_MATCH: 1,
+        PROVIDER_COVERAGE_GAP: 1,
+      },
       compiledProviderCategories: { "education.music_school": 2 },
     },
   });
@@ -332,7 +406,7 @@ const expectedCanaryVersions = Object.freeze({
   modelPolicy: "kimi-model-policy/2026-08-20.6",
   transportSchema: "mfjs-semantic-intent/2026-08-20.4",
   prompt:
-    "semantic-intent-v2/2026-08-20.7+kimi-model-policy/2026-08-20.6:kimi-k2.6:k2.6-thinking-disabled:none",
+    "semantic-intent-v2/2026-08-20.8+kimi-model-policy/2026-08-20.6:kimi-k2.6:k2.6-thinking-disabled:none",
   semanticIntentSchema: "2.2",
   searchPlanSchema: "2.2",
   decisionPolicy: "decision-current",

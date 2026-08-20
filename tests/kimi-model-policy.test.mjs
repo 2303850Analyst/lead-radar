@@ -154,6 +154,18 @@ test("K3 request uses only its server-owned reasoning effort policy", async () =
   assert.match(payload.messages[0].content, /shortest unambiguous English head phrase/);
   assert.match(payload.messages[0].content, /providerNeutralCategoryHeads/);
   assert.match(payload.messages[0].content, /only then evaluate business-type ambiguity/);
+  assert.match(
+    payload.messages[0].content,
+    /primaryQuery is already a place-search phrase/i,
+  );
+  assert.match(
+    payload.messages[0].content,
+    /bare business or place-form noun.*implicit request/i,
+  );
+  assert.match(
+    payload.messages[0].content,
+    /minimal lexical business-type head.*not a venue description/i,
+  );
   assert.match(payload.messages[0].content, /do not enumerate interpretations in positive arrays/);
   assert.equal(result.usage.cachedInputTokens, 20);
   assert.ok(
@@ -552,33 +564,35 @@ test("Kimi wire precision and category-head bounds compose to the public limit",
   const result = await client.encode(kimiRequest());
   assert.equal(result.semanticIntent.retrievalTerms.precision.length, 12);
 
-  for (const overflowPrecision of [
-    [...precision, "precision 8"],
-    Array.from({ length: 9 }, (_, index) =>
-      index % 2 ? " SAME TERM " : "same term",
-    ),
-  ]) {
-    const overflow = {
-      ...semanticIntent,
-      retrievalTerms: {
-        ...semanticIntent.retrievalTerms,
-        precision: overflowPrecision,
-      },
-    };
-    const rejected = createKimiClient({
-      apiKey,
-      model: "kimi-k3",
-      fetchImpl: async () =>
-        kimiSseResponse("kimi-k3", overflow, ["sports hall"]),
-    });
-    await assert.rejects(
-      rejected.encode(kimiRequest()),
-      (error) =>
-        error instanceof KimiClientError &&
-        error.semanticValidationIssueCodes.includes(
-          "array_max_retrieval_precision",
-        ),
-    );
+  for (const model of ["kimi-k3", "kimi-k2.6"]) {
+    for (const overflowPrecision of [
+      [...precision, "precision 8"],
+      Array.from({ length: 9 }, (_, index) =>
+        index % 2 ? " SAME TERM " : "same term",
+      ),
+    ]) {
+      const overflow = {
+        ...semanticIntent,
+        retrievalTerms: {
+          ...semanticIntent.retrievalTerms,
+          precision: overflowPrecision,
+        },
+      };
+      const rejected = createKimiClient({
+        apiKey,
+        model,
+        fetchImpl: async () =>
+          kimiSseResponse(model, overflow, ["sports hall"]),
+      });
+      await assert.rejects(
+        rejected.encode(kimiRequest()),
+        (error) =>
+          error instanceof KimiClientError &&
+          error.semanticValidationIssueCodes.includes(
+            "array_max_retrieval_precision",
+          ),
+      );
+    }
   }
 });
 
@@ -757,12 +771,31 @@ test("models canary cancels a streaming HTTP error body before rejecting", async
 
 test("K2.6 request disables thinking without a K3-only field", async () => {
   const { client, payload } = await capturedPayload({ model: "kimi-k2.6" });
+  const systemPrompt = payload.messages[0].content;
 
   assert.deepEqual(payload.thinking, { type: "disabled" });
   assert.equal(Object.hasOwn(payload, "reasoning_effort"), false);
   assert.deepEqual(payload.response_format, { type: "json_object" });
-  assert.match(payload.messages[0].content, /schemaVersion/);
-  assert.match(payload.messages[0].content, /providerNeutralCategoryHeads/);
+  assert.match(systemPrompt, /schemaVersion/);
+  assert.match(systemPrompt, /providerNeutralCategoryHeads/);
+  const serializedSchemaAt = systemPrompt.indexOf('"providerNeutralCategoryHeads"');
+  const cardinalityContractAt = systemPrompt.lastIndexOf(
+    "K2.6 cardinality contract",
+  );
+  assert.ok(serializedSchemaAt >= 0);
+  assert.ok(cardinalityContractAt > serializedSchemaAt);
+  assert.match(
+    systemPrompt.slice(cardinalityContractAt),
+    /unambiguous physical intent.*retrievalTerms\.precision MUST contain 1 to 8 items/i,
+  );
+  assert.match(
+    systemPrompt.slice(cardinalityContractAt),
+    /ambiguous or non-physical intent, both arrays MUST contain exactly 0 items/i,
+  );
+  assert.match(
+    systemPrompt.slice(cardinalityContractAt),
+    /never compensate by enumerating synonyms/i,
+  );
   assert.equal(
     client.cacheIdentity,
     "kimi-model-policy/2026-08-20.6:kimi-k2.6:k2.6-thinking-disabled:none",

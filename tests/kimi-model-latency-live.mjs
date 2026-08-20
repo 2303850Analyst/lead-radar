@@ -37,12 +37,15 @@ import {
 } from "../scripts/lib/search-canary-profile.mjs";
 import { assertAggregateOnly } from "./helpers/evaluation-metrics.mjs";
 import {
+  allKimiComparisonProfilesMeasured,
   buildKimiComparisonDecision,
   evaluateKimiOutcomeContract,
   evaluateProductionJourneyGate,
   KIMI_COMPARISON_CASE_IDS,
   KIMI_MINIMUM_EXPECTED_OUTCOME_RATE,
   nextKimiComparisonStartAt,
+  releaseSafeKimiComparisonSelection,
+  resolveKimiComparisonProfileIds,
   selectKimiProfile,
   summarizeKimiProfile,
 } from "./helpers/kimi-model-comparison.mjs";
@@ -154,9 +157,12 @@ const caseLimit = boundedInteger(
   KIMI_COMPARISON_CASE_IDS.length,
 );
 const KIMI_PRICING_POLICY_VERSION = "kimi-pricing-usd/2026-08-20.1";
+const comparisonProfileIds = resolveKimiComparisonProfileIds(
+  process.env.KIMI_COMPARISON_PROFILE_ID,
+);
 
 const MODEL_PROFILES = Object.freeze(
-  ["k3-low", "k2.6-thinking-disabled"].map((profileId) => {
+  comparisonProfileIds.map((profileId) => {
     const profile = resolveSearchCanaryKimiProfile(profileId);
     return Object.freeze({
       id: profile.id,
@@ -287,6 +293,7 @@ async function runAttempt(state, entry) {
     state.attempts.push({
       caseId: entry.id,
       actualOutcome: plan.status,
+      planReasonCodes: plan.resolution.reasonCodes,
       compiledProviderCategoryIds:
         plan.executionPreview?.categoryLabels ?? [],
       ok: encoderOk,
@@ -317,6 +324,7 @@ async function runAttempt(state, entry) {
     state.attempts.push({
       caseId: entry.id,
       actualOutcome: null,
+      planReasonCodes: [],
       compiledProviderCategoryIds: [],
       ok: false,
       schemaPassed: false,
@@ -363,9 +371,13 @@ const summaries = states.map((state) =>
     expectedAttemptCount,
   }),
 );
-const selection = selectKimiProfile(summaries, {
+const measuredSelection = selectKimiProfile(summaries, {
   minimumExpectedOutcomeRate: KIMI_MINIMUM_EXPECTED_OUTCOME_RATE,
 });
+const selection = releaseSafeKimiComparisonSelection(
+  comparisonProfileIds,
+  measuredSelection,
+);
 const totalAttempts = selection.profiles.reduce(
   (sum, profile) => sum + profile.attemptCount,
   0,
@@ -373,8 +385,9 @@ const totalAttempts = selection.profiles.reduce(
 const encoderHardGates = {
   fullFrozenCorpus: cases.length === KIMI_COMPARISON_CASE_IDS.length,
   minimumFiftyCalls: totalAttempts >= 50,
-  allProfilesMeasured: selection.profiles.every(
-    (profile) => profile.baseGates.completeSample,
+  allProfilesMeasured: allKimiComparisonProfilesMeasured(
+    comparisonProfileIds,
+    selection.profiles,
   ),
   baselineQualityMeasured: selection.baselineMeasured,
   atLeastOneEligibleProfile: selection.selectedProfileId !== null,
@@ -497,6 +510,7 @@ const report = {
   tierProfile: {
     concurrency: 1,
     ordering: "alternating-blocked-case-repeat",
+    profileIds: comparisonProfileIds,
     minStartIntervalMs,
     modelMinStartIntervalMs,
     timeoutMs,
