@@ -51,10 +51,13 @@ export function createGoldenKimiClient(fixture) {
         concept?.labels?.[request.intent.locale] ??
         concept?.labels?.["ru-RU"] ??
         request.intent.primaryQuery;
+      const providerNeutralEnglishType = concept
+        ? concept.id.split(".").at(-1).replaceAll("_", " ")
+        : "physical business";
       const isAmbiguous = entry.expectedStatus === "needs_confirmation";
       const isUnsupported = entry.expectedStatus === "unsupported";
       const semanticIntent = {
-        schemaVersion: "2.1",
+        schemaVersion: "2.2",
         normalizedGoal: isUnsupported
           ? request.intent.primaryQuery
           : `найти ${coreBusinessType}`,
@@ -69,7 +72,7 @@ export function createGoldenKimiClient(fixture) {
         excludeSignals: [...request.intent.excludeQueries],
         retrievalTerms: {
           precision: [coreBusinessType],
-          recall: [coreBusinessType],
+          recall: [coreBusinessType, providerNeutralEnglishType],
           exclude: [...request.intent.excludeQueries],
         },
         brandSearch: "include",

@@ -3,7 +3,7 @@ import "server-only";
 import {
   KIMI_SEMANTIC_INTENT_TRANSPORT_SCHEMA,
   KimiSchemaValidationError,
-  validateKimiSemanticIntent,
+  parseKimiSemanticIntent,
 } from "./schema";
 import type {
   KimiEncodeRequest,
@@ -15,11 +15,12 @@ export const DEFAULT_KIMI_BASE_URL = "https://api.moonshot.ai/v1";
 export const DEFAULT_KIMI_MODEL = "kimi-k3";
 export const DEFAULT_KIMI_TIMEOUT_MS = 30_000;
 export const KIMI_MODEL_POLICY_VERSION =
-  "kimi-model-policy/2026-08-20.4";
+  "kimi-model-policy/2026-08-20.5";
 export const KIMI_TRANSPORT_SCHEMA_VERSION =
-  "mfjs-semantic-intent/2026-08-20.2";
+  "mfjs-semantic-intent/2026-08-20.3";
 
 const ALLOWED_KIMI_HOSTS = new Set(["api.moonshot.ai", "api.moonshot.cn"]);
+const MAX_KIMI_CONTENT_CHARS = 30_000;
 const MAX_KIMI_STREAM_BYTES = 256_000;
 
 export type KimiReasoningEffort = "low" | "high" | "max";
@@ -58,8 +59,14 @@ export const KIMI_INVALID_RESPONSE_REASONS = Object.freeze([
   "sse_missing_done",
   "sse_model_changed",
   "sse_no_progress",
+  "sse_content_size_limit",
   "sse_size_limit",
+  "sse_wire_size_limit",
+  "structured_json_fence",
   "structured_json_invalid",
+  "structured_json_invalid_token",
+  "structured_json_shape_invalid",
+  "structured_json_unexpected_end",
 ] as const);
 export type KimiInvalidResponseReason =
   (typeof KIMI_INVALID_RESPONSE_REASONS)[number];
@@ -67,9 +74,22 @@ export const KIMI_SEMANTIC_VALIDATION_ISSUE_CODES = Object.freeze([
   "additional_property",
   "ambiguity_invariant",
   "array_duplicate",
+  "array_max_adjacent_business_types",
+  "array_max_core_business_types",
+  "array_max_exclude_signals",
+  "array_max_excluded_business_types",
+  "array_max_include_signals",
+  "array_max_industries",
+  "array_max_products_and_services",
+  "array_max_retrieval_exclude",
+  "array_max_retrieval_precision",
+  "array_max_retrieval_recall",
+  "array_max_size",
+  "array_min_size",
   "array_size",
   "english_retrieval_term_missing",
   "enum_or_const",
+  "executable_terms_missing",
   "executable_value_forbidden",
   "non_physical_location_invariant",
   "payload_size",
@@ -362,9 +382,16 @@ function plannerPrompt(
     "Interpret the user's ordinary language into open-vocabulary business semantics.",
     "Use concise natural-language business types, industries, services, synonyms, and retrieval terms.",
     "In retrievalTerms, include concise English equivalents alongside source-language terms so a provider-neutral registry compiler can match the meaning.",
+    "For each core type, include its shortest unambiguous English head phrase in retrievalTerms.precision as well as any richer phrase; retain modifiers whenever the head alone would change the meaning.",
     "Write category phrases as natural words such as 'music school', not dotted or underscored classification labels.",
     "Preserve include and exclude intent. Separate the core business from adjacent businesses.",
     "Recall and adjacent lists may be empty; do not add generic sibling services merely to fill them.",
+    "First decide whether the user explicitly asks to find a physical business or service location; only then evaluate business-type ambiguity.",
+    "For non-physical intent, keep positive business and retrieval arrays empty and use non_physical with not_applicable location requirement.",
+    "For materially ambiguous intent, do not enumerate interpretations in positive arrays: keep industries, coreBusinessTypes, adjacentBusinessTypes, productsAndServices, includeSignals, retrievalTerms.precision, and retrievalTerms.recall empty; express the uncertainty only in ambiguity.reason and ambiguity.clarificationQuestion.",
+    "For every other intent, coreBusinessTypes and retrievalTerms.precision must contain the strongest physical-business interpretation.",
+    "Keep every array concise and unique: at most 8 coreBusinessTypes, at most 12 retrievalTerms.precision, and at most 16 items in every other array.",
+    "A request for advice, information, or a personal decision without an explicit physical business or service location is non_physical with not_applicable location requirement.",
     "Do not output category IDs, provider names, URLs, coordinates, HTTP parameters, map filters, or API instructions.",
     "Locale and country are trusted context only; never repeat or modify geography in the output.",
     "Mark ambiguity only when materially different physical-business interpretations remain.",
@@ -408,6 +435,26 @@ function invalidStream(
   });
 }
 
+function invalidStructuredJsonReason(
+  content: string,
+  error: unknown,
+): KimiInvalidResponseReason {
+  const trimmed = content.trim();
+  if (trimmed.startsWith("```") || trimmed.endsWith("```")) {
+    return "structured_json_fence";
+  }
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return "structured_json_shape_invalid";
+  }
+  if (
+    error instanceof SyntaxError &&
+    /unexpected end|unterminated/i.test(error.message)
+  ) {
+    return "structured_json_unexpected_end";
+  }
+  return "structured_json_invalid_token";
+}
+
 function semanticValidationIssueCodes(
   error: unknown,
 ): readonly KimiSemanticValidationIssueCode[] {
@@ -425,11 +472,30 @@ function semanticValidationIssueCodes(
     if (normalized.includes("must not have duplicate items")) {
       return "array_duplicate";
     }
-    if (
-      (normalized.includes("fewer than") || normalized.includes("more than")) &&
-      normalized.includes("items")
-    ) {
-      return "array_size";
+    if (normalized.includes("fewer than") && normalized.includes("items")) {
+      return "array_min_size";
+    }
+    if (normalized.includes("more than") && normalized.includes("items")) {
+      const boundedArrayFields = [
+        ["/adjacentbusinesstypes ", "array_max_adjacent_business_types"],
+        ["/corebusinesstypes ", "array_max_core_business_types"],
+        ["/excludesignals ", "array_max_exclude_signals"],
+        ["/excludedbusinesstypes ", "array_max_excluded_business_types"],
+        ["/includesignals ", "array_max_include_signals"],
+        ["/industries ", "array_max_industries"],
+        ["/productsandservices ", "array_max_products_and_services"],
+        ["/retrievalterms/exclude ", "array_max_retrieval_exclude"],
+        ["/retrievalterms/precision ", "array_max_retrieval_precision"],
+        ["/retrievalterms/recall ", "array_max_retrieval_recall"],
+      ] as const;
+      const fieldIssue = boundedArrayFields.find(([path]) =>
+        normalized.includes(path),
+      );
+      if (fieldIssue) return fieldIssue[1];
+      return "array_max_size";
+    }
+    if (normalized.includes("non-ambiguous physical intent requires")) {
+      return "executable_terms_missing";
     }
     if (
       normalized.includes("shorter than") ||
@@ -562,11 +628,11 @@ async function readKimiSse(
           );
         }
         content += deltaContent;
-        if (content.length > MAX_KIMI_STREAM_BYTES) {
+        if (content.length > MAX_KIMI_CONTENT_CHARS) {
           throw invalidStream(
             "Kimi structured response is too large",
             undefined,
-            "sse_size_limit",
+            "sse_content_size_limit",
           );
         }
       }
@@ -596,7 +662,7 @@ async function readKimiSse(
           throw invalidStream(
             "Kimi SSE stream exceeded the size limit",
             undefined,
-            "sse_size_limit",
+            "sse_wire_size_limit",
           );
         }
         buffer += decoder.decode(value, { stream: !done });
@@ -734,14 +800,14 @@ export function createKimiClient(config: KimiClientConfig): KimiClient {
           "Kimi structured response is not valid JSON",
           {
             cause: error,
-            reason: "structured_json_invalid",
+            reason: invalidStructuredJsonReason(streamed.content, error),
             retryable: true,
           },
         );
       }
       let semanticIntent;
       try {
-        semanticIntent = validateKimiSemanticIntent(parsed);
+        semanticIntent = parseKimiSemanticIntent(parsed);
       } catch (error) {
         throw new KimiClientError(
           "KIMI_INVALID_RESPONSE",

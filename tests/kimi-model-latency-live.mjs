@@ -5,6 +5,7 @@ import {
   KIMI_INVALID_RESPONSE_REASONS,
   KIMI_MODEL_POLICY_VERSION,
   KIMI_SEMANTIC_VALIDATION_ISSUE_CODES,
+  KIMI_TRANSPORT_SCHEMA_VERSION,
   createKimiClient,
 } from "../lib/search-planner/kimi-client.ts";
 import {
@@ -41,10 +42,14 @@ import {
   evaluateProductionJourneyGate,
   KIMI_COMPARISON_CASE_IDS,
   KIMI_MINIMUM_EXPECTED_OUTCOME_RATE,
+  nextKimiComparisonStartAt,
   selectKimiProfile,
   summarizeKimiProfile,
 } from "./helpers/kimi-model-comparison.mjs";
-import { expandOpenWorldCases } from "./helpers/open-world-evaluation.mjs";
+import {
+  expandOpenWorldCases,
+  stableCorpusChecksum,
+} from "./helpers/open-world-evaluation.mjs";
 
 const enabled = process.env.RUN_KIMI_MODEL_LATENCY_COMPARISON === "1";
 if (!enabled) {
@@ -125,10 +130,16 @@ function retryable(error) {
 
 const repeats = boundedInteger("KIMI_COMPARISON_REPEATS", 3, 1, 10);
 const minStartIntervalMs = boundedInteger(
-  "KIMI_MIN_START_INTERVAL_MS",
-  20_000,
+  "KIMI_COMPARISON_MIN_START_INTERVAL_MS",
+  35_000,
   0,
   120_000,
+);
+const modelMinStartIntervalMs = boundedInteger(
+  "KIMI_COMPARISON_MODEL_MIN_START_INTERVAL_MS",
+  70_000,
+  0,
+  180_000,
 );
 const timeoutMs = boundedInteger(
   "KIMI_REQUEST_TIMEOUT_MS",
@@ -166,6 +177,13 @@ if (fixture.version !== "open-world-cis-v0.4.0-1") {
   throw new Error("Frozen Kimi comparison corpus version changed unexpectedly");
 }
 const fixtureEntries = expandOpenWorldCases(fixture);
+const expandedCorpusChecksum = stableCorpusChecksum(fixtureEntries);
+if (expandedCorpusChecksum !== fixture.expansionContract.expandedChecksum) {
+  throw new Error("Frozen Kimi comparison corpus checksum changed unexpectedly");
+}
+const packageMetadata = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+);
 const entryById = new Map(fixtureEntries.map((entry) => [entry.id, entry]));
 const cases = KIMI_COMPARISON_CASE_IDS.slice(0, caseLimit).map((id) => {
   const entry = entryById.get(id);
@@ -174,12 +192,22 @@ const cases = KIMI_COMPARISON_CASE_IDS.slice(0, caseLimit).map((id) => {
 });
 
 let lastStartAt = 0;
-async function waitForTierZeroSlot() {
-  const remaining = lastStartAt + minStartIntervalMs - Date.now();
+const lastStartAtByProfile = new Map();
+async function waitForTierZeroSlot(profileId) {
+  const now = Date.now();
+  const startAt = nextKimiComparisonStartAt({
+    now,
+    lastGlobalStartAt: lastStartAt,
+    lastModelStartAt: lastStartAtByProfile.get(profileId) ?? 0,
+    minimumGlobalIntervalMs: minStartIntervalMs,
+    minimumModelIntervalMs: modelMinStartIntervalMs,
+  });
+  const remaining = startAt - now;
   if (remaining > 0) {
     await new Promise((resolve) => setTimeout(resolve, remaining));
   }
   lastStartAt = Date.now();
+  lastStartAtByProfile.set(profileId, lastStartAt);
 }
 
 const states = MODEL_PROFILES.map((profile) => ({
@@ -199,7 +227,7 @@ const states = MODEL_PROFILES.map((profile) => ({
 
 const startedAt = new Date();
 for (const state of states) {
-  await waitForTierZeroSlot();
+  await waitForTierZeroSlot(state.profile.id);
   try {
     const canary = await state.client.listModels();
     state.modelCanary = {
@@ -235,7 +263,7 @@ async function runAttempt(state, entry) {
     },
   };
 
-  await waitForTierZeroSlot();
+  await waitForTierZeroSlot(state.profile.id);
   const wallStartedAt = Date.now();
   try {
     const plan = await createSearchPlan(
@@ -257,6 +285,10 @@ async function runAttempt(state, entry) {
       code.startsWith("KIMI_"),
     );
     state.attempts.push({
+      caseId: entry.id,
+      actualOutcome: plan.status,
+      compiledProviderCategoryIds:
+        plan.executionPreview?.categoryLabels ?? [],
       ok: encoderOk,
       schemaPassed: encoderOk,
       executionContractPassed: encoderOk && executionContractPassed,
@@ -283,6 +315,9 @@ async function runAttempt(state, entry) {
     });
   } catch (error) {
     state.attempts.push({
+      caseId: entry.id,
+      actualOutcome: null,
+      compiledProviderCategoryIds: [],
       ok: false,
       schemaPassed: false,
       executionContractPassed: false,
@@ -371,9 +406,6 @@ if (productionCanaryReportPath) {
     const selectedCanaryProfile = resolveSearchCanaryKimiProfile(
       selection.selectedProfileId,
     );
-    const packageMetadata = JSON.parse(
-      await readFile(new URL("../package.json", import.meta.url), "utf8"),
-    );
     const artifactFingerprints =
       await currentSearchCanaryArtifactFingerprints();
     expectedProductionVersions = {
@@ -419,9 +451,21 @@ const comparisonDecision = buildKimiComparisonDecision(
 );
 const report = {
   evaluation: "LeadRadar Kimi model latency comparison",
+  aggregateOnly: true,
   startedAt: startedAt.toISOString(),
   finishedAt: new Date().toISOString(),
-  modelPolicyVersion: KIMI_MODEL_POLICY_VERSION,
+  versions: {
+    app: packageMetadata.version,
+    modelPolicy: KIMI_MODEL_POLICY_VERSION,
+    promptContent: KIMI_PROMPT_CONTENT_VERSION,
+    transportSchema: KIMI_TRANSPORT_SCHEMA_VERSION,
+    semanticIntentSchema: SEMANTIC_INTENT_SCHEMA_VERSION,
+    searchPlanSchema: SEARCH_PLAN_SCHEMA_VERSION,
+    decisionPolicy: DECISION_POLICY_VERSION,
+    compilerPolicy: GEOAPIFY_COMPILER_POLICY_VERSION,
+    providerCatalog: GEOAPIFY_CAPABILITY_REGISTRY.version,
+    providerCatalogChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+  },
   pricingPolicy: {
     version: KIMI_PRICING_POLICY_VERSION,
     currency: "USD",
@@ -429,8 +473,8 @@ const report = {
   },
   corpus: {
     version: fixture.version,
-    expandedChecksum: fixture.expansionContract.expandedChecksum,
-    selectionVersion: "kimi-latency-open-world-cis/2026-08-20.2",
+    expandedChecksum: expandedCorpusChecksum,
+    selectionVersion: "kimi-latency-open-world-cis/2026-08-20.4",
     caseCount: cases.length,
     repeats,
     composition: {
@@ -453,6 +497,7 @@ const report = {
     concurrency: 1,
     ordering: "alternating-blocked-case-repeat",
     minStartIntervalMs,
+    modelMinStartIntervalMs,
     timeoutMs,
     caseLimit,
     transportRetries: 0,

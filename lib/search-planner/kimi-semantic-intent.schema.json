@@ -22,7 +22,7 @@
     "ambiguity"
   ],
   "properties": {
-    "schemaVersion": { "const": "2.1" },
+    "schemaVersion": { "const": "2.2" },
     "normalizedGoal": { "$ref": "#/definitions/longText" },
     "entityKind": {
       "type": "string",
@@ -35,7 +35,7 @@
     "industries": { "$ref": "#/definitions/terms" },
     "coreBusinessTypes": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 0,
       "maxItems": 8,
       "uniqueItems": true,
       "items": { "$ref": "#/definitions/term" }
@@ -52,7 +52,7 @@
       "properties": {
         "precision": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "maxItems": 12,
           "uniqueItems": true,
           "items": { "$ref": "#/definitions/term" }

@@ -1281,7 +1281,7 @@ test("search plan encodes an unseen business intent without canonical candidates
   };
   let capturedRequest = null;
   const semanticIntent = {
-    schemaVersion: "2.1",
+    schemaVersion: "2.2",
     normalizedGoal: "найти спортивные залы и фитнес-клубы",
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -1346,7 +1346,7 @@ test("search plan encodes an unseen business intent without canonical candidates
     assert.equal(responseSchema.additionalProperties, false);
     assert.deepEqual(responseSchema.properties.schemaVersion, {
       type: "string",
-      enum: ["2.1"],
+      enum: ["2.2"],
     });
     assert.deepEqual(responseSchema.properties.coreBusinessTypes, {
       type: "array",
@@ -1400,7 +1400,7 @@ test("search plan encodes an unseen business intent without canonical candidates
     assert.ok(capturedRequest);
     const plan = await response.json();
     assert.equal(plan.schemaVersion, "2.2");
-    assert.equal(plan.semanticIntent.schemaVersion, "2.1");
+    assert.equal(plan.semanticIntent.schemaVersion, "2.2");
     assert.equal(plan.semanticIntent.normalizedGoal, semanticIntent.normalizedGoal);
     assert.deepEqual(plan.semanticIntent.coreBusinessTypes, semanticIntent.coreBusinessTypes);
     assert.deepEqual(plan.semanticIntent.adjacentBusinessTypes, semanticIntent.adjacentBusinessTypes);
@@ -1455,7 +1455,7 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
   let fallbackCalls = 0;
   let kimiCalls = 0;
   const semanticIntent = {
-    schemaVersion: "2.1",
+    schemaVersion: "2.2",
     normalizedGoal: "найти спортивные залы, тренажёрные залы и фитнес-клубы",
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -1711,7 +1711,7 @@ test("warehouse semantic confirmation executes only the signed selected preview"
   process.env.GEOAPIFY_DETAILS_LIMIT = "0";
   process.env.SEARCH_PLAN_SIGNING_SECRET = signingSecret;
   const semanticIntent = {
-    schemaVersion: "2.1",
+    schemaVersion: "2.2",
     normalizedGoal: "найти складские организации",
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -1938,7 +1938,7 @@ test("SemanticIntentV2 executes through the production search orchestrator", { c
     const body = JSON.parse(String(init?.body));
     assert.equal(JSON.stringify(body).includes('"candidates"'), false);
     const encoded = {
-      schemaVersion: "2.1",
+      schemaVersion: "2.2",
       normalizedGoal: "найти барбершопы и мужские парикмахерские",
       entityKind: "physical_business",
       physicalLocationRequirement: "required",

@@ -7,6 +7,7 @@ import {
   evaluateKimiOutcomeContract,
   KIMI_COMPARISON_CASE_IDS,
   KIMI_MINIMUM_EXPECTED_OUTCOME_RATE,
+  nextKimiComparisonStartAt,
   selectKimiProfile,
   summarizeKimiProfile,
 } from "./helpers/kimi-model-comparison.mjs";
@@ -153,6 +154,78 @@ test("invalid Kimi responses retain only bounded aggregate reason codes", () => 
   assert.deepEqual(result.semanticValidationIssues, { array_size: 1 });
 });
 
+test("comparison pacing enforces both global and per-model intervals", () => {
+  assert.equal(
+    nextKimiComparisonStartAt({
+      now: 50_000,
+      lastGlobalStartAt: 40_000,
+      lastModelStartAt: 10_000,
+      minimumGlobalIntervalMs: 35_000,
+      minimumModelIntervalMs: 70_000,
+    }),
+    80_000,
+  );
+  assert.equal(
+    nextKimiComparisonStartAt({
+      now: 50_000,
+      lastGlobalStartAt: 40_000,
+      lastModelStartAt: 45_000,
+      minimumGlobalIntervalMs: 35_000,
+      minimumModelIntervalMs: 70_000,
+    }),
+    115_000,
+  );
+});
+
+test("comparison report keeps only bounded synthetic per-case aggregates", () => {
+  const measured = attempts(2);
+  measured[0].caseId = "physical-music-school-01";
+  measured[0].actualOutcome = "ready";
+  measured[0].compiledProviderCategoryIds = ["education.music_school"];
+  measured[1] = {
+    ...measured[1],
+    caseId: "physical-music-school-01",
+    actualOutcome: null,
+    compiledProviderCategoryIds: [
+      "education.music_school",
+      "model-authored.invalid-category",
+    ],
+    ok: false,
+    schemaPassed: false,
+    executionContractPassed: false,
+    expectedOutcome: false,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    errorCode: "KIMI_INVALID_RESPONSE",
+    invalidResponseReason: "semantic_schema_invalid",
+    semanticValidationIssueCodes: ["array_min_size"],
+    retryable: true,
+  };
+  measured.push({
+    ...measured[0],
+    caseId: "raw user query must never become an aggregate key",
+  });
+
+  const result = summary("k2.6-thinking-disabled", measured);
+
+  assert.deepEqual(result.caseResults, {
+    "physical-music-school-01": {
+      attemptCount: 2,
+      schemaPassed: 1,
+      expectedOutcomePassed: 1,
+      executionContractPassed: 1,
+      failureCodes: { KIMI_INVALID_RESPONSE: 1 },
+      invalidResponseReasons: { semantic_schema_invalid: 1 },
+      semanticValidationIssues: { array_min_size: 1 },
+      statusCounts: { ready: 1 },
+      compiledProviderCategories: { "education.music_school": 2 },
+    },
+  });
+  assert.equal(JSON.stringify(result).includes("music school"), false);
+  assert.equal(JSON.stringify(result).includes("raw user query"), false);
+});
+
 test("deadline violations block eligibility", () => {
   const unsafe = attempts(30);
   unsafe[0].wallLatencyMs = 60_001;
@@ -256,10 +329,10 @@ test("outcome contract requires exact non-ready status with no top-level selecto
 const expectedCanaryVersions = Object.freeze({
   app: "0.4.0-alpha.1",
   model: "kimi-k2.6",
-  modelPolicy: "kimi-model-policy/2026-08-20.4",
+  modelPolicy: "kimi-model-policy/2026-08-20.5",
   prompt:
-    "semantic-intent-v2/2026-08-20.4+kimi-model-policy/2026-08-20.4:kimi-k2.6:k2.6-thinking-disabled:none",
-  semanticIntentSchema: "2.1",
+    "semantic-intent-v2/2026-08-20.6+kimi-model-policy/2026-08-20.5:kimi-k2.6:k2.6-thinking-disabled:none",
+  semanticIntentSchema: "2.2",
   searchPlanSchema: "2.2",
   decisionPolicy: "decision-current",
   compilerPolicy: "compiler-current",
@@ -282,7 +355,7 @@ const expectedCanaryVersions = Object.freeze({
     modelMode: "k2.6-thinking-disabled",
     reasoningEffort: null,
     cacheIdentity:
-      "kimi-model-policy/2026-08-20.4:kimi-k2.6:k2.6-thinking-disabled:none",
+      "kimi-model-policy/2026-08-20.5:kimi-k2.6:k2.6-thinking-disabled:none",
   },
   pricingUsdPerMillion: { input: 0.95, output: 4 },
 });
@@ -335,7 +408,7 @@ test("server-owned canary profile allowlist resolves K3 and K2.6 exactly", () =>
       modelMode: "k3-reasoning",
       reasoningEffort: "low",
       cacheIdentity:
-        "kimi-model-policy/2026-08-20.4:kimi-k3:k3-reasoning:low",
+        "kimi-model-policy/2026-08-20.5:kimi-k3:k3-reasoning:low",
     },
   );
   assert.equal(k26.id, "k2.6-thinking-disabled");

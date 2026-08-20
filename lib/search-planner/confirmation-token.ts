@@ -1,7 +1,11 @@
 import "server-only";
 
 import { canonicalJson, type CanonicalJsonValue } from "./hashing";
-import type { ConfirmationTokenClaims } from "./types";
+import {
+  SEARCH_PLAN_SCHEMA_VERSION,
+  SEMANTIC_INTENT_SCHEMA_VERSION,
+  type ConfirmationTokenClaims,
+} from "./types";
 
 const TOKEN_VERSION = 2 as const;
 const DEFAULT_TTL_SECONDS = 10 * 60;
@@ -164,8 +168,8 @@ function parseClaims(value: unknown): ConfirmationTokenClaims {
     strings.some((item) => typeof item !== "string" || !item) ||
     !Number.isInteger(claims.iat) ||
     !Number.isInteger(claims.exp) ||
-    claims.searchPlanSchemaVersion !== "2.2" ||
-    claims.semanticIntentSchemaVersion !== "2.1" ||
+    claims.searchPlanSchemaVersion !== SEARCH_PLAN_SCHEMA_VERSION ||
+    claims.semanticIntentSchemaVersion !== SEMANTIC_INTENT_SCHEMA_VERSION ||
     !Array.isArray(claims.allowedAlternativeHashes) ||
     claims.allowedAlternativeHashes.length < 1 ||
     claims.allowedAlternativeHashes.length > 3 ||

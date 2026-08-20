@@ -19,7 +19,7 @@
     "ambiguity"
   ],
   "properties": {
-    "schemaVersion": { "type": "string", "enum": ["2.1"] },
+    "schemaVersion": { "type": "string", "enum": ["2.2"] },
     "normalizedGoal": { "type": "string" },
     "entityKind": {
       "type": "string",

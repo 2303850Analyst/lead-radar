@@ -13,7 +13,7 @@ import {
 } from "../lib/search-planner/relevance.ts";
 
 const semanticIntent = {
-  schemaVersion: "2.1",
+  schemaVersion: "2.2",
   normalizedGoal: "найти спортивные залы для взрослых",
   entityKind: "physical_business",
   physicalLocationRequirement: "required",

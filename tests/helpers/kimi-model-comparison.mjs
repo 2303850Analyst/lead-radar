@@ -3,6 +3,7 @@ import {
   ratio,
   roundMetric,
 } from "./evaluation-metrics.mjs";
+import { GEOAPIFY_CAPABILITY_REGISTRY } from "../../lib/search-planner/catalogs/geoapify.ts";
 
 export const KIMI_COMPARISON_CASE_IDS = Object.freeze([
   "physical-music-school-01",
@@ -17,6 +18,40 @@ export const KIMI_COMPARISON_CASE_IDS = Object.freeze([
   "inj-14",
 ]);
 export const KIMI_MINIMUM_EXPECTED_OUTCOME_RATE = 1;
+const KIMI_OUTCOME_STATUSES = new Set([
+  "ready",
+  "needs_confirmation",
+  "unsupported",
+  "degraded",
+]);
+const GEOAPIFY_CATEGORY_ID_SET = new Set(
+  GEOAPIFY_CAPABILITY_REGISTRY.categories,
+);
+
+export function nextKimiComparisonStartAt({
+  now,
+  lastGlobalStartAt,
+  lastModelStartAt,
+  minimumGlobalIntervalMs,
+  minimumModelIntervalMs,
+}) {
+  for (const value of [
+    now,
+    lastGlobalStartAt,
+    lastModelStartAt,
+    minimumGlobalIntervalMs,
+    minimumModelIntervalMs,
+  ]) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error("Kimi comparison pacing values must be finite and non-negative");
+    }
+  }
+  return Math.max(
+    now,
+    lastGlobalStartAt + minimumGlobalIntervalMs,
+    lastModelStartAt + minimumModelIntervalMs,
+  );
+}
 
 export function evaluateKimiOutcomeContract(plan, expectedCase) {
   const exactExpectedOutcome = plan?.status === expectedCase.expectedOutcome;
@@ -196,6 +231,72 @@ export function summarizeKimiProfile({
       attempt.errorCode === "KIMI_INVALID_RESPONSE" &&
       typeof attempt.invalidResponseReason !== "string",
   ).length;
+  const caseResults = Object.fromEntries(
+    [
+      ...new Set(
+        attempts
+          .map((attempt) => attempt.caseId)
+          .filter((value) => KIMI_COMPARISON_CASE_IDS.includes(value)),
+      ),
+    ]
+      .sort()
+      .map((caseId) => {
+        const caseAttempts = attempts.filter(
+          (attempt) => attempt.caseId === caseId,
+        );
+        return [
+          caseId,
+          {
+            attemptCount: caseAttempts.length,
+            schemaPassed: caseAttempts.filter((attempt) => attempt.schemaPassed)
+              .length,
+            expectedOutcomePassed: caseAttempts.filter(
+              (attempt) => attempt.expectedOutcome,
+            ).length,
+            executionContractPassed: caseAttempts.filter(
+              (attempt) => attempt.executionContractPassed,
+            ).length,
+            failureCodes: countBy(
+              caseAttempts
+                .map((attempt) => attempt.errorCode)
+                .filter((value) => typeof value === "string"),
+            ),
+            invalidResponseReasons: countBy(
+              caseAttempts
+                .map((attempt) => attempt.invalidResponseReason)
+                .filter((value) => typeof value === "string"),
+            ),
+            semanticValidationIssues: countBy(
+              caseAttempts.flatMap((attempt) =>
+                Array.isArray(attempt.semanticValidationIssueCodes)
+                  ? attempt.semanticValidationIssueCodes.filter(
+                      (value) => typeof value === "string",
+                    )
+                  : [],
+              ),
+            ),
+            statusCounts: countBy(
+              caseAttempts
+                .map((attempt) => attempt.actualOutcome)
+                .filter((value) => KIMI_OUTCOME_STATUSES.has(value)),
+            ),
+            compiledProviderCategories: countBy(
+              caseAttempts.flatMap((attempt) =>
+                Array.isArray(attempt.compiledProviderCategoryIds)
+                  ? [
+                      ...new Set(
+                        attempt.compiledProviderCategoryIds.filter((value) =>
+                          GEOAPIFY_CATEGORY_ID_SET.has(value),
+                        ),
+                      ),
+                    ].slice(0, 32)
+                  : [],
+              ),
+            ),
+          },
+        ];
+      }),
+  );
   const baseGates = {
     completeSample: attempts.length === expectedAttemptCount,
     modelAvailable: modelCanary.configuredModelAvailable === true,
@@ -239,6 +340,7 @@ export function summarizeKimiProfile({
     failureCodes,
     invalidResponseReasons,
     semanticValidationIssues,
+    caseResults,
     unclassifiedInvalidResponses,
     metrics,
     baseGates,

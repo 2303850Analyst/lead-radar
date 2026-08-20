@@ -82,7 +82,7 @@ function kimiRequestFor(query) {
 
 function semanticIntentFor(coreBusinessType = "барбершоп") {
   return {
-    schemaVersion: "2.1",
+    schemaVersion: "2.2",
     normalizedGoal: `найти ${coreBusinessType}`,
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -234,6 +234,44 @@ test("Geoapify name fallback prefers a concise source-language business type", (
   });
   const fallback = plan.batches.find((batch) => batch.type === "fallback");
   assert.equal(fallback?.nameQuery, "салон оптики");
+});
+
+test("Geoapify compiles model-supplied category heads without niche aliases", () => {
+  for (const fixture of [
+    {
+      sourceQuery: "скалодром",
+      core: "indoor rock wall venue",
+      head: "climbing",
+      expectedCategory: "entertainment.activity_park.climbing",
+    },
+    {
+      sourceQuery: "гончарная мастерская",
+      core: "ceramic craft workshop",
+      head: "pottery",
+      expectedCategory: "production.pottery",
+    },
+  ]) {
+    const plan = compileGeoapifySemanticIntent(
+      {
+        ...semanticIntentFor(fixture.core),
+        coreBusinessTypes: [fixture.core],
+        productsAndServices: [],
+        retrievalTerms: {
+          precision: [fixture.head, fixture.core],
+          recall: [],
+          exclude: [],
+        },
+      },
+      plannerInput(fixture.sourceQuery),
+    );
+    const precisionCategories = plan.batches
+      .filter((batch) => batch.type === "precision")
+      .flatMap((batch) => batch.categoryIds);
+    assert.ok(
+      precisionCategories.includes(fixture.expectedCategory),
+      fixture.expectedCategory,
+    );
+  }
 });
 
 test("Geoapify matcher does not infer a leaf from unordered generic path tokens", () => {
@@ -2606,6 +2644,48 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
     }),
     false,
   );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: {
+        ...renderablePlan.semanticIntent,
+        coreBusinessTypes: [],
+        retrievalTerms: {
+          ...renderablePlan.semanticIntent.retrievalTerms,
+          precision: [],
+        },
+      },
+    }),
+    false,
+    "a physical non-ambiguous response cannot omit executable terms",
+  );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: {
+        ...renderablePlan.semanticIntent,
+        ambiguity: {
+          isAmbiguous: true,
+          reason: null,
+          clarificationQuestion: null,
+        },
+      },
+    }),
+    false,
+    "an ambiguous response must carry a reason and clarification question",
+  );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: {
+        ...renderablePlan.semanticIntent,
+        entityKind: "non_physical",
+        physicalLocationRequirement: "required",
+      },
+    }),
+    false,
+    "a non-physical response cannot require a physical location",
+  );
 });
 
 test("normalization, resolver output, and canonical JSON are deterministic", () => {
@@ -2994,6 +3074,15 @@ for (const fault of [
       kimiSseResponse({ content: "{\"schemaVersion\":" }),
     expectedCode: "KIMI_INVALID_RESPONSE",
     expectedRetryable: true,
+    expectedReason: "structured_json_shape_invalid",
+  },
+  {
+    name: "Markdown-fenced structured output",
+    fetchImpl: async () =>
+      kimiSseResponse({ content: "```json\n{}\n```" }),
+    expectedCode: "KIMI_INVALID_RESPONSE",
+    expectedRetryable: true,
+    expectedReason: "structured_json_fence",
   },
   {
     name: "stream without DONE",
@@ -3082,7 +3171,9 @@ for (const fault of [
       (error) =>
         error instanceof KimiClientError &&
         error.code === fault.expectedCode &&
-        error.retryable === fault.expectedRetryable,
+        error.retryable === fault.expectedRetryable &&
+        (fault.expectedReason === undefined ||
+          error.reason === fault.expectedReason),
     );
     assert.equal(calls, 1);
   });
@@ -3332,7 +3423,7 @@ test("semantic compatibility never executes a conflicting original category", as
 });
 
 test("bounded semantic arrays cannot overflow legacy compatibility input", async () => {
-  const terms = Array.from({ length: 16 }, (_, index) => `смежный формат ${index}`);
+  const terms = Array.from({ length: 15 }, (_, index) => `смежный формат ${index}`);
   const client = {
     modelId: "mock-bounded-open-intent",
     async encode() {
@@ -3398,7 +3489,7 @@ test("generic warehouse policy overrides an overconfident Kimi selection", async
       (alternative) =>
         /^alt-[a-f0-9]{16}$/.test(alternative.alternativeId) &&
         /^[a-f0-9]{64}$/.test(alternative.alternativeHash) &&
-        alternative.semanticIntent.schemaVersion === "2.1" &&
+        alternative.semanticIntent.schemaVersion === "2.2" &&
         alternative.executionPreview.retrievalArms.length > 0 &&
         typeof alternative.explanation === "string" &&
         !Object.hasOwn(alternative, "conceptId"),

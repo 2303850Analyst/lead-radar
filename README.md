@@ -333,7 +333,7 @@ fallback. Ответ содержит только нормализованны�
 `needs_confirmation`, `unsupported` или `degraded`, объектом
 `semanticIntent`, отдельной уверенностью в смысле запроса и покрытии источника,
 версиями prompt/schema, usage, latency и проверяемыми hash. Вложенный
-`SemanticIntentV2` сохраняет собственную schema `2.1`. Во время миграции
+`SemanticIntentV2` сохраняет собственную schema `2.2`. Во время миграции
 legacy canonical IDs для уже поддерживаемых ниш могут отдельно присутствовать
 в `SearchPlan.resolution.selectedConceptIds`; они вычисляются сервером после
 Kimi и не передаются модели. `needs_confirmation`

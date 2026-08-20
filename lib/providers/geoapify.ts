@@ -1461,7 +1461,7 @@ function relevanceIntent(
 ): SemanticIntentV2 {
   if (provided) return provided;
   return {
-    schemaVersion: "2.1",
+    schemaVersion: "2.2",
     normalizedGoal: payload.description || payload.primaryQuery,
     entityKind: "physical_business",
     physicalLocationRequirement: "required",

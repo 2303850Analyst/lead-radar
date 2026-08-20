@@ -1,5 +1,5 @@
 export const SEARCH_PLAN_SCHEMA_VERSION = "2.2" as const;
-export const SEMANTIC_INTENT_SCHEMA_VERSION = "2.1" as const;
+export const SEMANTIC_INTENT_SCHEMA_VERSION = "2.2" as const;
 
 export const SUPPORTED_COUNTRY_CODES = ["RU", "BY", "KZ"] as const;
 export type SupportedCountryCode = (typeof SUPPORTED_COUNTRY_CODES)[number];

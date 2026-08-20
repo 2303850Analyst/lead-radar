@@ -55,7 +55,7 @@ import {
 
 export const DECISION_POLICY_VERSION = "2026-08-20.2";
 export const KIMI_PROMPT_CONTENT_VERSION =
-  "semantic-intent-v2/2026-08-20.4";
+  "semantic-intent-v2/2026-08-20.6";
 export const KIMI_PROMPT_VERSION =
   `${KIMI_PROMPT_CONTENT_VERSION}+${KIMI_MODEL_POLICY_VERSION}`;
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;
@@ -658,7 +658,9 @@ export async function createSearchPlan(
       intent,
       signal: options.signal,
     });
-    const semanticIntent = result.semanticIntent;
+    // Revalidate even injected/scenario Kimi adapters so no alternate encoder
+    // can bypass the same semantic trust boundary as the production client.
+    const semanticIntent = validateKimiSemanticIntent(result.semanticIntent);
     const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent, intent);
     const semanticResolution = resolveDeterministically(
       compatibilityIntent(intent, semanticIntent),

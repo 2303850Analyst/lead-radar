@@ -155,7 +155,7 @@ test("relevance evaluation enforces quality, evidence and fail-closed safety gat
 
   assert.equal(report.sampleCounts.candidates, 600);
   assert.equal(report.candidateEvidenceSchemaVersion, "candidate-evidence-v2");
-  assert.equal(report.semanticIntentSchemaVersion, "2.1");
+  assert.equal(report.semanticIntentSchemaVersion, "2.2");
   assert.deepEqual(report.coverage.injectionByExpectedStatus, {
     matched: 15,
     maybe: 15,

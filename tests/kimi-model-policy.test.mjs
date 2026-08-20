@@ -21,7 +21,7 @@ const apiKey = "test-only-placeholder-key";
 
 function semanticIntentFor(businessType = "sports hall") {
   return {
-    schemaVersion: "2.1",
+    schemaVersion: "2.2",
     normalizedGoal: `find ${businessType}`,
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -115,10 +115,15 @@ test("K3 request uses only its server-owned reasoning effort policy", async () =
     reasoningEffort: "low",
   });
 
-  assert.equal(KIMI_MODEL_POLICY_VERSION, "kimi-model-policy/2026-08-20.4");
+  assert.equal(KIMI_MODEL_POLICY_VERSION, "kimi-model-policy/2026-08-20.5");
   assert.equal(payload.reasoning_effort, "low");
   assert.equal(Object.hasOwn(payload, "thinking"), false);
   assert.deepEqual(payload.stream_options, { include_usage: true });
+  assert.match(payload.messages[0].content, /at most 8 coreBusinessTypes/);
+  assert.match(payload.messages[0].content, /without an explicit physical business/);
+  assert.match(payload.messages[0].content, /shortest unambiguous English head phrase/);
+  assert.match(payload.messages[0].content, /only then evaluate business-type ambiguity/);
+  assert.match(payload.messages[0].content, /do not enumerate interpretations in positive arrays/);
   assert.equal(result.usage.cachedInputTokens, 20);
   assert.ok(
     Number.isInteger(result.firstSseEventLatencyMs) &&
@@ -126,7 +131,7 @@ test("K3 request uses only its server-owned reasoning effort policy", async () =
   );
   assert.equal(
     client.cacheIdentity,
-    "kimi-model-policy/2026-08-20.4:kimi-k3:k3-reasoning:low",
+    "kimi-model-policy/2026-08-20.5:kimi-k3:k3-reasoning:low",
   );
 });
 
@@ -163,7 +168,7 @@ test("Kimi request uses an MFJS transport schema without weakening local validat
   visit(transportSchema);
   assert.deepEqual(
     transportSchema.properties.schemaVersion,
-    { type: "string", enum: ["2.1"] },
+    { type: "string", enum: ["2.2"] },
   );
   assert.throws(
     () =>
@@ -357,7 +362,7 @@ test("K2.6 request disables thinking without a K3-only field", async () => {
   assert.match(payload.messages[0].content, /schemaVersion/);
   assert.equal(
     client.cacheIdentity,
-    "kimi-model-policy/2026-08-20.4:kimi-k2.6:k2.6-thinking-disabled:none",
+    "kimi-model-policy/2026-08-20.5:kimi-k2.6:k2.6-thinking-disabled:none",
   );
 });
 
@@ -394,8 +399,209 @@ test("Kimi reports bounded local semantic-validation issue codes", async () => {
     (error) =>
       error instanceof KimiClientError &&
       error.reason === "semantic_schema_invalid" &&
-      error.semanticValidationIssueCodes?.includes("array_size") === true,
+      error.semanticValidationIssueCodes?.includes("executable_terms_missing") === true,
   );
+});
+
+test("Kimi canonically normalizes and deduplicates valid open semantic arrays", async () => {
+  const verboseIntent = {
+    ...semanticIntentFor(),
+    industries: [" sport ", "SPORT", "fitness"],
+    coreBusinessTypes: [" sports hall ", "SPORTS HALL", "fitness centre"],
+    retrievalTerms: {
+      precision: [" sports hall ", "SPORTS HALL", "fitness centre"],
+      recall: [" gym ", "GYM", "fitness"],
+      exclude: [],
+    },
+  };
+  const client = createKimiClient({
+    apiKey,
+    model: "kimi-k2.6",
+    fetchImpl: async () => kimiSseResponse("kimi-k2.6", verboseIntent),
+  });
+
+  const result = await client.encode(kimiRequest());
+
+  assert.deepEqual(result.semanticIntent.industries, ["sport", "fitness"]);
+  assert.deepEqual(
+    result.semanticIntent.coreBusinessTypes,
+    ["sports hall", "fitness centre"],
+  );
+  assert.deepEqual(
+    result.semanticIntent.retrievalTerms.precision,
+    ["sports hall", "fitness centre"],
+  );
+  assert.deepEqual(
+    result.semanticIntent.retrievalTerms.recall,
+    ["gym", "fitness"],
+  );
+});
+
+test("Kimi rejects exclusion overflow instead of silently broadening intent", async () => {
+  const overflowIntent = {
+    ...semanticIntentFor(),
+    excludedBusinessTypes: Array.from(
+      { length: 17 },
+      (_, index) => `excluded type ${index}`,
+    ),
+    retrievalTerms: {
+      ...semanticIntentFor().retrievalTerms,
+      exclude: Array.from(
+        { length: 17 },
+        (_, index) => `excluded term ${index}`,
+      ),
+    },
+  };
+  const client = createKimiClient({
+    apiKey,
+    model: "kimi-k2.6",
+    fetchImpl: async () => kimiSseResponse("kimi-k2.6", overflowIntent),
+  });
+
+  await assert.rejects(
+    client.encode(kimiRequest()),
+    (error) =>
+      error instanceof KimiClientError &&
+      error.reason === "semantic_schema_invalid" &&
+      error.semanticValidationIssueCodes.includes(
+        "array_max_excluded_business_types",
+      ) &&
+      error.semanticValidationIssueCodes.includes("array_max_retrieval_exclude"),
+  );
+});
+
+test("Kimi never hides an executable value beyond a semantic array bound", async () => {
+  const unsafeIntent = {
+    ...semanticIntentFor(),
+    industries: [
+      ...Array.from({ length: 16 }, (_, index) => `industry ${index}`),
+      "sport.fitness.gym",
+    ],
+  };
+  const client = createKimiClient({
+    apiKey,
+    model: "kimi-k2.6",
+    fetchImpl: async () => kimiSseResponse("kimi-k2.6", unsafeIntent),
+  });
+
+  await assert.rejects(
+    client.encode(kimiRequest()),
+    (error) =>
+      error instanceof KimiClientError &&
+      error.reason === "semantic_schema_invalid" &&
+      error.semanticValidationIssueCodes.includes("executable_value_forbidden"),
+  );
+});
+
+test("non-executable semantic outcomes may omit positive retrieval terms", async () => {
+  const nonPhysical = {
+    ...semanticIntentFor(),
+    normalizedGoal: "получить онлайн-консультацию",
+    entityKind: "non_physical",
+    physicalLocationRequirement: "not_applicable",
+    coreBusinessTypes: [],
+    includeSignals: [],
+    retrievalTerms: { precision: [], recall: [], exclude: [] },
+  };
+  const ambiguous = {
+    ...semanticIntentFor(),
+    normalizedGoal: "понять, что означает площадка",
+    coreBusinessTypes: [],
+    includeSignals: [],
+    retrievalTerms: { precision: [], recall: [], exclude: [] },
+    confidence: "low",
+    ambiguity: {
+      isAmbiguous: true,
+      reason: "Термин не определяет один физический тип бизнеса",
+      clarificationQuestion: "Какой именно тип площадки нужен?",
+    },
+  };
+
+  assert.deepEqual(validateKimiSemanticIntent(nonPhysical), nonPhysical);
+  assert.deepEqual(validateKimiSemanticIntent(ambiguous), ambiguous);
+
+  for (const [semanticIntent, expectedStatus] of [
+    [nonPhysical, "unsupported"],
+    [ambiguous, "needs_confirmation"],
+  ]) {
+    const plan = await createSearchPlan(
+      {
+        primaryQuery: "неопределённый открытый запрос",
+        locale: "ru-RU",
+        countryCodes: ["RU"],
+      },
+      {
+        mode: "kimi",
+        signingSecret: "test-only-signing-secret-with-safe-length",
+        kimiClient: {
+          modelId: "mock-safe-non-executable",
+          cacheIdentity: "mock-safe-non-executable-v1",
+          async encode() {
+            return {
+              semanticIntent,
+              modelId: this.modelId,
+              finishReason: "stop",
+              latencyMs: 1,
+              firstSseEventLatencyMs: 0,
+              usage: {
+                inputTokens: 10,
+                cachedInputTokens: 0,
+                outputTokens: 5,
+                totalTokens: 15,
+              },
+            };
+          },
+        },
+      },
+    );
+    assert.equal(plan.status, expectedStatus);
+    assert.equal(plan.executionPreview, null);
+  }
+});
+
+test("a physical semantic intent cannot auto-run without core and precision terms", async () => {
+  const invalidPhysical = {
+    ...semanticIntentFor(),
+    coreBusinessTypes: [],
+    includeSignals: [],
+    retrievalTerms: { precision: [], recall: ["business"], exclude: [] },
+  };
+  assert.throws(
+    () => validateKimiSemanticIntent(invalidPhysical),
+    /requires coreBusinessTypes and precision retrieval terms/i,
+  );
+
+  const plan = await createSearchPlan(
+    {
+      primaryQuery: "неизвестный формат физического бизнеса qzx",
+      locale: "ru-RU",
+      countryCodes: ["RU"],
+    },
+    {
+      mode: "kimi",
+      kimiClient: {
+        modelId: "mock-invalid-physical",
+        cacheIdentity: "mock-invalid-physical-v1",
+        async encode() {
+          return {
+            semanticIntent: invalidPhysical,
+            modelId: this.modelId,
+            finishReason: "stop",
+            latencyMs: 1,
+            firstSseEventLatencyMs: 0,
+            usage: {
+              inputTokens: 10,
+              cachedInputTokens: 0,
+              outputTokens: 5,
+              totalTokens: 15,
+            },
+          };
+        },
+      },
+    },
+  );
+  assert.equal(plan.executionPreview, null);
+  assert.equal(plan.ai.validation, "failed");
 });
 
 test("server env rejects unknown or incompatible model policies", () => {
@@ -566,7 +772,7 @@ test("known environment policy creates a client without network access", () => {
   assert.equal(client?.modelId, "kimi-k2.6");
   assert.equal(
     client?.cacheIdentity,
-    "kimi-model-policy/2026-08-20.4:kimi-k2.6:k2.6-thinking-disabled:none",
+    "kimi-model-policy/2026-08-20.5:kimi-k2.6:k2.6-thinking-disabled:none",
   );
   assert.ok(KIMI_PROMPT_VERSION.includes(KIMI_MODEL_POLICY_VERSION));
 });

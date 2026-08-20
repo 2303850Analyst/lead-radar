@@ -1,4 +1,8 @@
-import type { SearchPlan, SemanticIntentV2 } from "./types";
+import {
+  SEMANTIC_INTENT_SCHEMA_VERSION,
+  type SearchPlan,
+  type SemanticIntentV2,
+} from "./types";
 
 const PLAN_STATUSES = new Set(["ready", "needs_confirmation", "unsupported", "degraded"]);
 const SEMANTIC_CONFIDENCE_VALUES = new Set(["high", "medium", "low"]);
@@ -90,36 +94,63 @@ function isNormalizedIntent(value: unknown): boolean {
 }
 
 function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
-  if (!isRecord(value) || value.schemaVersion !== "2.1") return false;
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== SEMANTIC_INTENT_SCHEMA_VERSION
+  ) return false;
   const retrieval = value.retrievalTerms;
   const ambiguity = value.ambiguity;
+  if (
+    typeof value.normalizedGoal !== "string" ||
+    typeof value.entityKind !== "string" ||
+    !ENTITY_KINDS.has(value.entityKind) ||
+    typeof value.physicalLocationRequirement !== "string" ||
+    !PHYSICAL_REQUIREMENTS.has(value.physicalLocationRequirement) ||
+    typeof value.brandSearch !== "string" ||
+    !BRAND_SEARCH_VALUES.has(value.brandSearch) ||
+    typeof value.confidence !== "string" ||
+    !SEMANTIC_CONFIDENCE_VALUES.has(value.confidence)
+  ) return false;
+  if (
+    !isStringArray(value.industries) ||
+    !isStringArray(value.coreBusinessTypes) ||
+    !isStringArray(value.adjacentBusinessTypes) ||
+    !isStringArray(value.excludedBusinessTypes) ||
+    !isStringArray(value.productsAndServices) ||
+    !isStringArray(value.includeSignals) ||
+    !isStringArray(value.excludeSignals) ||
+    !isRecord(retrieval) ||
+    !isStringArray(retrieval.precision) ||
+    !isStringArray(retrieval.recall) ||
+    !isStringArray(retrieval.exclude) ||
+    !isRecord(ambiguity) ||
+    typeof ambiguity.isAmbiguous !== "boolean" ||
+    !isNullableString(ambiguity.reason) ||
+    !isNullableString(ambiguity.clarificationQuestion)
+  ) return false;
+  const ambiguityIsCoherent = ambiguity.isAmbiguous
+    ? Boolean(ambiguity.reason && ambiguity.clarificationQuestion)
+    : ambiguity.reason === null && ambiguity.clarificationQuestion === null;
+  const nonPhysicalLocationIsCoherent =
+    value.entityKind !== "non_physical" ||
+    value.physicalLocationRequirement === "not_applicable";
+  const permitsEmptyPositiveTerms =
+    ambiguity.isAmbiguous ||
+    (value.entityKind === "non_physical" &&
+      value.physicalLocationRequirement === "not_applicable");
+  const executableTermsArePresent =
+    permitsEmptyPositiveTerms ||
+    (value.coreBusinessTypes.length > 0 && retrieval.precision.length > 0);
+  const providerNeutralTermIsPresent =
+    permitsEmptyPositiveTerms ||
+    [...retrieval.precision, ...retrieval.recall].some((term) =>
+      /[a-z]/i.test(term),
+    );
   return (
-    typeof value.normalizedGoal === "string" &&
-    typeof value.entityKind === "string" &&
-    ENTITY_KINDS.has(value.entityKind) &&
-    typeof value.physicalLocationRequirement === "string" &&
-    PHYSICAL_REQUIREMENTS.has(value.physicalLocationRequirement) &&
-    typeof value.brandSearch === "string" &&
-    BRAND_SEARCH_VALUES.has(value.brandSearch) &&
-    typeof value.confidence === "string" &&
-    SEMANTIC_CONFIDENCE_VALUES.has(value.confidence) &&
-    [
-      value.industries,
-      value.coreBusinessTypes,
-      value.adjacentBusinessTypes,
-      value.excludedBusinessTypes,
-      value.productsAndServices,
-      value.includeSignals,
-      value.excludeSignals,
-    ].every(isStringArray) &&
-    isRecord(retrieval) &&
-    isStringArray(retrieval.precision) &&
-    isStringArray(retrieval.recall) &&
-    isStringArray(retrieval.exclude) &&
-    isRecord(ambiguity) &&
-    typeof ambiguity.isAmbiguous === "boolean" &&
-    isNullableString(ambiguity.reason) &&
-    isNullableString(ambiguity.clarificationQuestion)
+    ambiguityIsCoherent &&
+    nonPhysicalLocationIsCoherent &&
+    executableTermsArePresent &&
+    providerNeutralTermIsPresent
   );
 }
 
