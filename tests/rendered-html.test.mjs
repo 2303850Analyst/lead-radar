@@ -1637,6 +1637,170 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
   }
 });
 
+test("signed native recovery reaches Places only after Autocomplete quorum", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousEnv = {
+    QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
+    SEARCH_PROVIDER: process.env.SEARCH_PROVIDER,
+    MOONSHOT_API_KEY: process.env.MOONSHOT_API_KEY,
+    KIMI_API_KEY: process.env.KIMI_API_KEY,
+    GEOAPIFY_API_KEY: process.env.GEOAPIFY_API_KEY,
+    GEOAPIFY_DETAILS_LIMIT: process.env.GEOAPIFY_DETAILS_LIMIT,
+    GEOAPIFY_CATEGORY_HINTS_ENABLED:
+      process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED,
+  };
+  const upstreamPaths = [];
+  process.env.QUERY_INTELLIGENCE_MODE = "kimi";
+  process.env.SEARCH_PROVIDER = "geoapify";
+  process.env.MOONSHOT_API_KEY = "fake-kimi-native-recovery-key";
+  delete process.env.KIMI_API_KEY;
+  process.env.GEOAPIFY_API_KEY = "fake-geoapify-native-recovery-key";
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "false";
+
+  const semanticIntent = {
+    schemaVersion: "2.2",
+    normalizedGoal: "найти салоны оптики",
+    entityKind: "physical_business",
+    physicalLocationRequirement: "required",
+    industries: ["optical retail"],
+    coreBusinessTypes: ["optical shop"],
+    adjacentBusinessTypes: [],
+    excludedBusinessTypes: [],
+    productsAndServices: ["eyeglasses"],
+    includeSignals: ["оптика"],
+    excludeSignals: [],
+    retrievalTerms: {
+      precision: ["optical shop"],
+      recall: ["eyewear"],
+      exclude: [],
+    },
+    brandSearch: "include",
+    confidence: "high",
+    ambiguity: {
+      isAmbiguous: false,
+      reason: null,
+      clarificationQuestion: null,
+    },
+  };
+
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.hostname === "api.moonshot.ai") {
+      return new Response(
+        [
+          `data: ${JSON.stringify({
+            model: "kimi-k3",
+            choices: [{
+              index: 0,
+              delta: {
+                content: JSON.stringify({
+                  ...semanticIntent,
+                  providerNeutralCategoryHeads: ["optical shop"],
+                }),
+              },
+              finish_reason: null,
+            }],
+          })}\n\n`,
+          `data: ${JSON.stringify({
+            model: "kimi-k3",
+            choices: [{
+              index: 0,
+              delta: {},
+              finish_reason: "stop",
+              usage: { prompt_tokens: 300, completion_tokens: 150, total_tokens: 450 },
+            }],
+          })}\n\n`,
+          "data: [DONE]\n\n",
+        ].join(""),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    assert.equal(url.hostname, "api.geoapify.com");
+    upstreamPaths.push(url.pathname);
+    if (url.pathname === "/v1/geocode/autocomplete") {
+      assert.equal(url.searchParams.get("text"), "салон оптики");
+      return Response.json({
+        type: "FeatureCollection",
+        features: [1, 2].map((index) => ({
+          type: "Feature",
+          properties: {
+            place_id: `optician-hint-${index}`,
+            category: "commercial.health_and_beauty.optician",
+            country_code: "ru",
+          },
+          geometry: {
+            type: "Point",
+            coordinates: [37.6176 + index * 0.001, 55.7558],
+          },
+        })),
+      });
+    }
+    assert.equal(url.pathname, "/v2/places");
+    assert.equal(
+      url.searchParams.get("categories"),
+      "commercial.health_and_beauty.optician",
+    );
+    assert.equal(url.searchParams.has("text"), false);
+    return Response.json({
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        properties: {
+          place_id: "optician-result-1",
+          name: "Оптика Центр",
+          country_code: "ru",
+          formatted: "Оптика Центр, Москва",
+          categories: ["commercial.health_and_beauty.optician"],
+          lon: 37.62,
+          lat: 55.756,
+        },
+        geometry: { type: "Point", coordinates: [37.62, 55.756] },
+      }],
+    });
+  };
+
+  try {
+    const worker = await getWorker();
+    const response = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          primaryQuery: "салон оптики",
+          relatedQueries: [],
+          excludeQueries: [],
+          services: [],
+          location: "Москва",
+          center: [37.6176, 55.7558],
+          radiusKm: 5,
+          locale: "ru-RU",
+          countryCodes: ["RU"],
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.deepEqual(result.plan.resolution.reasonCodes, [
+      "SEMANTIC_MATCH",
+      "PROVIDER_COVERAGE_GAP",
+    ]);
+    assert.deepEqual(upstreamPaths, [
+      "/v1/geocode/autocomplete",
+      "/v2/places",
+    ]);
+    assert.equal(result.leads[0].name, "Оптика Центр");
+  } finally {
+    globalThis.fetch = previousFetch;
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("known niche keeps its precise legacy categories when Kimi is unavailable", { concurrency: false }, async () => {
   const previousFetch = globalThis.fetch;
   const previousEnv = {

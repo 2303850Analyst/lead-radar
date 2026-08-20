@@ -87,9 +87,11 @@ export function selectGeoapifyCategoryHints(
       continue;
     }
     const placeId = feature.properties.place_id;
+    const normalizedPlaceId =
+      typeof placeId === "string" ? placeId.trim() : "";
     const evidenceId =
-      typeof placeId === "string" && placeId.length <= 500
-        ? placeId
+      normalizedPlaceId && normalizedPlaceId.length <= 500
+        ? normalizedPlaceId
         : `${geometry.coordinates[0].toFixed(6)}:${geometry.coordinates[1].toFixed(6)}`;
     const evidence = evidenceByCategory.get(categoryId) ?? new Set<string>();
     evidence.add(evidenceId);

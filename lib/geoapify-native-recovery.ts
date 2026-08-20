@@ -11,6 +11,7 @@ import type {
 } from "./search-planner/types";
 import type { CompiledGeoapifyPlan } from "./providers/types";
 import { selectGeoapifyCategoryHints } from "./providers/geoapify-category-resolver";
+import { canonicalJson, type CanonicalJsonValue } from "./search-planner/hashing";
 
 const SOURCE_FALLBACK_ORIGINS = new Set([
   "source.primaryQuery",
@@ -83,7 +84,11 @@ export interface GeoapifyAutocompletePort {
 
 export class GeoapifyNativeRecoveryError extends Error {
   constructor(
-    readonly code: "budget" | "no_match" | GeoapifyAutocompleteFailureCode,
+    readonly code:
+      | "invalid_authorization"
+      | "budget"
+      | "no_match"
+      | GeoapifyAutocompleteFailureCode,
     readonly requests: 0 | 1,
   ) {
     super("Geoapify native category recovery did not authorize retrieval");
@@ -146,7 +151,10 @@ function copySourceFallbackArm(
 }
 
 export function projectGeoapifyNativeRecovery(
-  capabilityPlan: CompiledGeoapifyCapabilityPlan | CompiledGeoapifyPlan,
+  capabilityPlan:
+    | CompiledGeoapifyCapabilityPlan
+    | CompiledGeoapifyPlan
+    | GeoapifyNativeRecoveryCapabilityPlan,
 ): GeoapifyNativeRecoveryAuthorization | null {
   const arm = [...capabilityPlan.batches]
     .sort((left, right) => left.priority - right.priority)
@@ -198,6 +206,16 @@ export async function resolveGeoapifyNativeRecovery(
   }>,
   port: GeoapifyAutocompletePort,
 ) {
+  const projected = projectGeoapifyNativeRecovery(
+    input.authorization.capabilityPlan,
+  );
+  if (
+    !projected ||
+    canonicalJson(projected as unknown as CanonicalJsonValue) !==
+      canonicalJson(input.authorization as unknown as CanonicalJsonValue)
+  ) {
+    throw new GeoapifyNativeRecoveryError("invalid_authorization", 0);
+  }
   if (!Number.isFinite(input.timeoutMs) || input.timeoutMs < 300) {
     throw new GeoapifyNativeRecoveryError("budget", 0);
   }

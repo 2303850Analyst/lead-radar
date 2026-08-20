@@ -972,6 +972,11 @@ function providerErrorForNativeRecovery(
   error: GeoapifyNativeRecoveryError,
 ): SearchProviderError {
   switch (error.code) {
+    case "invalid_authorization":
+      return new SearchProviderError(
+        "Подписанный recovery-план не прошёл серверную проверку",
+        "GEOAPIFY_INVALID_COMPILED_PLAN",
+      );
     case "forbidden":
       return new SearchProviderError(
         "Ключ Geoapify недействителен или не имеет доступа к выбранному API",
