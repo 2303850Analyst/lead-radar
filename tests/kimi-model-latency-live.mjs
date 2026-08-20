@@ -412,6 +412,7 @@ if (productionCanaryReportPath) {
       app: packageMetadata.version,
       model: selectedCanaryProfile.model,
       modelPolicy: KIMI_MODEL_POLICY_VERSION,
+      transportSchema: KIMI_TRANSPORT_SCHEMA_VERSION,
       prompt:
         `${KIMI_PROMPT_CONTENT_VERSION}+${selectedCanaryProfile.cacheIdentity}`,
       semanticIntentSchema: SEMANTIC_INTENT_SCHEMA_VERSION,

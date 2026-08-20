@@ -285,6 +285,7 @@ test("live search canary summary enforces fixed-k, unique identity, provider and
     appVersion: "0.4.0-alpha.1",
     modelId: "kimi-k3",
     modelPolicyVersion: "model-policy-v1",
+    transportSchemaVersion: "transport-schema-v2",
     promptVersion: "prompt-v2",
     semanticIntentSchemaVersion: "2.2",
     searchPlanSchemaVersion: "2.2",
@@ -310,6 +311,7 @@ test("live search canary summary enforces fixed-k, unique identity, provider and
   assert.equal(report.versions.productionBundleSha256, "b".repeat(64));
   assert.equal(report.versions.canaryHarnessSha256, "c".repeat(64));
   assert.equal(report.versions.modelPolicy, "model-policy-v1");
+  assert.equal(report.versions.transportSchema, "transport-schema-v2");
   assert.equal(report.metrics.schemaPassRate, 1);
   assert.equal(report.metrics.executablePlanRate, 1);
   assert.equal(report.metrics.precisionAt10, 0.9);

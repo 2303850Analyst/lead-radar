@@ -226,6 +226,12 @@ export type KimiEncodeRequest = {
 
 export type KimiEncodeResult = {
   semanticIntent: SemanticIntentV2;
+  /**
+   * Wire-only grounding evidence emitted by the production Kimi adapter.
+   * Trusted scenario adapters may omit it; it can restrict execution but can
+   * never authorize a category absent from SemanticIntent and the registry.
+   */
+  providerNeutralCategoryHeads?: readonly string[];
   modelId: string;
   finishReason: "stop";
   firstSseEventLatencyMs: number;

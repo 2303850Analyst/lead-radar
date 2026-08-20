@@ -6,6 +6,7 @@
     "normalizedGoal",
     "entityKind",
     "physicalLocationRequirement",
+    "providerNeutralCategoryHeads",
     "industries",
     "coreBusinessTypes",
     "adjacentBusinessTypes",
@@ -28,6 +29,10 @@
     "physicalLocationRequirement": {
       "type": "string",
       "enum": ["required", "optional", "not_applicable"]
+    },
+    "providerNeutralCategoryHeads": {
+      "type": "array",
+      "items": { "type": "string" }
     },
     "industries": { "type": "array", "items": { "type": "string" } },
     "coreBusinessTypes": { "type": "array", "items": { "type": "string" } },

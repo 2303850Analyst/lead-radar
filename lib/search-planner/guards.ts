@@ -56,9 +56,40 @@ const RESOLUTION_REASONS = new Set([
   "KIMI_ADMISSION_TIMEOUT",
   "USER_CONFIRMED",
 ]);
+const SEMANTIC_INTENT_KEYS = new Set([
+  "schemaVersion",
+  "normalizedGoal",
+  "entityKind",
+  "physicalLocationRequirement",
+  "industries",
+  "coreBusinessTypes",
+  "adjacentBusinessTypes",
+  "excludedBusinessTypes",
+  "productsAndServices",
+  "includeSignals",
+  "excludeSignals",
+  "retrievalTerms",
+  "brandSearch",
+  "confidence",
+  "ambiguity",
+]);
+const RETRIEVAL_TERM_KEYS = new Set(["precision", "recall", "exclude"]);
+const AMBIGUITY_KEYS = new Set([
+  "isAmbiguous",
+  "reason",
+  "clarificationQuestion",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: ReadonlySet<string>,
+): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.size && keys.every((key) => expected.has(key));
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -96,7 +127,8 @@ function isNormalizedIntent(value: unknown): boolean {
 function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
   if (
     !isRecord(value) ||
-    value.schemaVersion !== SEMANTIC_INTENT_SCHEMA_VERSION
+    value.schemaVersion !== SEMANTIC_INTENT_SCHEMA_VERSION ||
+    !hasExactKeys(value, SEMANTIC_INTENT_KEYS)
   ) return false;
   const retrieval = value.retrievalTerms;
   const ambiguity = value.ambiguity;
@@ -120,10 +152,12 @@ function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
     !isStringArray(value.includeSignals) ||
     !isStringArray(value.excludeSignals) ||
     !isRecord(retrieval) ||
+    !hasExactKeys(retrieval, RETRIEVAL_TERM_KEYS) ||
     !isStringArray(retrieval.precision) ||
     !isStringArray(retrieval.recall) ||
     !isStringArray(retrieval.exclude) ||
     !isRecord(ambiguity) ||
+    !hasExactKeys(ambiguity, AMBIGUITY_KEYS) ||
     typeof ambiguity.isAmbiguous !== "boolean" ||
     !isNullableString(ambiguity.reason) ||
     !isNullableString(ambiguity.clarificationQuestion)
@@ -134,8 +168,11 @@ function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
   const nonPhysicalLocationIsCoherent =
     value.entityKind !== "non_physical" ||
     value.physicalLocationRequirement === "not_applicable";
+  const unclearIntentIsCoherent =
+    value.entityKind !== "unclear" || ambiguity.isAmbiguous;
   const permitsEmptyPositiveTerms =
     ambiguity.isAmbiguous ||
+    value.entityKind === "unclear" ||
     (value.entityKind === "non_physical" &&
       value.physicalLocationRequirement === "not_applicable");
   const executableTermsArePresent =
@@ -149,6 +186,7 @@ function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
   return (
     ambiguityIsCoherent &&
     nonPhysicalLocationIsCoherent &&
+    unclearIntentIsCoherent &&
     executableTermsArePresent &&
     providerNeutralTermIsPresent
   );

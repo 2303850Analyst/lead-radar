@@ -329,9 +329,10 @@ test("outcome contract requires exact non-ready status with no top-level selecto
 const expectedCanaryVersions = Object.freeze({
   app: "0.4.0-alpha.1",
   model: "kimi-k2.6",
-  modelPolicy: "kimi-model-policy/2026-08-20.5",
+  modelPolicy: "kimi-model-policy/2026-08-20.6",
+  transportSchema: "mfjs-semantic-intent/2026-08-20.4",
   prompt:
-    "semantic-intent-v2/2026-08-20.6+kimi-model-policy/2026-08-20.5:kimi-k2.6:k2.6-thinking-disabled:none",
+    "semantic-intent-v2/2026-08-20.7+kimi-model-policy/2026-08-20.6:kimi-k2.6:k2.6-thinking-disabled:none",
   semanticIntentSchema: "2.2",
   searchPlanSchema: "2.2",
   decisionPolicy: "decision-current",
@@ -355,7 +356,7 @@ const expectedCanaryVersions = Object.freeze({
     modelMode: "k2.6-thinking-disabled",
     reasoningEffort: null,
     cacheIdentity:
-      "kimi-model-policy/2026-08-20.5:kimi-k2.6:k2.6-thinking-disabled:none",
+      "kimi-model-policy/2026-08-20.6:kimi-k2.6:k2.6-thinking-disabled:none",
   },
   pricingUsdPerMillion: { input: 0.95, output: 4 },
 });
@@ -408,7 +409,7 @@ test("server-owned canary profile allowlist resolves K3 and K2.6 exactly", () =>
       modelMode: "k3-reasoning",
       reasoningEffort: "low",
       cacheIdentity:
-        "kimi-model-policy/2026-08-20.5:kimi-k3:k3-reasoning:low",
+        "kimi-model-policy/2026-08-20.6:kimi-k3:k3-reasoning:low",
     },
   );
   assert.equal(k26.id, "k2.6-thinking-disabled");
@@ -529,6 +530,7 @@ test("production journey fails closed on stale, mismatched, or slow reports", ()
 test("production journey rejects obsolete behavior and artifact versions", () => {
   for (const versions of [
     { modelPolicy: "obsolete-model-policy" },
+    { transportSchema: "obsolete-transport-schema" },
     { prompt: "obsolete-prompt" },
     { semanticIntentSchema: "obsolete-semantic-schema" },
     { searchPlanSchema: "obsolete-plan-schema" },

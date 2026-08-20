@@ -3,7 +3,7 @@ import "server-only";
 import {
   KIMI_SEMANTIC_INTENT_TRANSPORT_SCHEMA,
   KimiSchemaValidationError,
-  parseKimiSemanticIntent,
+  parseKimiSemanticIntentWire,
 } from "./schema";
 import type {
   KimiEncodeRequest,
@@ -15,9 +15,9 @@ export const DEFAULT_KIMI_BASE_URL = "https://api.moonshot.ai/v1";
 export const DEFAULT_KIMI_MODEL = "kimi-k3";
 export const DEFAULT_KIMI_TIMEOUT_MS = 30_000;
 export const KIMI_MODEL_POLICY_VERSION =
-  "kimi-model-policy/2026-08-20.5";
+  "kimi-model-policy/2026-08-20.6";
 export const KIMI_TRANSPORT_SCHEMA_VERSION =
-  "mfjs-semantic-intent/2026-08-20.3";
+  "mfjs-semantic-intent/2026-08-20.4";
 
 const ALLOWED_KIMI_HOSTS = new Set(["api.moonshot.ai", "api.moonshot.cn"]);
 const MAX_KIMI_CONTENT_CHARS = 30_000;
@@ -81,22 +81,28 @@ export const KIMI_SEMANTIC_VALIDATION_ISSUE_CODES = Object.freeze([
   "array_max_include_signals",
   "array_max_industries",
   "array_max_products_and_services",
+  "array_max_provider_neutral_category_heads",
   "array_max_retrieval_exclude",
   "array_max_retrieval_precision",
   "array_max_retrieval_recall",
   "array_max_size",
   "array_min_size",
   "array_size",
+  "category_head_invalid",
   "english_retrieval_term_missing",
   "enum_or_const",
+  "executable_heads_missing",
   "executable_terms_missing",
   "executable_value_forbidden",
   "non_physical_location_invariant",
+  "nonready_heads_present",
+  "nonready_terms_present",
   "payload_size",
   "required_field_missing",
   "serialization",
   "string_size",
   "type_mismatch",
+  "unclear_intent_invariant",
   "validation_other",
 ] as const);
 export type KimiSemanticValidationIssueCode =
@@ -381,16 +387,18 @@ function plannerPrompt(
     "You are the LeadRadar semantic encoder for business-place discovery in CIS countries.",
     "Interpret the user's ordinary language into open-vocabulary business semantics.",
     "Use concise natural-language business types, industries, services, synonyms, and retrieval terms.",
-    "In retrievalTerms, include concise English equivalents alongside source-language terms so a provider-neutral registry compiler can match the meaning.",
-    "For each core type, include its shortest unambiguous English head phrase in retrievalTerms.precision as well as any richer phrase; retain modifiers whenever the head alone would change the meaning.",
+    "Return providerNeutralCategoryHeads as a separate open-vocabulary array; it is not a provider category list and you are not given any registry or provider category list.",
+    "For every unambiguous physical intent, providerNeutralCategoryHeads must contain 1 to 4 of the shortest unambiguous English head phrases that preserve the distinguishing business type; use 1 to 5 natural words per head and keep modifiers whenever a shorter head would change the meaning.",
+    "Do not use generic wrappers such as business, venue, centre, center, studio, club, shop, or service as a head unless that wrapper is itself the complete distinguishing business type.",
+    "In retrievalTerms.precision, include concise source-language and English retrieval phrases alongside the separate heads; put richer paraphrases in precision or recall, not in providerNeutralCategoryHeads.",
     "Write category phrases as natural words such as 'music school', not dotted or underscored classification labels.",
     "Preserve include and exclude intent. Separate the core business from adjacent businesses.",
     "Recall and adjacent lists may be empty; do not add generic sibling services merely to fill them.",
     "First decide whether the user explicitly asks to find a physical business or service location; only then evaluate business-type ambiguity.",
-    "For non-physical intent, keep positive business and retrieval arrays empty and use non_physical with not_applicable location requirement.",
-    "For materially ambiguous intent, do not enumerate interpretations in positive arrays: keep industries, coreBusinessTypes, adjacentBusinessTypes, productsAndServices, includeSignals, retrievalTerms.precision, and retrievalTerms.recall empty; express the uncertainty only in ambiguity.reason and ambiguity.clarificationQuestion.",
-    "For every other intent, coreBusinessTypes and retrievalTerms.precision must contain the strongest physical-business interpretation.",
-    "Keep every array concise and unique: at most 8 coreBusinessTypes, at most 12 retrievalTerms.precision, and at most 16 items in every other array.",
+    "For non-physical intent, keep providerNeutralCategoryHeads and all positive business and retrieval arrays empty and use non_physical with not_applicable location requirement.",
+    "For materially ambiguous intent, do not enumerate interpretations in positive arrays: keep providerNeutralCategoryHeads, industries, coreBusinessTypes, adjacentBusinessTypes, productsAndServices, includeSignals, retrievalTerms.precision, and retrievalTerms.recall empty; express the uncertainty only in ambiguity.reason and ambiguity.clarificationQuestion.",
+    "For every other intent, providerNeutralCategoryHeads, coreBusinessTypes, and retrievalTerms.precision must contain the strongest physical-business interpretation.",
+    "Keep every array concise and unique: at most 4 providerNeutralCategoryHeads, at most 8 coreBusinessTypes, at most 8 retrievalTerms.precision, and at most 16 items in every other array.",
     "A request for advice, information, or a personal decision without an explicit physical business or service location is non_physical with not_applicable location requirement.",
     "Do not output category IDs, provider names, URLs, coordinates, HTTP parameters, map filters, or API instructions.",
     "Locale and country are trusted context only; never repeat or modify geography in the output.",
@@ -463,6 +471,36 @@ function semanticValidationIssueCodes(
   }
   const codes = error.issues.map((issue): KimiSemanticValidationIssueCode => {
     const normalized = issue.toLowerCase();
+    if (normalized.includes("providerneutralcategoryheads is required")) {
+      return "required_field_missing";
+    }
+    if (
+      normalized.includes("providerneutralcategoryheads must contain at most 4")
+    ) {
+      return "array_max_provider_neutral_category_heads";
+    }
+    if (
+      normalized.includes(
+        "providerneutralcategoryheads must contain bounded english",
+      )
+    ) {
+      return "category_head_invalid";
+    }
+    if (normalized.includes("non-executable kimi intent must not contain")) {
+      return normalized.includes("positive semantic terms")
+        ? "nonready_terms_present"
+        : "nonready_heads_present";
+    }
+    if (normalized.includes("executable kimi intent requires")) {
+      return "executable_heads_missing";
+    }
+    if (
+      normalized.includes(
+        "kimi wire retrievalterms.precision must contain at most 8",
+      )
+    ) {
+      return "array_max_retrieval_precision";
+    }
     if (normalized.includes("must have required property")) {
       return "required_field_missing";
     }
@@ -508,6 +546,9 @@ function semanticValidationIssueCodes(
       normalized.includes("must be equal to one of the allowed values")
     ) {
       return "enum_or_const";
+    }
+    if (normalized.includes("unclear intent must be marked ambiguous")) {
+      return "unclear_intent_invariant";
     }
     if (normalized.includes("must be ")) return "type_mismatch";
     if (normalized.includes("ambiguity requires")) return "ambiguity_invariant";
@@ -805,9 +846,9 @@ export function createKimiClient(config: KimiClientConfig): KimiClient {
           },
         );
       }
-      let semanticIntent;
+      let parsedSemanticIntent;
       try {
-        semanticIntent = parseKimiSemanticIntent(parsed);
+        parsedSemanticIntent = parseKimiSemanticIntentWire(parsed);
       } catch (error) {
         throw new KimiClientError(
           "KIMI_INVALID_RESPONSE",
@@ -821,7 +862,9 @@ export function createKimiClient(config: KimiClientConfig): KimiClient {
         );
       }
       return {
-        semanticIntent,
+        semanticIntent: parsedSemanticIntent.semanticIntent,
+        providerNeutralCategoryHeads:
+          parsedSemanticIntent.providerNeutralCategoryHeads,
         modelId: streamed.modelId ?? modelId,
         finishReason: streamed.finishReason,
         firstSseEventLatencyMs: streamed.firstSseEventLatencyMs,

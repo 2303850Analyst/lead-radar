@@ -14,7 +14,10 @@ import {
   DECISION_POLICY_VERSION,
   KIMI_PROMPT_CONTENT_VERSION,
 } from "../lib/search-planner/planner.ts";
-import { KIMI_MODEL_POLICY_VERSION } from "../lib/search-planner/kimi-client.ts";
+import {
+  KIMI_MODEL_POLICY_VERSION,
+  KIMI_TRANSPORT_SCHEMA_VERSION,
+} from "../lib/search-planner/kimi-client.ts";
 import {
   SEARCH_PLAN_SCHEMA_VERSION,
   SEMANTIC_INTENT_SCHEMA_VERSION,
@@ -669,6 +672,7 @@ const versions = {
   appVersion: packageMetadata.version,
   modelId: modelIds.length === 1 ? modelIds[0] : "mixed-or-unreported",
   modelPolicyVersion: KIMI_MODEL_POLICY_VERSION,
+  transportSchemaVersion: KIMI_TRANSPORT_SCHEMA_VERSION,
   promptVersion: promptVersions[0],
   semanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
   searchPlanSchemaVersion: SEARCH_PLAN_SCHEMA_VERSION,

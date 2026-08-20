@@ -405,6 +405,7 @@ const REQUIRED_PRODUCTION_VERSION_FIELDS = Object.freeze([
   "app",
   "model",
   "modelPolicy",
+  "transportSchema",
   "prompt",
   "semanticIntentSchema",
   "searchPlanSchema",

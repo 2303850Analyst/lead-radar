@@ -108,6 +108,13 @@ function semanticIntentFor(coreBusinessType = "барбершоп") {
   };
 }
 
+function kimiWireIntent(semanticIntent, heads = ["business location"]) {
+  return {
+    ...semanticIntent,
+    providerNeutralCategoryHeads: heads,
+  };
+}
+
 function validCompiledGeoapifyPlan() {
   return {
     ...compileGeoapifySemanticIntent(semanticIntentFor("sports hall")),
@@ -2633,6 +2640,17 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
   assert.equal(
     isSearchPlan({
       ...renderablePlan,
+      semanticIntent: {
+        ...renderablePlan.semanticIntent,
+        providerNeutralCategoryHeads: ["climbing"],
+      },
+    }),
+    false,
+    "the wire-only head field cannot leak into a public SearchPlan",
+  );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
       semanticIntent: { ...renderablePlan.semanticIntent, coreBusinessTypes: null },
     }),
     false,
@@ -2685,6 +2703,22 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
     }),
     false,
     "a non-physical response cannot require a physical location",
+  );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: {
+        ...renderablePlan.semanticIntent,
+        entityKind: "unclear",
+        ambiguity: {
+          isAmbiguous: false,
+          reason: null,
+          clarificationQuestion: null,
+        },
+      },
+    }),
+    false,
+    "an unclear intent cannot be rendered as executable without clarification",
   );
 });
 
@@ -2979,7 +3013,9 @@ test("runtime planner cache never preserves a transient Kimi failure", { concurr
     calls += 1;
     if (calls === 1) return new Response("rate limited", { status: 429 });
     return kimiSseResponse({
-      content: JSON.stringify(semanticIntentFor("sports hall")),
+      content: JSON.stringify(
+        kimiWireIntent(semanticIntentFor("sports hall"), ["sports hall"]),
+      ),
     });
   };
   clearSearchPlanRuntimeCache();
@@ -3024,7 +3060,9 @@ test("Kimi client accepts a strict response and performs no hidden retry", async
         serializedBody.includes("not dotted or underscored classification labels"),
       );
       return kimiSseResponse({
-        content: JSON.stringify(semanticIntentFor("барбершоп")),
+        content: JSON.stringify(
+          kimiWireIntent(semanticIntentFor("барбершоп"), ["barbershop"]),
+        ),
       });
     },
   });
@@ -3089,7 +3127,7 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify(
-          semanticIntentFor("барбершоп"),
+          kimiWireIntent(semanticIntentFor("барбершоп"), ["barbershop"]),
         ),
         done: false,
       }),
@@ -3101,7 +3139,7 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify(
-          semanticIntentFor("барбершоп"),
+          kimiWireIntent(semanticIntentFor("барбершоп"), ["barbershop"]),
         ),
         finishReason: "length",
       }),
@@ -3120,7 +3158,7 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify({
-          ...semanticIntentFor("барбершоп"),
+          ...kimiWireIntent(semanticIntentFor("барбершоп"), ["barbershop"]),
           providerUrl: "https://evil.invalid",
         }),
       }),
@@ -3132,7 +3170,11 @@ for (const fault of [
     query: "супермаркетт",
     fetchImpl: async () =>
       kimiSseResponse({
-        content: JSON.stringify(semanticIntentFor("https://evil.invalid")),
+        content: JSON.stringify(
+          kimiWireIntent(semanticIntentFor("https://evil.invalid"), [
+            "business location",
+          ]),
+        ),
       }),
     expectedCode: "KIMI_INVALID_RESPONSE",
     expectedRetryable: true,
@@ -3142,7 +3184,7 @@ for (const fault of [
     fetchImpl: async () =>
       kimiSseResponse({
         content: JSON.stringify({
-          ...semanticIntentFor("склад"),
+          ...kimiWireIntent(semanticIntentFor("склад"), ["warehouse"]),
           ambiguity: {
             isAmbiguous: false,
             reason: "Есть разные трактовки",

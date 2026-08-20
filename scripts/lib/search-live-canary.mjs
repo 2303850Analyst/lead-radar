@@ -891,6 +891,7 @@ export function summarizeSearchCanary(records, versions) {
       app: versions.appVersion,
       model: versions.modelId,
       modelPolicy: versions.modelPolicyVersion,
+      transportSchema: versions.transportSchemaVersion,
       prompt: versions.promptVersion,
       semanticIntentSchema: versions.semanticIntentSchemaVersion,
       searchPlanSchema: versions.searchPlanSchemaVersion,

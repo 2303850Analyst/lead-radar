@@ -8,7 +8,7 @@ import capabilitySnapshot from "./geoapify-categories.snapshot.json";
 
 export const GEOAPIFY_PROVIDER_CATALOG_VERSION = capabilitySnapshot.catalogVersion;
 export const GEOAPIFY_COMPILER_POLICY_VERSION =
-  "semantic-retrieval-v2/2026-08-20.5";
+  "semantic-retrieval-v2/2026-08-20.6";
 
 /**
  * Full provider capability registry captured from Geoapify's official Places
@@ -817,6 +817,45 @@ export function compileGeoapifySemanticIntent(
     limits: GEOAPIFY_RETRIEVAL_LIMITS,
     exclusionTerms: [...new Set(exclusionTerms.map((term) => term.trim()).filter(Boolean))],
   };
+}
+
+function normalizedProviderNeutralCategoryHead(value: string): string {
+  return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+/**
+ * Proves that at least one model-supplied provider-neutral head resolved to
+ * exactly one leaf in the pinned registry. Rich precision terms, parents,
+ * collisions, recall, adjacent, and name-fallback provenance cannot satisfy
+ * this execution gate.
+ */
+export function geoapifyPlanGroundsProviderNeutralCategoryHeads(
+  capabilityPlan: CompiledGeoapifyCapabilityPlan,
+  heads: readonly string[],
+): boolean {
+  const normalizedHeads = new Set(
+    heads.map(normalizedProviderNeutralCategoryHead),
+  );
+  if (!normalizedHeads.size) return false;
+  const categoriesByHead = new Map<string, Set<string>>();
+  for (const batch of capabilityPlan.batches) {
+    if (batch.type !== "precision") continue;
+    for (const item of batch.provenance) {
+      const head = normalizedProviderNeutralCategoryHead(item.semanticTerm);
+      if (
+        item.origin !== "retrievalTerms.precision" ||
+        (item.match !== "exact_leaf" && item.match !== "exact_path") ||
+        !isGeoapifyLeafCategoryId(item.categoryId) ||
+        !normalizedHeads.has(head)
+      ) continue;
+      const categories = categoriesByHead.get(head) ?? new Set<string>();
+      categories.add(item.categoryId);
+      categoriesByHead.set(head, categories);
+    }
+  }
+  return [...categoriesByHead.values()].some(
+    (categoryIds) => categoryIds.size === 1,
+  );
 }
 
 /**

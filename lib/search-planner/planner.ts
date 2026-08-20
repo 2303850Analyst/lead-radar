@@ -11,6 +11,7 @@ import {
   GEOAPIFY_CAPABILITY_REGISTRY,
   GEOAPIFY_COMPILER_POLICY_VERSION,
   GEOAPIFY_PROVIDER_CATALOG_VERSION,
+  geoapifyPlanGroundsProviderNeutralCategoryHeads,
   type CompiledGeoapifyCapabilityPlan,
 } from "./catalogs/geoapify";
 import { hashCanonicalJson, type CanonicalJsonValue } from "./hashing";
@@ -53,9 +54,9 @@ import {
   type SemanticIntentV2,
 } from "./types";
 
-export const DECISION_POLICY_VERSION = "2026-08-20.2";
+export const DECISION_POLICY_VERSION = "2026-08-20.3";
 export const KIMI_PROMPT_CONTENT_VERSION =
-  "semantic-intent-v2/2026-08-20.6";
+  "semantic-intent-v2/2026-08-20.7";
 export const KIMI_PROMPT_VERSION =
   `${KIMI_PROMPT_CONTENT_VERSION}+${KIMI_MODEL_POLICY_VERSION}`;
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;
@@ -318,6 +319,20 @@ function semanticExecutionPreview(
       provenance: arm.provenance.map((item) => ({ ...item })),
     })),
   };
+}
+
+function providerNeutralCategoryHeadIsGrounded(
+  result: KimiEncodeResult,
+  capabilityPlan: CompiledGeoapifyCapabilityPlan,
+): boolean {
+  const heads = result.providerNeutralCategoryHeads;
+  // Scenario adapters produce an already validated internal SemanticIntentV2
+  // and remain usable without depending on the production wire contract.
+  if (heads === undefined) return true;
+  return geoapifyPlanGroundsProviderNeutralCategoryHeads(
+    capabilityPlan,
+    heads,
+  );
 }
 
 function aiMetadata(result: KimiEncodeResult): SearchPlanAiMetadata {
@@ -662,6 +677,10 @@ export async function createSearchPlan(
     // can bypass the same semantic trust boundary as the production client.
     const semanticIntent = validateKimiSemanticIntent(result.semanticIntent);
     const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent, intent);
+    const categoryHeadIsGrounded = providerNeutralCategoryHeadIsGrounded(
+      result,
+      capabilityPlan,
+    );
     const semanticResolution = resolveDeterministically(
       compatibilityIntent(intent, semanticIntent),
     );
@@ -672,13 +691,15 @@ export async function createSearchPlan(
       intent,
       requestCacheKey,
       semanticIntent,
-      capabilityPlan.batches.some((batch) => batch.mode === "precision")
-        ? "high"
-        : capabilityPlan.categoryIds.length
-          ? "medium"
-          : semanticResolution.decision === "ready"
-            ? semanticResolution.method === "exact" ? "high" : "medium"
-            : "unknown",
+      categoryHeadIsGrounded
+        ? capabilityPlan.batches.some((batch) => batch.mode === "precision")
+          ? "high"
+          : capabilityPlan.categoryIds.length
+            ? "medium"
+            : semanticResolution.decision === "ready"
+              ? semanticResolution.method === "exact" ? "high" : "medium"
+              : "unknown"
+        : "unknown",
       promptVersion,
     );
 
@@ -735,7 +756,7 @@ export async function createSearchPlan(
       );
     }
 
-    if (capabilityPlan.categoryIds.length) {
+    if (categoryHeadIsGrounded && capabilityPlan.categoryIds.length) {
       const selectedConceptIds =
         semanticResolution.decision === "ready" && semanticResolution.selectedConceptId
           ? [semanticResolution.selectedConceptId]
@@ -764,7 +785,9 @@ export async function createSearchPlan(
         ? semanticResolution
         : null;
     if (
-      executableResolution?.selectedConceptId
+      executableResolution?.selectedConceptId &&
+      (result.providerNeutralCategoryHeads === undefined ||
+        categoryHeadIsGrounded)
     ) {
       const selectedConceptIds = [executableResolution.selectedConceptId];
       const executableCommon = baseDraft(

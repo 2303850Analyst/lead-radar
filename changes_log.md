@@ -29,6 +29,32 @@
 
 ### Добавлено
 
+- После повторяемого live-промаха `climbing` при корректном общем понимании
+  запроса Kimi transport получил отдельный wire-only массив
+  `providerNeutralCategoryHeads`. Раньше краткий provider-neutral head был лишь
+  необязательной частью богатого `retrievalTerms.precision`, поэтому модель
+  могла вернуть понятное описание без единственного слова, которое полный
+  provider registry умеет сопоставить. Теперь для однозначного физического
+  запроса Kimi обязан вернуть от одного до четырёх английских natural-word
+  heads длиной до 64 символов и пяти слов; сервер NFKC-нормализует и
+  дедуплицирует их без truncation, добавляет перед обычными precision terms и
+  удаляет wire-поле до формирования публичного `SemanticIntentV2 2.2`.
+  Ambiguous, `non_physical` и `unclear` ответы обязаны оставлять heads и все
+  положительные semantic-массивы пустыми. Semantic auto-run разрешён только
+  если хотя бы один проверенный head дал точный leaf/path в полном закреплённом
+  Geoapify registry; неизвестный или parent-only head не может быть замаскирован
+  общим name-fallback. Dotted/underscored provider syntax, включая ID в скобках
+  и иной пунктуации, отклоняется до compiler. Wire precision ограничен восемью
+  исходными элементами, heads — четырьмя, а объединённый внутренний precision —
+  прежними двенадцатью; raw overflow и exclusions не обрезаются. Изменение
+  поднимает Kimi model policy до `2026-08-20.6`, prompt content до
+  `2026-08-20.7`, MFJS transport schema до `2026-08-20.4`, provider compiler
+  policy до `2026-08-20.6` и decision policy до `2026-08-20.3`, тем самым
+  инвалидируя старые runtime cache/confirmation contexts. В публичный план,
+  persistent storage и live aggregate не попадают ни wire field, ни raw
+  model/provider responses; production canary теперь отдельно связывает отчёт
+  с точной transport-schema version.
+
 - Добавлена versioned server-side политика Kimi для latency-среза Issue #14:
   `kimi-k3` получает только совместимый `reasoning_effort=low|high|max`, а
   `kimi-k2.6` — только `thinking={type:disabled}`. Неизвестная модель,

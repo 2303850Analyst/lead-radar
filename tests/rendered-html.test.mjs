@@ -1352,11 +1352,25 @@ test("search plan encodes an unseen business intent without canonical candidates
       type: "array",
       items: { type: "string" },
     });
+    assert.ok(responseSchema.required.includes("providerNeutralCategoryHeads"));
     assert.equal(Object.hasOwn(responseSchema, "definitions"), false);
     const events = [
       {
         model: "kimi-k3",
-        choices: [{ index: 0, delta: { content: JSON.stringify(semanticIntent) }, finish_reason: null }],
+        choices: [{
+          index: 0,
+          delta: {
+            content: JSON.stringify({
+              ...semanticIntent,
+              providerNeutralCategoryHeads: [
+                "sports hall",
+                "gym",
+                "fitness centre",
+              ],
+            }),
+          },
+          finish_reason: null,
+        }],
       },
       {
         model: "kimi-k3",
@@ -1500,7 +1514,16 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
             model: "kimi-k3",
             choices: [{
               index: 0,
-              delta: { content: JSON.stringify(semanticIntent) },
+              delta: {
+                content: JSON.stringify({
+                  ...semanticIntent,
+                  providerNeutralCategoryHeads: [
+                    "sports hall",
+                    "gym",
+                    "fitness centre",
+                  ],
+                }),
+              },
               finish_reason: null,
             }],
           })}\n\n`,
@@ -1715,16 +1738,16 @@ test("warehouse semantic confirmation executes only the signed selected preview"
     normalizedGoal: "найти складские организации",
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
-    industries: ["логистика"],
-    coreBusinessTypes: ["склад"],
-    adjacentBusinessTypes: ["фулфилмент"],
+    industries: [],
+    coreBusinessTypes: [],
+    adjacentBusinessTypes: [],
     excludedBusinessTypes: [],
-    productsAndServices: ["хранение", "обработка заказов"],
-    includeSignals: ["склад"],
+    productsAndServices: [],
+    includeSignals: [],
     excludeSignals: [],
     retrievalTerms: {
-      precision: ["склад", "warehouse"],
-      recall: ["storage", "fulfillment"],
+      precision: [],
+      recall: [],
       exclude: [],
     },
     brandSearch: "include",
@@ -1745,7 +1768,12 @@ test("warehouse semantic confirmation executes only the signed selected preview"
             model: "kimi-k3",
             choices: [{
               index: 0,
-              delta: { content: JSON.stringify(semanticIntent) },
+              delta: {
+                content: JSON.stringify({
+                  ...semanticIntent,
+                  providerNeutralCategoryHeads: [],
+                }),
+              },
               finish_reason: null,
             }],
           })}\n\n`,
@@ -1966,7 +1994,16 @@ test("SemanticIntentV2 executes through the production search orchestrator", { c
       [
         `data: ${JSON.stringify({
           model: "kimi-k3",
-          choices: [{ index: 0, delta: { content: JSON.stringify(encoded) }, finish_reason: null }],
+          choices: [{
+            index: 0,
+            delta: {
+              content: JSON.stringify({
+                ...encoded,
+                providerNeutralCategoryHeads: ["hairdresser"],
+              }),
+            },
+            finish_reason: null,
+          }],
         })}\n\n`,
         `data: ${JSON.stringify({
           model: "kimi-k3",
