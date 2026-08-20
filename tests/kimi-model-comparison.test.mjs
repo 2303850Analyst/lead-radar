@@ -23,6 +23,9 @@ import {
   resolveSearchCanaryKimiProfile,
   searchCanaryRuntimeProfile,
 } from "../scripts/lib/search-canary-profile.mjs";
+import {
+  SEARCH_CANARY_ATTAINABLE_POLICY,
+} from "../scripts/lib/search-live-canary.mjs";
 
 const pricing = Object.freeze({ cachedInput: 0.3, input: 3, output: 15 });
 
@@ -416,6 +419,7 @@ const expectedCanaryVersions = Object.freeze({
   productionBundleSha256: "b".repeat(64),
   canaryHarnessSha256: "c".repeat(64),
   evaluationPolicy: "evaluation-current",
+  attainablePolicy: SEARCH_CANARY_ATTAINABLE_POLICY,
   caseSetChecksum: "d".repeat(64),
   rubric: "rubric-current",
   rubricChecksum: "e".repeat(64),
@@ -499,7 +503,17 @@ test("server-owned canary profile allowlist resolves K3 and K2.6 exactly", () =>
   applySearchCanaryKimiProfileToEnv(k26, env);
   assert.equal(env.KIMI_PLANNER_MODEL, "kimi-k2.6");
   assert.equal(Object.hasOwn(env, "KIMI_PLANNER_REASONING_EFFORT"), false);
-  assert.equal(searchCanaryRuntimeProfile(k26).cacheIdentity, k26.cacheIdentity);
+  const k26RuntimeProfile = searchCanaryRuntimeProfile(k26);
+  assert.equal(k26RuntimeProfile.cacheIdentity, k26.cacheIdentity);
+  assert.equal(k26RuntimeProfile.maxRetrievalArms, 4);
+  assert.equal(k26RuntimeProfile.maxUpstreamRequests, 4);
+  assert.equal(k26RuntimeProfile.maxCardsAccepted, 200);
+  assert.equal(k26RuntimeProfile.maxCategoryResolutionRequests, 1);
+  assert.equal(k26RuntimeProfile.maxProviderRequestsPerAttempt, 8);
+  assert.equal(
+    k26RuntimeProfile.manualReviewTimeoutMs,
+    SEARCH_CANARY_ATTAINABLE_POLICY.manualReviewTimeoutMs,
+  );
   applySearchCanaryKimiProfileToEnv(k3, env);
   assert.equal(env.KIMI_PLANNER_MODEL, "kimi-k3");
   assert.equal(env.KIMI_PLANNER_REASONING_EFFORT, "low");
@@ -615,6 +629,12 @@ test("production journey rejects obsolete behavior and artifact versions", () =>
     { productionBundleSha256: "0".repeat(64) },
     { canaryHarnessSha256: "1".repeat(64) },
     { evaluationPolicy: "obsolete-evaluation" },
+    {
+      attainablePolicy: {
+        ...SEARCH_CANARY_ATTAINABLE_POLICY,
+        maxPoolCandidatesPerCase: 10,
+      },
+    },
     { caseSetChecksum: "2".repeat(64) },
     { rubric: "obsolete-rubric" },
     { rubricChecksum: "3".repeat(64) },

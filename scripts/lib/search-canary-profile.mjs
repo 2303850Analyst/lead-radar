@@ -1,4 +1,8 @@
 import { resolveKimiModelPolicy } from "../../lib/search-planner/kimi-client.ts";
+import {
+  SEARCH_CANARY_ATTAINABLE_POLICY,
+  SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS,
+} from "./search-live-canary.mjs";
 
 export const DEFAULT_SEARCH_CANARY_KIMI_PROFILE = "k3-low";
 
@@ -79,12 +83,22 @@ export function searchCanaryRuntimeProfile(profile) {
     searchRequestDeadlineMs: 60_000,
     placesLimit: 20,
     detailsLimit: 3,
+    maxRetrievalArms:
+      SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.plannedRetrievalArms,
+    maxUpstreamRequests:
+      SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.retrievalRequests,
+    maxCardsAccepted: SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.cardsAccepted,
+    maxCategoryResolutionRequests:
+      SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.categoryResolutionRequests,
+    maxProviderRequestsPerAttempt:
+      SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.totalProviderRequests,
     geoapifyRequestIntervalMs: 225,
     categoryHintTimeoutMs: 1_500,
     categoryHintsEnabled: true,
     maxAttemptsPerCase: 2,
     retryBackoffMs: 2_000,
-    literalBaselineLimit: 10,
+    literalBaselineLimit: SEARCH_CANARY_ATTAINABLE_POLICY.literalBaselineLimit,
     literalBaselineTimeoutMs: 10_000,
+    manualReviewTimeoutMs: SEARCH_CANARY_ATTAINABLE_POLICY.manualReviewTimeoutMs,
   });
 }

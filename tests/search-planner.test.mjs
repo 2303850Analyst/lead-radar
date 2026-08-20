@@ -850,6 +850,16 @@ test("Geoapify stops every expansion arm after ten exact primary matches", { con
 
     assert.equal(upstreamUrls.length, 1);
     assert.equal(upstreamUrls[0].pathname, "/v2/places");
+    assert.equal(result.provider.coverage?.completedRetrievalArms, 1);
+    assert.ok((result.provider.coverage?.retrievalArms ?? 0) > 1);
+    assert.deepEqual(result.provider.coverage?.executedRetrievalArms, [
+      {
+        id: capabilityPlan.batches[0].id,
+        planArmId: capabilityPlan.batches[0].id,
+        type: capabilityPlan.batches[0].type,
+        role: capabilityPlan.batches[0].role,
+      },
+    ]);
     assert.equal(result.leads.length, 10);
     assert.ok(result.leads.every((lead) => lead.relevance.status === "matched"));
   } finally {
@@ -1112,6 +1122,21 @@ test("Geoapify resolves a weak open intent through provider-native category hint
       status: "resolved",
       requests: 1,
     });
+    const plannedFallback = capabilityPlan.batches.find(
+      (batch) => batch.type === "fallback",
+    );
+    const effectiveFallback = result.provider.coverage?.executedRetrievalArms?.find(
+      (arm) => arm.type === "fallback",
+    );
+    assert.ok(plannedFallback);
+    assert.ok(effectiveFallback);
+    assert.equal(effectiveFallback.planArmId, plannedFallback.id);
+    assert.notEqual(effectiveFallback.id, plannedFallback.id);
+    assert.ok(
+      result.leads[0]?.discovery.retrievalArms.some(
+        (arm) => arm.id === effectiveFallback.id,
+      ),
+    );
     assert.equal(
       JSON.stringify(capabilityPlan),
       signedPlanSnapshot,
@@ -1426,6 +1451,17 @@ test("Geoapify native retrieval failure, empty, and unusable results fail soft",
         status: "degraded",
         requests: 1,
       });
+      const leadArmId = result.leads[0]?.discovery.retrievalArms[0]?.id;
+      const effectiveArm = result.provider.coverage?.executedRetrievalArms?.find(
+        (arm) => arm.id === leadArmId,
+      );
+      assert.ok(effectiveArm);
+      assert.notEqual(effectiveArm.id, effectiveArm.planArmId);
+      assert.ok(
+        capabilityPlan.batches.some(
+          (batch) => batch.id === effectiveArm.planArmId,
+        ),
+      );
       assert.equal(
         result.provider.coverage?.upstreamRequests,
         fallbackCount + 1,

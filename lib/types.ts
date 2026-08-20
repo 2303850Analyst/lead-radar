@@ -40,7 +40,12 @@ export type SearchProviderMetadata = {
   };
   coverage?: {
     categories: string[];
+    /** Planned bounded retrieval arms. */
     retrievalArms?: number;
+    /** Retrieval arms that completed before adaptive stop or stage exhaustion. */
+    completedRetrievalArms?: number;
+    /** Exact server-executed arms, including any runtime-refined fallback ID. */
+    executedRetrievalArms?: SearchProviderExecutedRetrievalArm[];
     upstreamRequests?: number;
     cardsAccepted?: number;
     detailsRequested: number;
@@ -90,6 +95,14 @@ export type LeadRetrievalArm = {
       | "legacy_binding";
     categoryId: string;
   }>;
+};
+
+export type SearchProviderExecutedRetrievalArm = Pick<
+  LeadRetrievalArm,
+  "id" | "type" | "role"
+> & {
+  /** Immutable signed-plan arm that authorized this effective runtime arm. */
+  planArmId: string;
 };
 
 export type SearchProgressStage =

@@ -24,13 +24,18 @@ import {
 } from "../lib/search-planner/types.ts";
 import {
   SEARCH_CANARY_CASES,
+  SEARCH_CANARY_ATTAINABLE_POLICY,
   SEARCH_CANARY_RUBRIC,
   collectGeoapifyProviderFacts,
   countGeoapifyProviderFactViolations,
   isRetryableSearchCanaryCode,
   readBoundedJsonResponse,
+  resolveSearchCanaryPoolReview,
+  resolveSearchCanaryProviderObservation,
   runCanaryAttemptWithWatchdog,
   summarizeSearchCanary,
+  validateSearchCanaryExecutedArms,
+  validateSearchCanaryPoolProvenance,
   validateSearchCanaryCoverage,
 } from "./lib/search-live-canary.mjs";
 import {
@@ -79,8 +84,10 @@ const factObserverSymbol = Symbol.for(
   `lead-radar.geoapify-canary-fact-observer.v1.${factObserverChannel}`,
 );
 
-const REVIEW_LIMIT = 10;
-const MANUAL_WAIT_MS = 10 * 60 * 1_000;
+const REVIEW_LIMIT = SEARCH_CANARY_ATTAINABLE_POLICY.topK;
+const SEMANTIC_POOL_REVIEW_LIMIT =
+  SEARCH_CANARY_ATTAINABLE_POLICY.maxPoolCandidatesPerCase;
+const MANUAL_WAIT_MS = SEARCH_CANARY_ATTAINABLE_POLICY.manualReviewTimeoutMs;
 const REVIEW_PORT = Number(process.env.CANARY_REVIEW_PORT ?? 32_123);
 const reviewCapability = randomBytes(24).toString("hex");
 const identitySalt = randomBytes(32);
@@ -138,6 +145,14 @@ function controlledError(code, diagnostics = {}) {
   error.code = code;
   Object.assign(error, diagnostics);
   return error;
+}
+
+function boundedProviderCoverage(value, { required = false } = {}) {
+  try {
+    return resolveSearchCanaryProviderObservation(value, { required });
+  } catch {
+    throw controlledError("CANARY_INVALID_PROVIDER_COVERAGE");
+  }
 }
 
 async function runProductionSearchAttempt(entry, signal) {
@@ -245,7 +260,10 @@ async function runLiteralBaseline(entry) {
   );
   url.searchParams.set("bias", `proximity:${entry.center[0]},${entry.center[1]}`);
   url.searchParams.set("lang", entry.locale.slice(0, 2));
-  url.searchParams.set("limit", String(REVIEW_LIMIT));
+  url.searchParams.set(
+    "limit",
+    String(SEARCH_CANARY_ATTAINABLE_POLICY.literalBaselineLimit),
+  );
   url.searchParams.set("apiKey", geoapifyKey);
   let response;
   try {
@@ -300,42 +318,53 @@ async function runLiteralBaseline(entry) {
       identityHashes: [identityHash(externalId)],
     }];
   })
-    .slice(0, REVIEW_LIMIT)
+    .slice(0, SEARCH_CANARY_ATTAINABLE_POLICY.literalBaselineLimit)
     .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
 }
 
-function reviewCandidates(leads) {
-  return leads
-    .slice(0, REVIEW_LIMIT)
-    .map((lead, index) => {
-      const externalIds = (lead.sources ?? [])
-        .filter((source) => source?.provider === "geoapify")
-        .map((source) => safeText(source.externalId, 500))
-        .filter(Boolean)
-        .sort();
-      if (!externalIds.length) externalIds.push(safeText(lead.id, 500));
-      return {
-        rank: index + 1,
-        name: safeText(lead.name),
-        category: safeText(lead.category),
-        relevance: safeText(lead.relevance?.status ?? "not_checked", 20),
-        categoryEvidence: [
-          ...new Set(
-            (lead.relevance?.evidence ?? [])
-              .filter((fact) => fact?.field === "providerCategoryIds")
-              .map((fact) => safeText(fact.value, 100))
-              .filter(Boolean),
-          ),
-        ].slice(0, 6),
-        identityHashes: [...new Set(externalIds.map(identityHash))],
-      };
-    });
+function semanticPoolCandidates(leads, allowedArms) {
+  if (leads.length > SEMANTIC_POOL_REVIEW_LIMIT) {
+    throw controlledError("CANARY_SEMANTIC_POOL_LIMIT_EXCEEDED");
+  }
+  const candidates = leads.map((lead, index) => {
+    const externalIds = (lead.sources ?? [])
+      .filter((source) => source?.provider === "geoapify")
+      .map((source) => safeText(source.externalId, 500))
+      .filter(Boolean)
+      .sort();
+    const retrievalArms = Array.isArray(lead.discovery?.retrievalArms)
+      ? lead.discovery.retrievalArms.map((arm) => ({
+          id: arm?.id,
+          type: arm?.type,
+          role: arm?.role,
+        }))
+      : [];
+    return {
+      rank: index + 1,
+      name: safeText(lead.name),
+      category: safeText(lead.category),
+      categoryEvidence: [
+        ...new Set(
+          (lead.relevance?.evidence ?? [])
+            .filter((fact) => fact?.field === "providerCategoryIds")
+            .map((fact) => safeText(fact.value, 100))
+            .filter(Boolean),
+        ),
+      ].slice(0, 6),
+      identityHashes: [...new Set(externalIds.map(identityHash))],
+      retrievalArms,
+    };
+  });
+  validateSearchCanaryPoolProvenance(candidates, allowedArms);
+  return candidates;
 }
 
 function publicReviewCandidates(candidates) {
   return candidates.map((candidate) => {
     const publicCandidate = { ...candidate };
     delete publicCandidate.identityHashes;
+    delete publicCandidate.relevance;
+    delete publicCandidate.retrievalArms;
     return publicCandidate;
   });
 }
@@ -399,6 +428,17 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
     }
   }
   const semanticJourneyMs = Date.now() - semanticJourneyStartedAt;
+  if (
+    Array.isArray(search?.payload?.leads) &&
+    search.payload.leads.length > SEMANTIC_POOL_REVIEW_LIMIT
+  ) {
+    throw controlledError("CANARY_SEMANTIC_POOL_LIMIT_EXCEEDED");
+  }
+  const providerObservation = boundedProviderCoverage(
+    search?.payload?.provider?.coverage,
+    { required: semanticSucceeded },
+  );
+  const providerCoverage = providerObservation.counts;
   await new Promise((resolve) => setTimeout(resolve, 300));
   try {
     baseline = await runLiteralBaseline(entry);
@@ -410,7 +450,30 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
   const payload = search?.payload;
   const plan = payload?.plan;
   const leads = Array.isArray(payload?.leads) ? payload.leads : [];
-  const semantic = reviewCandidates(leads);
+  const plannedArms = Array.isArray(plan?.executionPreview?.retrievalArms)
+    ? plan.executionPreview.retrievalArms.map((arm) => ({
+        id: arm?.id,
+        type: arm?.type,
+        role: arm?.role,
+      }))
+    : [];
+  const categoryResolutionStatus =
+    providerObservation.categoryResolutionStatus;
+  const executedArms = semanticSucceeded
+    ? validateSearchCanaryExecutedArms(
+        providerObservation.executedArms,
+        plannedArms,
+        {
+          categoryResolutionStatus,
+          categoryResolutionRequests:
+            providerCoverage.categoryResolutionRequests,
+          plannedRetrievalArms: providerCoverage.plannedRetrievalArms,
+          completedRetrievalArms: providerCoverage.completedRetrievalArms,
+        },
+      )
+    : [];
+  const semanticPool = semanticPoolCandidates(leads, executedArms);
+  const semanticTop10 = semanticPool.slice(0, REVIEW_LIMIT);
   const geographyLeaks = leads.filter(
     (lead) =>
       !Array.isArray(lead.location?.coordinates) ||
@@ -450,25 +513,28 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
     rawResponsesStored: payload
       ? payload.provider?.policy?.rawResponsesStored !== false
       : false,
-    categoryResolutionStatus:
-      payload?.provider?.coverage?.categoryResolution?.status ?? "unreported",
+    categoryResolutionStatus,
     categoryResolutionRequests:
-      payload?.provider?.coverage?.categoryResolution?.requests ?? 0,
+      providerCoverage.categoryResolutionRequests ?? 0,
     attemptCount,
     firstAttemptSucceeded,
     failedAttemptCodes,
     attemptTimings,
     semanticJourneyMs,
-    semanticCandidateCount: semantic.length,
+    semanticCandidateCount: semanticTop10.length,
     baselineCandidateCount: baseline.length,
-    semanticReviewed: semantic.length,
+    semanticReviewed: semanticTop10.length,
     semanticRelevant: 0,
     semanticRelevantIdentityGroups: [],
+    attainablePoolCandidateCount: semanticPool.length,
+    attainablePoolReviewed: semanticPool.length,
+    attainablePoolRelevant: 0,
     baselineReviewed: baseline.length,
     baselineRelevant: 0,
     baselineRelevantIdentityGroups: [],
     modelId: plan?.ai?.modelId ?? null,
     promptVersion: plan?.promptVersion ?? null,
+    providerCoverage,
     errorCode,
   };
   runtimeRecords.push(record);
@@ -481,7 +547,7 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
       relatedQueries: entry.relatedQueries,
       excludeQueries: entry.excludeQueries,
     },
-    semantic: publicReviewCandidates(semantic),
+    semanticPool: publicReviewCandidates(semanticPool),
     baseline: publicReviewCandidates(baseline),
     diagnostics: {
       semanticSucceeded,
@@ -498,11 +564,12 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
       failedAttemptCodes,
     },
   });
-  reviewIdentityPacket.set(entry.id, { semantic, baseline });
+  reviewIdentityPacket.set(entry.id, { semanticPool, baseline });
   process.stdout.write(
     `CASE_AGGREGATE ${JSON.stringify({
       id: entry.id,
-      semanticCandidates: semantic.length,
+      semanticCandidates: semanticTop10.length,
+      semanticPoolCandidates: semanticPool.length,
       baselineCandidates: baseline.length,
       kimiUsed: record.kimiUsed,
       schemaPassed: record.schemaPassed,
@@ -526,7 +593,7 @@ const manualTemplate = {
   cases: Object.fromEntries(
     runtimeRecords.map((record) => [
       record.id,
-      { semanticRelevantRanks: [], baselineRelevantRanks: [] },
+      { semanticPoolRelevantRanks: [], baselineRelevantRanks: [] },
     ]),
   ),
 };
@@ -548,19 +615,20 @@ function validateManualReviewSubmission(value) {
   }
   return runtimeRecords.every((record) => {
     const review = value.cases[record.id];
-    const semanticRanks = review?.semanticRelevantRanks;
+    const semanticPoolRanks = review?.semanticPoolRelevantRanks;
     const baselineRanks = review?.baselineRelevantRanks;
     return (
       review &&
-      Array.isArray(semanticRanks) &&
+      Object.keys(review).length === 2 &&
+      Array.isArray(semanticPoolRanks) &&
       Array.isArray(baselineRanks) &&
-      new Set(semanticRanks).size === semanticRanks.length &&
+      new Set(semanticPoolRanks).size === semanticPoolRanks.length &&
       new Set(baselineRanks).size === baselineRanks.length &&
-      semanticRanks.every(
+      semanticPoolRanks.every(
         (rank) =>
           Number.isInteger(rank) &&
           rank >= 1 &&
-          rank <= record.semanticCandidateCount,
+          rank <= record.attainablePoolCandidateCount,
       ) &&
       baselineRanks.every(
         (rank) =>
@@ -636,15 +704,26 @@ for (const record of runtimeRecords) {
   const review = manualReview.cases[record.id];
   const packet = reviewPacket.find((entry) => entry.id === record.id);
   const identityPacket = reviewIdentityPacket.get(record.id);
-  const semanticRanks = review?.semanticRelevantRanks;
+  const semanticPoolRanks = review?.semanticPoolRelevantRanks;
   const baselineRanks = review?.baselineRelevantRanks;
   if (!review || !packet || !identityPacket) {
     throw new Error(`Missing validated manual review for ${record.id}`);
   }
-  record.semanticRelevant = semanticRanks.length;
+  const poolReview = resolveSearchCanaryPoolReview(
+    record.attainablePoolCandidateCount,
+    semanticPoolRanks,
+  );
+  const semanticTop10Ranks = semanticPoolRanks.filter(
+    (rank) => rank <= poolReview.top10CandidateCount,
+  );
+  record.attainablePoolReviewed = poolReview.poolReviewed;
+  record.attainablePoolRelevant = poolReview.poolRelevant;
+  record.semanticCandidateCount = poolReview.top10CandidateCount;
+  record.semanticReviewed = poolReview.top10Reviewed;
+  record.semanticRelevant = poolReview.top10Relevant;
   record.baselineRelevant = baselineRanks.length;
-  record.semanticRelevantIdentityGroups = semanticRanks.map(
-    (rank) => identityPacket.semantic[rank - 1].identityHashes,
+  record.semanticRelevantIdentityGroups = semanticTop10Ranks.map(
+    (rank) => identityPacket.semanticPool[rank - 1].identityHashes,
   );
   record.baselineRelevantIdentityGroups = baselineRanks.map(
     (rank) => identityPacket.baseline[rank - 1].identityHashes,

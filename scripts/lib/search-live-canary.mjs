@@ -16,6 +16,122 @@ const RETRYABLE_SEARCH_CANARY_CODES = new Set([
   "GEOAPIFY_NETWORK_ERROR",
   "GEOAPIFY_UPSTREAM_ERROR",
 ]);
+const SEARCH_CANARY_RETRIEVAL_ARM_TYPES = new Set([
+  "precision",
+  "recall",
+  "adjacent",
+  "fallback",
+  "legacy",
+]);
+const SEARCH_CANARY_RETRIEVAL_ARM_ROLES = Object.freeze({
+  precision: "primary",
+  recall: "primary",
+  adjacent: "adjacent",
+  fallback: "fallback",
+  legacy: "primary",
+});
+const SEARCH_CANARY_CATEGORY_RESOLUTION_STATUSES = new Set([
+  "disabled",
+  "not_needed",
+  "resolved",
+  "no_match",
+  "degraded",
+]);
+
+export const SEARCH_CANARY_ATTAINABLE_POLICY = Object.freeze({
+  version: "search-live-attainable-v1/2026-08-20.1",
+  topK: 10,
+  maxPoolCandidatesPerCase: 50,
+  attainableAt10Threshold: 0.95,
+  literalBaselineLimit: 10,
+  manualReviewTimeoutMs: 45 * 60 * 1_000,
+  measurementScope: "executed_production_candidate_pool",
+  addedProviderWork: Object.freeze({
+    requests: 0,
+    cards: 0,
+    details: 0,
+  }),
+});
+
+export const SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS = Object.freeze({
+  plannedRetrievalArms: 4,
+  completedRetrievalArms: 4,
+  retrievalRequests: 4,
+  cardsAccepted: 200,
+  detailsRequests: 3,
+  categoryResolutionRequests: 1,
+  totalProviderRequests: 8,
+});
+
+export function resolveSearchCanaryProviderObservation(
+  value,
+  { required = false } = {},
+) {
+  if (typeof required !== "boolean") {
+    throw new Error("Invalid search canary provider coverage options");
+  }
+  if (value === undefined || value === null) {
+    if (required) throw new Error("Missing search canary provider coverage");
+    return {
+      counts: {},
+      executedArms: [],
+      categoryResolutionStatus: "unreported",
+    };
+  }
+  if (
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    value.categoryResolution === null ||
+    typeof value.categoryResolution !== "object" ||
+    Array.isArray(value.categoryResolution) ||
+    !SEARCH_CANARY_CATEGORY_RESOLUTION_STATUSES.has(
+      value.categoryResolution.status,
+    )
+  ) {
+    throw new Error("Invalid search canary provider coverage");
+  }
+  const counts = {
+    plannedRetrievalArms: value.retrievalArms,
+    completedRetrievalArms: value.completedRetrievalArms,
+    retrievalRequests: value.upstreamRequests,
+    cardsAccepted: value.cardsAccepted,
+    detailsRequests: value.detailsRequested,
+    categoryResolutionRequests: value.categoryResolution.requests,
+  };
+  counts.totalProviderRequests =
+    counts.retrievalRequests +
+    counts.detailsRequests +
+    counts.categoryResolutionRequests;
+  if (
+    Object.entries(counts).some(
+      ([field, count]) =>
+        !Number.isInteger(count) ||
+        count < 0 ||
+        count > SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS[field],
+    ) ||
+    counts.completedRetrievalArms > counts.plannedRetrievalArms ||
+    counts.completedRetrievalArms > counts.retrievalRequests ||
+    counts.detailsRequests > counts.cardsAccepted ||
+    (["disabled", "not_needed"].includes(value.categoryResolution.status) &&
+      counts.categoryResolutionRequests !== 0) ||
+    (["resolved", "no_match"].includes(value.categoryResolution.status) &&
+      counts.categoryResolutionRequests !== 1) ||
+    !Array.isArray(value.executedRetrievalArms) ||
+    value.executedRetrievalArms.length !== counts.completedRetrievalArms
+  ) {
+    throw new Error("Invalid bounded search canary provider coverage");
+  }
+  return {
+    counts,
+    executedArms: value.executedRetrievalArms.map((arm) => ({
+      id: arm?.id,
+      planArmId: arm?.planArmId,
+      type: arm?.type,
+      role: arm?.role,
+    })),
+    categoryResolutionStatus: value.categoryResolution.status,
+  };
+}
 
 export function isRetryableSearchCanaryCode(code) {
   return typeof code === "string" && RETRYABLE_SEARCH_CANARY_CODES.has(code);
@@ -568,6 +684,187 @@ function countIdentityComponents(groups) {
   return new Set([...parent.keys()].map(find)).size;
 }
 
+export function resolveSearchCanaryPoolReview(candidateCount, relevantRanks) {
+  if (
+    !Number.isInteger(candidateCount) ||
+    candidateCount < 0 ||
+    candidateCount > SEARCH_CANARY_ATTAINABLE_POLICY.maxPoolCandidatesPerCase ||
+    !Array.isArray(relevantRanks) ||
+    new Set(relevantRanks).size !== relevantRanks.length ||
+    !relevantRanks.every(
+      (rank) =>
+        Number.isInteger(rank) && rank >= 1 && rank <= candidateCount,
+    )
+  ) {
+    throw new Error("Invalid bounded production-pool review");
+  }
+
+  const top10CandidateCount = Math.min(
+    SEARCH_CANARY_ATTAINABLE_POLICY.topK,
+    candidateCount,
+  );
+  return {
+    poolCandidateCount: candidateCount,
+    poolReviewed: candidateCount,
+    poolRelevant: relevantRanks.length,
+    top10CandidateCount,
+    top10Reviewed: top10CandidateCount,
+    top10Relevant: relevantRanks.filter(
+      (rank) => rank <= SEARCH_CANARY_ATTAINABLE_POLICY.topK,
+    ).length,
+  };
+}
+
+function validSearchCanaryArmSummary(arm) {
+  if (
+    arm === null ||
+    typeof arm !== "object" ||
+    Array.isArray(arm) ||
+    Object.keys(arm).length !== 3 ||
+    !Object.hasOwn(arm, "id") ||
+    !Object.hasOwn(arm, "type") ||
+    !Object.hasOwn(arm, "role") ||
+    typeof arm.id !== "string" ||
+    !SEARCH_CANARY_RETRIEVAL_ARM_TYPES.has(arm.type) ||
+    SEARCH_CANARY_RETRIEVAL_ARM_ROLES[arm.type] !== arm.role
+  ) {
+    return false;
+  }
+  const idMatch = /^arm-([a-z]+)-[a-f0-9]{8}$/.exec(arm.id);
+  return idMatch?.[1] === arm.type;
+}
+
+function validSearchCanaryExecutedArmSummary(arm) {
+  if (
+    arm === null ||
+    typeof arm !== "object" ||
+    Array.isArray(arm) ||
+    Object.keys(arm).length !== 4 ||
+    typeof arm.planArmId !== "string"
+  ) {
+    return false;
+  }
+  const effectiveArm = {
+    id: arm.id,
+    type: arm.type,
+    role: arm.role,
+  };
+  return (
+    /^arm-[a-z]+-[a-f0-9]{8}$/.test(arm.planArmId) &&
+    validSearchCanaryArmSummary(effectiveArm)
+  );
+}
+
+export function validateSearchCanaryExecutedArms(
+  executedArms,
+  plannedArms,
+  {
+    categoryResolutionStatus,
+    categoryResolutionRequests,
+    plannedRetrievalArms,
+    completedRetrievalArms,
+  } = {},
+) {
+  if (
+    !Array.isArray(executedArms) ||
+    !Array.isArray(plannedArms) ||
+    !Number.isInteger(categoryResolutionRequests) ||
+    !Number.isInteger(plannedRetrievalArms) ||
+    !Number.isInteger(completedRetrievalArms) ||
+    plannedArms.length !== plannedRetrievalArms ||
+    executedArms.length !== completedRetrievalArms ||
+    executedArms.length >
+      SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.completedRetrievalArms ||
+    executedArms.length > plannedArms.length ||
+    plannedArms.length >
+      SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.plannedRetrievalArms ||
+    !SEARCH_CANARY_CATEGORY_RESOLUTION_STATUSES.has(categoryResolutionStatus) ||
+    new Set(executedArms.map((arm) => arm?.id)).size !== executedArms.length ||
+    new Set(executedArms.map((arm) => arm?.planArmId)).size !==
+      executedArms.length ||
+    new Set(plannedArms.map((arm) => arm?.id)).size !== plannedArms.length ||
+    !executedArms.every(validSearchCanaryExecutedArmSummary) ||
+    !plannedArms.every(validSearchCanaryArmSummary)
+  ) {
+    throw new Error("Invalid executed search canary arm provenance");
+  }
+
+  let replacementCount = 0;
+  const effectiveArms = executedArms.map((executed, index) => {
+    const planned = plannedArms[index];
+    if (
+      executed.planArmId !== planned.id ||
+      executed.type !== planned.type ||
+      executed.role !== planned.role
+    ) {
+      throw new Error("Executed search canary arm is not a signed-plan prefix");
+    }
+    if (executed.id !== executed.planArmId) {
+      replacementCount += 1;
+      if (
+        replacementCount > 1 ||
+        !["resolved", "degraded"].includes(categoryResolutionStatus) ||
+        categoryResolutionRequests !== 1 ||
+        executed.type !== "fallback" ||
+        executed.role !== "fallback"
+      ) {
+        throw new Error("Invalid runtime fallback arm replacement");
+      }
+    }
+    return { id: executed.id, type: executed.type, role: executed.role };
+  });
+
+  return effectiveArms;
+}
+
+export function validateSearchCanaryPoolProvenance(
+  candidates,
+  allowedArms,
+) {
+  if (
+    !Array.isArray(candidates) ||
+    candidates.length > SEARCH_CANARY_ATTAINABLE_POLICY.maxPoolCandidatesPerCase ||
+    !Array.isArray(allowedArms) ||
+    allowedArms.length >
+      SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.completedRetrievalArms ||
+    new Set(allowedArms.map((arm) => arm?.id)).size !== allowedArms.length ||
+    !allowedArms.every(validSearchCanaryArmSummary)
+  ) {
+    throw new Error("Invalid search canary candidate pool or executed arm allowlist");
+  }
+  const allowedArmById = new Map(allowedArms.map((arm) => [arm.id, arm]));
+  const seenIdentities = new Set();
+  for (const candidate of candidates) {
+    const identities = candidate?.identityHashes;
+    const retrievalArms = candidate?.retrievalArms;
+    if (
+      !Array.isArray(identities) ||
+      identities.length < 1 ||
+      identities.length > 16 ||
+      new Set(identities).size !== identities.length ||
+      !identities.every(
+        (identity) =>
+          typeof identity === "string" && /^[a-f0-9]{64}$/.test(identity),
+      ) ||
+      identities.some((identity) => seenIdentities.has(identity)) ||
+      !Array.isArray(retrievalArms) ||
+      retrievalArms.length < 1 ||
+      retrievalArms.length >
+        SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.completedRetrievalArms ||
+      new Set(retrievalArms.map((arm) => arm?.id)).size !== retrievalArms.length ||
+      !retrievalArms.every((arm) => {
+        if (!validSearchCanaryArmSummary(arm)) return false;
+        const allowed = allowedArmById.get(arm.id);
+        return allowed?.type === arm.type && allowed?.role === arm.role;
+      })
+    ) {
+      throw new Error("Invalid search canary pool identity or arm provenance");
+    }
+    for (const identity of identities) seenIdentities.add(identity);
+  }
+  return true;
+}
+
 export function validateSearchCanaryCoverage(cases) {
   if (!Array.isArray(cases) || cases.length < SEARCH_CANARY_THRESHOLDS.cases) {
     throw new Error("Search canary requires at least 12 cases");
@@ -617,7 +914,59 @@ export function validateSearchCanaryCoverage(cases) {
 }
 
 function boundedReview(record) {
+  const providerCoverage = record.providerCoverage;
+  const providerCoverageFields = Object.keys(
+    SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS,
+  );
+  const providerCoverageValid =
+    (!record.semanticSucceeded &&
+      (providerCoverage === undefined ||
+        (providerCoverage !== null &&
+          typeof providerCoverage === "object" &&
+          !Array.isArray(providerCoverage) &&
+          Object.keys(providerCoverage).length === 0))) ||
+    (record.semanticSucceeded &&
+      providerCoverage !== null &&
+      typeof providerCoverage === "object" &&
+      !Array.isArray(providerCoverage) &&
+      Object.keys(providerCoverage).every(
+        (field) =>
+          Object.hasOwn(SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS, field) &&
+          Number.isInteger(providerCoverage[field]) &&
+          providerCoverage[field] >= 0 &&
+          providerCoverage[field] <=
+            SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS[field],
+      ) &&
+      providerCoverageFields.every((field) =>
+        Object.hasOwn(providerCoverage, field),
+      ) &&
+      providerCoverage.completedRetrievalArms <=
+          providerCoverage.plannedRetrievalArms &&
+      providerCoverage.completedRetrievalArms <=
+        providerCoverage.retrievalRequests &&
+      providerCoverage.detailsRequests <= providerCoverage.cardsAccepted &&
+      providerCoverage.totalProviderRequests ===
+        providerCoverage.retrievalRequests +
+          providerCoverage.detailsRequests +
+          providerCoverage.categoryResolutionRequests &&
+      record.attainablePoolCandidateCount <= providerCoverage.cardsAccepted &&
+      record.categoryResolutionRequests ===
+        providerCoverage.categoryResolutionRequests);
   return (
+    providerCoverageValid &&
+    (record.semanticSucceeded
+      ? SEARCH_CANARY_CATEGORY_RESOLUTION_STATUSES.has(
+          record.categoryResolutionStatus,
+        )
+      : record.categoryResolutionStatus === "unreported") &&
+    Number.isInteger(record.categoryResolutionRequests) &&
+    record.categoryResolutionRequests >= 0 &&
+    record.categoryResolutionRequests <=
+      SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS.categoryResolutionRequests &&
+    (!["disabled", "not_needed"].includes(record.categoryResolutionStatus) ||
+      record.categoryResolutionRequests === 0) &&
+    (!["resolved", "no_match"].includes(record.categoryResolutionStatus) ||
+      record.categoryResolutionRequests === 1) &&
     Number.isInteger(record.attemptCount) &&
     record.attemptCount >= 1 &&
     record.attemptCount <= 2 &&
@@ -665,9 +1014,27 @@ function boundedReview(record) {
       record.semanticRelevantIdentityGroups,
       record.semanticRelevant,
     ) &&
+    Number.isInteger(record.attainablePoolCandidateCount) &&
+    record.attainablePoolCandidateCount >= 0 &&
+    record.attainablePoolCandidateCount <=
+      SEARCH_CANARY_ATTAINABLE_POLICY.maxPoolCandidatesPerCase &&
+    Number.isInteger(record.attainablePoolReviewed) &&
+    record.attainablePoolReviewed === record.attainablePoolCandidateCount &&
+    Number.isInteger(record.attainablePoolRelevant) &&
+    record.attainablePoolRelevant >= 0 &&
+    record.attainablePoolRelevant <= record.attainablePoolReviewed &&
+    record.semanticCandidateCount ===
+      Math.min(
+        SEARCH_CANARY_ATTAINABLE_POLICY.topK,
+        record.attainablePoolCandidateCount,
+      ) &&
+    record.semanticRelevant <= record.attainablePoolRelevant &&
+    record.attainablePoolRelevant - record.semanticRelevant <=
+      record.attainablePoolCandidateCount - record.semanticCandidateCount &&
     Number.isInteger(record.baselineCandidateCount) &&
     record.baselineCandidateCount >= 0 &&
-    record.baselineCandidateCount <= 10 &&
+    record.baselineCandidateCount <=
+      SEARCH_CANARY_ATTAINABLE_POLICY.literalBaselineLimit &&
     Number.isInteger(record.baselineReviewed) &&
     record.baselineReviewed === record.baselineCandidateCount &&
     Number.isInteger(record.baselineRelevant) &&
@@ -725,6 +1092,23 @@ export function summarizeSearchCanary(records, versions) {
     (sum, entry) => sum + entry.semanticRelevant,
     0,
   );
+  const attainablePoolReviewed = records.reduce(
+    (sum, entry) => sum + entry.attainablePoolReviewed,
+    0,
+  );
+  const attainablePoolRelevant = records.reduce(
+    (sum, entry) => sum + entry.attainablePoolRelevant,
+    0,
+  );
+  const attainableRelevantSlots = records.reduce(
+    (sum, entry) =>
+      sum +
+      Math.min(
+        SEARCH_CANARY_ATTAINABLE_POLICY.topK,
+        entry.attainablePoolRelevant,
+      ),
+    0,
+  );
   const baselineReviewed = records.reduce(
     (sum, entry) => sum + entry.baselineReviewed,
     0,
@@ -736,7 +1120,7 @@ export function summarizeSearchCanary(records, versions) {
   const baselineComparableCases = records.filter(
     (entry) => entry.baselineReviewed > 0,
   ).length;
-  const fixedPrecisionSlots = total * 10;
+  const fixedPrecisionSlots = total * SEARCH_CANARY_ATTAINABLE_POLICY.topK;
   const precisionAt10 = ratio(semanticRelevant, fixedPrecisionSlots);
   const baselinePrecisionAt10 = ratio(baselineRelevant, fixedPrecisionSlots);
   const precisionAmongRetrieved = ratio(semanticRelevant, semanticReviewed);
@@ -793,6 +1177,33 @@ export function summarizeSearchCanary(records, versions) {
   );
   const terminal = allAttempts.map((entry) => entry.terminalMs);
   const semanticJourney = records.map((entry) => entry.semanticJourneyMs);
+  const providerCoverageReportedCases = records.filter(
+    (entry) => Object.keys(entry.providerCoverage ?? {}).length > 0,
+  ).length;
+  const providerCoverageTotals = Object.fromEntries(
+    Object.keys(SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS).map((field) => [
+      field,
+      records.reduce(
+        (sum, entry) => sum + (entry.providerCoverage?.[field] ?? 0),
+        0,
+      ),
+    ]),
+  );
+  const attainableMeasurementValid = records.every(
+    (entry) =>
+      entry.semanticSucceeded &&
+      entry.kimiUsed &&
+      entry.schemaPassed &&
+      entry.executablePlan &&
+      Object.keys(SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS).every((field) =>
+        Object.hasOwn(entry.providerCoverage ?? {}, field),
+      ),
+  ) &&
+    allAttempts.every(
+      (entry) =>
+        entry.terminalMs <= SEARCH_CANARY_THRESHOLDS.requestDeadlineMs,
+    ) &&
+    safetyViolations === 0;
   const metrics = {
     schemaPassRate: round(ratio(schemaPassCount, total)),
     executablePlanRate: round(ratio(executablePlanCount, total)),
@@ -803,6 +1214,10 @@ export function summarizeSearchCanary(records, versions) {
     baselinePrecisionAt10: round(baselinePrecisionAt10),
     precisionAmongRetrieved: round(precisionAmongRetrieved),
     baselinePrecisionAmongRetrieved: round(baselinePrecisionAmongRetrieved),
+    attainableAt10: round(ratio(attainableRelevantSlots, fixedPrecisionSlots)),
+    conditionalRankerRecallAt10: round(
+      ratio(semanticRelevant, attainableRelevantSlots),
+    ),
     baselineComparableCases,
     relevantUniqueLeads,
     baselineRelevantUniqueLeads,
@@ -872,10 +1287,33 @@ export function summarizeSearchCanary(records, versions) {
     id: entry.id,
     semanticReviewed: entry.semanticReviewed,
     semanticRelevant: entry.semanticRelevant,
-    semanticPrecisionAt10: round(ratio(entry.semanticRelevant, 10)),
+    semanticPrecisionAt10: round(
+      ratio(entry.semanticRelevant, SEARCH_CANARY_ATTAINABLE_POLICY.topK),
+    ),
+    attainablePoolReviewed: entry.attainablePoolReviewed,
+    attainablePoolRelevant: entry.attainablePoolRelevant,
+    attainableRelevantAt10: Math.min(
+      SEARCH_CANARY_ATTAINABLE_POLICY.topK,
+      entry.attainablePoolRelevant,
+    ),
+    conditionalRankerRecallAt10: round(
+      ratio(
+        entry.semanticRelevant,
+        Math.min(
+          SEARCH_CANARY_ATTAINABLE_POLICY.topK,
+          entry.attainablePoolRelevant,
+        ),
+      ),
+    ),
+    providerCoverage: entry.providerCoverage ?? {},
     baselineReviewed: entry.baselineReviewed,
     baselineRelevant: entry.baselineRelevant,
-    baselinePrecisionAt10: round(ratio(entry.baselineRelevant, 10)),
+    baselinePrecisionAt10: round(
+      ratio(
+        entry.baselineRelevant,
+        SEARCH_CANARY_ATTAINABLE_POLICY.literalBaselineLimit,
+      ),
+    ),
   }));
   const decision =
     Object.entries(hardGates).every(([key, value]) =>
@@ -902,6 +1340,7 @@ export function summarizeSearchCanary(records, versions) {
       productionBundleSha256: versions.productionBundleSha256,
       canaryHarnessSha256: versions.canaryHarnessSha256,
       evaluationPolicy: SEARCH_CANARY_EVALUATION_POLICY_VERSION,
+      attainablePolicy: SEARCH_CANARY_ATTAINABLE_POLICY,
       caseSetChecksum: searchCanaryCaseSetChecksum(),
       rubric: SEARCH_CANARY_RUBRIC_VERSION,
       rubricChecksum: createHash("sha256")
@@ -921,20 +1360,56 @@ export function summarizeSearchCanary(records, versions) {
       novelBusinessTypes: coverage.novelBusinessTypes,
       mixedLanguageCases: coverage.mixedLanguageCases,
       semanticReviewed,
+      attainablePoolReviewed,
+      attainablePoolRelevant,
       baselineReviewed,
     },
     caseMetrics,
     metrics,
     hardGates,
     sloObservations,
+    decisionSupport: {
+      executedArmPool: {
+        scope: SEARCH_CANARY_ATTAINABLE_POLICY.measurementScope,
+        maxCandidatesPerCase:
+          SEARCH_CANARY_ATTAINABLE_POLICY.maxPoolCandidatesPerCase,
+        attainableAt10Threshold:
+          SEARCH_CANARY_ATTAINABLE_POLICY.attainableAt10Threshold,
+        measurementValid: attainableMeasurementValid,
+        rankerOnlyTuningEligible:
+          attainableMeasurementValid &&
+          metrics.attainableAt10 >=
+          SEARCH_CANARY_ATTAINABLE_POLICY.attainableAt10Threshold,
+        addedProviderWork: SEARCH_CANARY_ATTAINABLE_POLICY.addedProviderWork,
+        providerCoverageLimits: SEARCH_CANARY_PROVIDER_COVERAGE_LIMITS,
+        observedFinalResponseProviderWork: {
+          reportedCases: providerCoverageReportedCases,
+          totals: {
+            completedRetrievalArms:
+              providerCoverageTotals.completedRetrievalArms,
+            retrievalRequests: providerCoverageTotals.retrievalRequests,
+            cardsAccepted: providerCoverageTotals.cardsAccepted,
+            detailsRequests: providerCoverageTotals.detailsRequests,
+            categoryResolutionRequests:
+              providerCoverageTotals.categoryResolutionRequests,
+            totalProviderRequests:
+              providerCoverageTotals.totalProviderRequests,
+          },
+        },
+        plannedFinalResponseRetrievalArms: {
+          reportedCases: providerCoverageReportedCases,
+          total: providerCoverageTotals.plannedRetrievalArms,
+        },
+      },
+    },
     decision,
   };
 }
 
 export const SEARCH_CANARY_EVALUATION_POLICY_VERSION =
-  "search-live-canary-v2/2026-08-20.3";
+  "search-live-canary-v2/2026-08-20.4";
 export const SEARCH_CANARY_RUBRIC_VERSION =
-  "search-live-rubric-v1/2026-08-20.1";
+  "search-live-rubric-v1/2026-08-20.2";
 export const SEARCH_CANARY_THRESHOLDS = Object.freeze({
   cases: 12,
   schemaPassRate: 0.95,
@@ -953,5 +1428,5 @@ export const SEARCH_CANARY_RUBRIC = Object.freeze([
   "Related queries are supporting synonyms, not permission to include an excluded or merely adjacent business.",
   "A specific provider category may support an opaque name; a generic category alone is insufficient.",
   "When evidence is insufficient or conflicting, do not mark the candidate relevant.",
-  "Submit only 1-based ranks shown in the active semantic and literal lists.",
+  "Submit only 1-based ranks shown in the active semantic production pool and literal baseline lists.",
 ]);

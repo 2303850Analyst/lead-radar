@@ -152,6 +152,26 @@
   показанные названия, адреса, координаты, категории, контакты, сайты и соцсети
   без записи raw response или карточек на диск.
 
+- Production search canary теперь одной transient-разметкой оценивает не
+  только frozen top-10, но и уже возвращённый production candidate pool — до
+  50 дедуплицированных карточек на кейс. Top-10 labels выводятся сервером из
+  тех же 1-based ranks; дубли, неполная разметка и pool overflow отклоняются
+  fail-closed. Отчёт с evaluation policy `2026-08-20.4` считает
+  `attainable@10 = sum(min(10, relevant in pool)) / 120` и conditional ranker
+  recall, но не меняет прежние hard gates, fixed-k Precision@10 или итоговый
+  verdict Issue #11. Это decision-support ceiling только для фактически
+  выполненных retrieval arms, а не полный recall Geoapify или рынка: значение
+  ниже `0.95` запрещает ranker-only tuning, но само по себе не доказывает
+  необходимость конкретного второго источника. Измерение добавляет ноль
+  provider requests/cards/details; provider budgets и наблюдённые counters
+  записываются только числами. Provider metadata отдельно сообщает planned и
+  completed arms, связывает runtime-refined fallback с исходным signed-plan arm
+  и считает общий request budget как retrieval + Details + category resolution;
+  effective arm IDs проверяются только transient и в aggregate не попадают.
+  Candidate ranks, session-salted identities и карточки остаются в памяти,
+  manual review получает 45 минут, а новый attainable policy входит в version
+  identity production/A-B gate.
+
 - Добавлен frozen deterministic relevance gate на 600 явно размеченных
   синтетических `CandidateEvidence` по 150 различным provider-категориям: по
   150 `matched`, `maybe`, `rejected`, `not_checked` и по 15 prompt-injection

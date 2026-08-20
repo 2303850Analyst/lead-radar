@@ -186,10 +186,17 @@ Canary намеренно включает category hints только внут�
 Production worker собирается до загрузки Kimi key, а SHA-256 фактически
 запущенного bundle и canary harness входят в агрегатный отчёт. После сбора
 выдачи команда печатает transient URL: откройте его, примените
-показанный rubric и отправьте в `/submit` номера релевантных позиций из
-приложенного шаблона. Полный intent доступен только в памяти этого запуска.
-Raw-кандидаты не записываются в итоговый файл; versioned результат публикуется
-только агрегатами в
+показанный rubric и в течение 45 минут отправьте в `/submit` номера релевантных
+позиций из semantic production pool (до 50 на кейс) и отдельного literal
+baseline top-10. Метки frozen semantic top-10 выводятся из той же pool-разметки
+автоматически. Полный intent, позиции, карточки и session-salted identities
+доступны только в памяти этого запуска и не записываются в итоговый файл.
+Versioned aggregate дополнительно показывает `attainable@10` и conditional
+ranker recall без новых provider-вызовов. Это потолок только уже выполненных
+retrieval arms, а не полный recall Geoapify или рынка; он не меняет release
+hard gates и итоговый canary verdict. Provider counters различают planned и
+completed arms и включают retrieval, Details и category-resolution запросы.
+Опубликованный результат находится в
 [`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md).
 
 ## API приложения

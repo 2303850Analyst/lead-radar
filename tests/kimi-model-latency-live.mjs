@@ -23,6 +23,7 @@ import {
 } from "../lib/search-planner/types.ts";
 import {
   SEARCH_CANARY_EVALUATION_POLICY_VERSION,
+  SEARCH_CANARY_ATTAINABLE_POLICY,
   SEARCH_CANARY_RUBRIC,
   SEARCH_CANARY_RUBRIC_VERSION,
   SEARCH_CANARY_THRESHOLDS,
@@ -436,6 +437,7 @@ if (productionCanaryReportPath) {
       providerCatalogChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
       ...artifactFingerprints,
       evaluationPolicy: SEARCH_CANARY_EVALUATION_POLICY_VERSION,
+      attainablePolicy: SEARCH_CANARY_ATTAINABLE_POLICY,
       caseSetChecksum: searchCanaryCaseSetChecksum(),
       rubric: SEARCH_CANARY_RUBRIC_VERSION,
       rubricChecksum: createHash("sha256")

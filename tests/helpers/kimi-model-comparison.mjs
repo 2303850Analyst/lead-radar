@@ -484,6 +484,7 @@ const REQUIRED_PRODUCTION_VERSION_FIELDS = Object.freeze([
   "productionBundleSha256",
   "canaryHarnessSha256",
   "evaluationPolicy",
+  "attainablePolicy",
   "caseSetChecksum",
   "rubric",
   "rubricChecksum",

@@ -2,6 +2,7 @@ import type {
   Lead,
   LeadRelevance,
   LeadRetrievalArm,
+  SearchProviderExecutedRetrievalArm,
   SearchPayload,
   SearchProgressEvent,
   SearchResponse,
@@ -1925,6 +1926,7 @@ export class GeoapifyProvider implements SearchProvider {
       requests: 0,
     };
     let resolvedFallbackArmId: string | null = null;
+    let resolvedFallbackPlanArmId: string | null = null;
     if (
       !categoryPlan.categories.length ||
       !categoryPlan.batches.length ||
@@ -2040,6 +2042,7 @@ export class GeoapifyProvider implements SearchProvider {
             if (resolvedFallback && resolvedFallback.id !== fallback.id) {
               categoryPlan = categoryPlanFromCompiled(refined);
               resolvedFallbackArmId = resolvedFallback.id;
+              resolvedFallbackPlanArmId = fallback.id;
               categoryResolution = { status: "resolved", requests: 1 };
             }
           }
@@ -2115,6 +2118,7 @@ export class GeoapifyProvider implements SearchProvider {
         return relevance.status === "matched";
       }).length;
     let completedRetrievalArms = 0;
+    const executedRetrievalArms: SearchProviderExecutedRetrievalArm[] = [];
     await reportProgress({
       stage: "places",
       status: "started",
@@ -2371,6 +2375,15 @@ export class GeoapifyProvider implements SearchProvider {
           }
         }
       }
+      executedRetrievalArms.push({
+        id: categoryBatch.id,
+        planArmId:
+          categoryBatch.id === resolvedFallbackArmId
+            ? (resolvedFallbackPlanArmId ?? categoryBatch.id)
+            : categoryBatch.id,
+        type: categoryBatch.type,
+        role: categoryBatch.role,
+      });
       completedRetrievalArms += 1;
       await reportProgress({
         stage: "places",
@@ -2744,6 +2757,8 @@ export class GeoapifyProvider implements SearchProvider {
           categories: categoryPlan.categories,
           categoryResolution,
           retrievalArms: retrievalArms.length,
+          completedRetrievalArms,
+          executedRetrievalArms,
           upstreamRequests,
           cardsAccepted: observations.size,
           detailsRequested,
