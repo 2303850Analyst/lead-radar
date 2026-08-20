@@ -29,6 +29,26 @@
 
 ### Добавлено
 
+- Production search canary теперь немедленно сводит `plan` из terminal error
+  event к bounded диагностике: allowlisted status/reason codes, AI validation,
+  latency, usage и version identity. Полный план, пользовательский intent и
+  semantic terms после проекции не удерживаются и в отчёт не попадают; JSON
+  сохраняет только агрегированные counts финального planner outcome каждого
+  кейса; retry-коды и timing всех попыток остаются в отдельной bounded
+  диагностике попыток. Неизвестный или дублированный reason code делает
+  проекцию `unreported`, а не маскируется фильтрацией. Раньше
+  `SEARCH_PLAN_UNSUPPORTED` терял вложенный plan и ошибочно снижал
+  `schemaPassRate`, `allCasesUsedKimi` и coverage usage до `unreported`, даже
+  если Kimi-ответ прошёл schema и был отклонён только provider-grounding
+  policy. Evaluation policy повышена до
+  `search-live-canary-v2/2026-08-21.2`; production search behavior не изменён.
+  Перед записью отчёта каждый финальный план обязан явно подтвердить ожидаемые
+  model/prompt identities; отсутствующее значение больше нельзя скрыть
+  фильтрацией `null` среди совпавших кейсов.
+  После retry финальный успешный план всегда проецируется самостоятельно:
+  невалидный новый контракт не может подмениться диагностикой предыдущей
+  неудачной попытки.
+
 - После повторяемого live-промаха `climbing` при корректном общем понимании
   запроса Kimi transport получил отдельный wire-only массив
   `providerNeutralCategoryHeads`. Раньше краткий provider-neutral head был лишь

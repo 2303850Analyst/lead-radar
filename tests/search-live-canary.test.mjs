@@ -14,12 +14,168 @@ const {
   collectGeoapifyProviderFacts,
   countGeoapifyProviderFactViolations,
   isRetryableSearchCanaryCode,
+  projectSearchCanaryPlanDiagnostics,
   readBoundedJsonResponse,
+  resolveSearchCanaryFinalPlanDiagnostics,
   runCanaryAttemptWithWatchdog,
+  searchCanaryPlanIdentityMatches,
   searchCanaryCaseSetChecksum,
   summarizeSearchCanary,
   validateSearchCanaryCoverage,
 } = searchLiveCanary;
+
+test("live search canary projects streamed error plans to bounded aggregate diagnostics", () => {
+  const diagnostics = projectSearchCanaryPlanDiagnostics({
+    status: "unsupported",
+    promptVersion: "prompt-v2+model-policy:kimi-k3",
+    intent: { primaryQuery: "must-not-survive-source-query" },
+    semanticIntent: { normalizedGoal: "must-not-survive-model-term" },
+    resolution: {
+      reasonCodes: ["PROVIDER_COVERAGE_GAP"],
+      clarificationQuestion: "must-not-survive-clarification",
+    },
+    executionPreview: null,
+    ai: {
+      used: true,
+      modelId: "kimi-k3",
+      latencyMs: 12_345,
+      inputTokens: 789,
+      outputTokens: 123,
+      validation: "passed",
+      finishReason: "must-not-survive-finish-reason",
+    },
+  });
+
+  assert.deepEqual(diagnostics, {
+    status: "unsupported",
+    reasonCodes: ["PROVIDER_COVERAGE_GAP"],
+    kimiUsed: true,
+    aiValidation: "passed",
+    schemaPassed: true,
+    executablePlan: false,
+    encoderMs: 12_345,
+    inputTokens: 789,
+    outputTokens: 123,
+    usageReported: true,
+    modelId: "kimi-k3",
+    promptVersion: "prompt-v2+model-policy:kimi-k3",
+  });
+  const serialized = JSON.stringify(diagnostics);
+  for (const forbidden of [
+    "must-not-survive-source-query",
+    "must-not-survive-model-term",
+    "must-not-survive-clarification",
+    "must-not-survive-finish-reason",
+    "semanticIntent",
+    "intent",
+  ]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+
+  for (const reasonCodes of [
+    ["PROVIDER_COVERAGE_GAP", "FUTURE_UNVERSIONED_REASON"],
+    ["PROVIDER_COVERAGE_GAP", "PROVIDER_COVERAGE_GAP"],
+    [],
+  ]) {
+    assert.equal(
+      projectSearchCanaryPlanDiagnostics({
+        status: "unsupported",
+        promptVersion: "prompt-v2+model-policy:kimi-k3",
+        resolution: { reasonCodes },
+        executionPreview: null,
+        ai: {
+          used: true,
+          modelId: "kimi-k3",
+          latencyMs: 12_345,
+          inputTokens: 789,
+          outputTokens: 123,
+          validation: "passed",
+        },
+      }),
+      null,
+      JSON.stringify(reasonCodes),
+    );
+  }
+});
+
+test("live search canary requires model and prompt identity from every final case plan", () => {
+  const expected = {
+    modelId: "kimi-k3",
+    promptVersion: "prompt-v2+model-policy:kimi-k3",
+  };
+  const records = Array.from({ length: 12 }, () => ({ ...expected }));
+
+  assert.equal(searchCanaryPlanIdentityMatches(records, expected), true);
+  assert.equal(
+    searchCanaryPlanIdentityMatches(
+      records.map((record, index) =>
+        index === 11 ? { ...record, promptVersion: null } : record,
+      ),
+      expected,
+    ),
+    false,
+  );
+  assert.equal(
+    searchCanaryPlanIdentityMatches(
+      records.map((record, index) =>
+        index === 11 ? { ...record, modelId: "kimi-k2.6" } : record,
+      ),
+      expected,
+    ),
+    false,
+  );
+});
+
+test("live search canary never substitutes retry diagnostics for an invalid final plan", () => {
+  const priorFailure = projectSearchCanaryPlanDiagnostics({
+    status: "unsupported",
+    promptVersion: "prompt-v2+model-policy:kimi-k3",
+    resolution: { reasonCodes: ["KIMI_UNAVAILABLE"] },
+    executionPreview: null,
+    ai: {
+      used: true,
+      modelId: "kimi-k3",
+      latencyMs: 1_000,
+      inputTokens: 10,
+      outputTokens: 5,
+      validation: "failed",
+    },
+  });
+  const invalidFinalPlan = {
+    status: "ready",
+    promptVersion: "future-unversioned-prompt",
+    resolution: {
+      reasonCodes: ["SEMANTIC_MATCH", "FUTURE_UNVERSIONED_REASON"],
+    },
+    executionPreview: { retrievalArms: [{}] },
+    ai: {
+      used: true,
+      modelId: "future-model",
+      latencyMs: 1_000,
+      inputTokens: 10,
+      outputTokens: 5,
+      validation: "passed",
+    },
+  };
+
+  assert.ok(priorFailure);
+  assert.equal(
+    resolveSearchCanaryFinalPlanDiagnostics({
+      semanticSucceeded: true,
+      finalPlan: invalidFinalPlan,
+      lastFailurePlanDiagnostics: priorFailure,
+    }),
+    null,
+  );
+  assert.equal(
+    resolveSearchCanaryFinalPlanDiagnostics({
+      semanticSucceeded: false,
+      finalPlan: null,
+      lastFailurePlanDiagnostics: priorFailure,
+    }),
+    priorFailure,
+  );
+});
 
 function identityHash(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -84,6 +240,9 @@ function attainableRecords({
     kimiUsed: true,
     schemaPassed: true,
     executablePlan: true,
+    planStatus: "ready",
+    planReasonCodes: ["SEMANTIC_MATCH"],
+    aiValidation: "passed",
     firstProgressMs: 100 + index,
     encoderMs: 5_000 + index,
     terminalMs: 10_000 + index,
@@ -126,6 +285,61 @@ function attainableRecords({
     ),
   }));
 }
+
+test("live search canary aggregates valid unsupported plan diagnostics separately from journey success", () => {
+  const records = attainableRecords();
+  records[0] = {
+    ...records[0],
+    semanticSucceeded: false,
+    executablePlan: false,
+    planStatus: "unsupported",
+    planReasonCodes: ["PROVIDER_COVERAGE_GAP"],
+    aiValidation: "passed",
+    providerCoverage: undefined,
+    categoryResolutionStatus: "unreported",
+    firstAttemptSucceeded: false,
+    failedAttemptCodes: ["SEARCH_PLAN_UNSUPPORTED"],
+    attemptTimings: [
+      attemptTiming({ succeeded: false, encoder: 5_000, terminal: 10_000 }),
+    ],
+    semanticCandidateCount: 0,
+    semanticReviewed: 0,
+    semanticRelevant: 0,
+    semanticRelevantIdentityGroups: [],
+    attainablePoolCandidateCount: 0,
+    attainablePoolReviewed: 0,
+    attainablePoolRelevant: 0,
+  };
+
+  const report = summarizeSearchCanary(records, attainableVersionInput);
+
+  assert.equal(report.metrics.schemaPassRate, 1);
+  assert.equal(report.metrics.unpricedFailedAttempts, 0);
+  assert.equal(report.metrics.estimatedCostUsdIsLowerBound, false);
+  assert.equal(report.hardGates.allCasesUsedKimi, true);
+  assert.equal(report.hardGates.completeProductionRuns, false);
+  assert.deepEqual(report.decisionSupport.plannerOutcomes, {
+    scope: "final_case_plan",
+    reportedCases: 12,
+    statuses: {
+      ready: 11,
+      needs_confirmation: 0,
+      unsupported: 1,
+      degraded: 0,
+      unreported: 0,
+    },
+    validations: {
+      passed: 12,
+      failed: 0,
+      not_used: 0,
+      unreported: 0,
+    },
+    reasonCodes: {
+      SEMANTIC_MATCH: 11,
+      PROVIDER_COVERAGE_GAP: 1,
+    },
+  });
+});
 
 test("live search canary retries only transient production terminal codes", () => {
   for (const code of [
@@ -481,6 +695,9 @@ test("live search canary summary enforces fixed-k, unique identity, provider and
   oneFailedAttempt[0] = {
     ...oneFailedAttempt[0],
     semanticSucceeded: false,
+    usageReported: false,
+    inputTokens: 0,
+    outputTokens: 0,
     kimiUsed: false,
     schemaPassed: false,
     executablePlan: false,
@@ -586,7 +803,7 @@ test("live search canary summary fails closed on weak quality or safety", () => 
   assert.ok(report.hardGates.safetyViolations > 0);
   assert.ok(report.metrics.firstAttemptSuccessRate < 1);
   assert.equal(report.metrics.totalProductionAttempts, 13);
-  assert.equal(report.metrics.unpricedFailedAttempts, 2);
+  assert.equal(report.metrics.unpricedFailedAttempts, 1);
   assert.equal(report.metrics.estimatedCostUsdIsLowerBound, true);
   assert.equal(report.metrics.terminalP95Ms, 65_000);
   assert.equal(report.hardGates.deadline, false);
@@ -1147,6 +1364,8 @@ test("live search canary requires Kimi schema and executable plans before ranker
     record.kimiUsed = false;
     record.schemaPassed = false;
     record.executablePlan = false;
+    record.aiValidation = "not_used";
+    record.planReasonCodes = ["EXACT_ALIAS"];
   }
   const report = summarizeSearchCanary(records, attainableVersionInput);
 

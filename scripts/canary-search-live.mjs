@@ -29,10 +29,13 @@ import {
   collectGeoapifyProviderFacts,
   countGeoapifyProviderFactViolations,
   isRetryableSearchCanaryCode,
+  projectSearchCanaryPlanDiagnostics,
   readBoundedJsonResponse,
+  resolveSearchCanaryFinalPlanDiagnostics,
   resolveSearchCanaryPoolReview,
   resolveSearchCanaryProviderObservation,
   runCanaryAttemptWithWatchdog,
+  searchCanaryPlanIdentityMatches,
   summarizeSearchCanary,
   validateSearchCanaryExecutedArms,
   validateSearchCanaryPoolProvenance,
@@ -192,6 +195,7 @@ async function runProductionSearchAttempt(entry, signal) {
   let firstProgressMs = null;
   let result = null;
   let terminalError = null;
+  let terminalPlanDiagnostics = null;
   while (true) {
     const { done, value } = await reader.read();
     buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
@@ -211,6 +215,9 @@ async function runProductionSearchAttempt(entry, signal) {
         result = event.data;
       } else if (event.type === "error") {
         terminalError = event.code ?? "CANARY_SEARCH_ERROR";
+        terminalPlanDiagnostics = projectSearchCanaryPlanDiagnostics(
+          event.plan,
+        );
       }
     }
     if (done) break;
@@ -221,6 +228,7 @@ async function runProductionSearchAttempt(entry, signal) {
       {
         firstProgressMs: firstProgressMs ?? Date.now() - startedAt,
         terminalMs: Date.now() - startedAt,
+        planDiagnostics: terminalPlanDiagnostics,
       },
     );
   }
@@ -416,11 +424,12 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
         terminalMs: Number.isFinite(error?.terminalMs)
           ? error.terminalMs
           : Date.now() - attemptStartedAt,
+        planDiagnostics: error?.planDiagnostics ?? null,
       };
       attemptTimings.push({
         succeeded: false,
         firstProgressMs: lastFailureDiagnostics.firstProgressMs,
-        encoderMs: null,
+        encoderMs: lastFailureDiagnostics.planDiagnostics?.encoderMs ?? null,
         terminalMs: lastFailureDiagnostics.terminalMs,
       });
       if (attempt === 2 || !isRetryableSearchCanaryCode(errorCode)) break;
@@ -449,6 +458,12 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
 
   const payload = search?.payload;
   const plan = payload?.plan;
+  const planDiagnostics = resolveSearchCanaryFinalPlanDiagnostics({
+    semanticSucceeded,
+    finalPlan: plan,
+    lastFailurePlanDiagnostics:
+      lastFailureDiagnostics?.planDiagnostics ?? null,
+  });
   const leads = Array.isArray(payload?.leads) ? payload.leads : [];
   const plannedArms = Array.isArray(plan?.executionPreview?.retrievalArms)
     ? plan.executionPreview.retrievalArms.map((arm) => ({
@@ -489,21 +504,20 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
     id: entry.id,
     semanticSucceeded,
     baselineSucceeded,
-    kimiUsed: plan?.ai?.used === true,
-    schemaPassed: plan?.ai?.validation === "passed",
-    executablePlan:
-      plan?.status === "ready" &&
-      Boolean(plan.executionPreview?.retrievalArms?.length),
+    kimiUsed: planDiagnostics?.kimiUsed ?? false,
+    schemaPassed: planDiagnostics?.schemaPassed ?? false,
+    executablePlan: planDiagnostics?.executablePlan ?? false,
+    planStatus: planDiagnostics?.status,
+    planReasonCodes: planDiagnostics?.reasonCodes,
+    aiValidation: planDiagnostics?.aiValidation,
     firstProgressMs:
       search?.firstProgressMs ?? lastFailureDiagnostics?.firstProgressMs ?? 60_001,
-    encoderMs: plan?.ai?.latencyMs ?? 60_001,
+    encoderMs: planDiagnostics?.encoderMs ?? 60_001,
     terminalMs:
       search?.terminalMs ?? lastFailureDiagnostics?.terminalMs ?? 60_001,
-    inputTokens: plan?.ai?.inputTokens ?? 0,
-    outputTokens: plan?.ai?.outputTokens ?? 0,
-    usageReported:
-      typeof plan?.ai?.inputTokens === "number" &&
-      typeof plan?.ai?.outputTokens === "number",
+    inputTokens: planDiagnostics?.inputTokens ?? 0,
+    outputTokens: planDiagnostics?.outputTokens ?? 0,
+    usageReported: planDiagnostics?.usageReported ?? false,
     geographyLeaks,
     secretLeaks,
     inventedFactViolations: countGeoapifyProviderFactViolations(
@@ -532,8 +546,8 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
     baselineReviewed: baseline.length,
     baselineRelevant: 0,
     baselineRelevantIdentityGroups: [],
-    modelId: plan?.ai?.modelId ?? null,
-    promptVersion: plan?.promptVersion ?? null,
+    modelId: planDiagnostics?.modelId ?? null,
+    promptVersion: planDiagnostics?.promptVersion ?? null,
     providerCoverage,
     errorCode,
   };
@@ -555,6 +569,9 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
       kimiUsed: record.kimiUsed,
       schemaPassed: record.schemaPassed,
       executablePlan: record.executablePlan,
+      planStatus: record.planStatus,
+      planReasonCodes: record.planReasonCodes,
+      aiValidation: record.aiValidation,
       firstProgressMs: record.firstProgressMs,
       encoderMs: record.encoderMs,
       terminalMs: record.terminalMs,
@@ -574,6 +591,9 @@ for (let index = 0; index < SEARCH_CANARY_CASES.length; index += 1) {
       kimiUsed: record.kimiUsed,
       schemaPassed: record.schemaPassed,
       executablePlan: record.executablePlan,
+      planStatus: record.planStatus,
+      planReasonCodes: record.planReasonCodes,
+      aiValidation: record.aiValidation,
       firstProgressMs: record.firstProgressMs,
       encoderMs: record.encoderMs,
       terminalMs: record.terminalMs,
@@ -730,29 +750,26 @@ for (const record of runtimeRecords) {
   );
 }
 
-const modelIds = [...new Set(runtimeRecords.map((record) => record.modelId).filter(Boolean))];
-if (modelIds.length !== 1 || modelIds[0] !== canaryProfile.model) {
-  throw new Error("Canary model identity does not match the selected server profile");
-}
 const effectivePromptVersion =
   `${KIMI_PROMPT_CONTENT_VERSION}+${canaryProfile.cacheIdentity}`;
-const promptVersions = [
-  ...new Set(runtimeRecords.map((record) => record.promptVersion).filter(Boolean)),
-];
 if (
-  promptVersions.length !== 1 ||
-  promptVersions[0] !== effectivePromptVersion
+  !searchCanaryPlanIdentityMatches(runtimeRecords, {
+    modelId: canaryProfile.model,
+    promptVersion: effectivePromptVersion,
+  })
 ) {
-  throw new Error("Canary prompt identity does not match the selected server profile");
+  throw new Error(
+    "Every canary plan must match the selected model and prompt identity",
+  );
 }
 const inputUsdPerMillion = canaryProfile.pricingUsdPerMillion.input;
 const outputUsdPerMillion = canaryProfile.pricingUsdPerMillion.output;
 const versions = {
   appVersion: packageMetadata.version,
-  modelId: modelIds.length === 1 ? modelIds[0] : "mixed-or-unreported",
+  modelId: canaryProfile.model,
   modelPolicyVersion: KIMI_MODEL_POLICY_VERSION,
   transportSchemaVersion: KIMI_TRANSPORT_SCHEMA_VERSION,
-  promptVersion: promptVersions[0],
+  promptVersion: effectivePromptVersion,
   semanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
   searchPlanSchemaVersion: SEARCH_PLAN_SCHEMA_VERSION,
   decisionPolicyVersion: DECISION_POLICY_VERSION,

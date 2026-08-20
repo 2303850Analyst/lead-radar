@@ -37,6 +37,141 @@ const SEARCH_CANARY_CATEGORY_RESOLUTION_STATUSES = new Set([
   "no_match",
   "degraded",
 ]);
+const SEARCH_CANARY_PLAN_STATUSES = new Set([
+  "ready",
+  "needs_confirmation",
+  "unsupported",
+  "degraded",
+]);
+const SEARCH_CANARY_AI_VALIDATIONS = new Set([
+  "passed",
+  "failed",
+  "not_used",
+]);
+const SEARCH_CANARY_PLAN_REASON_CODES = new Set([
+  "EXACT_ALIAS",
+  "FUZZY_MATCH",
+  "SEMANTIC_MATCH",
+  "AMBIGUOUS_SCOPE",
+  "NEGATIVE_CONFLICT",
+  "NO_SUPPORTED_CONCEPT",
+  "PROVIDER_COVERAGE_GAP",
+  "PHYSICAL_PLACE_UNCLEAR",
+  "LOCALE_UNCERTAIN",
+  "KIMI_UNAVAILABLE",
+  "KIMI_INVALID_RESPONSE",
+  "KIMI_ADMISSION_TIMEOUT",
+  "USER_CONFIRMED",
+]);
+
+function boundedVersionIdentity(value, maximum) {
+  return typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= maximum &&
+    /^[A-Za-z0-9][A-Za-z0-9._:+/-]*$/.test(value)
+    ? value
+    : null;
+}
+
+function boundedNullableCount(value) {
+  return value === null || value === undefined
+    ? null
+    : Number.isInteger(value) && value >= 0 && value <= 10_000_000
+      ? value
+      : null;
+}
+
+function boundedNullableLatency(value) {
+  return value === null || value === undefined
+    ? null
+    : Number.isFinite(value) && value >= 0 && value <= 65_000
+      ? value
+      : null;
+}
+
+export function projectSearchCanaryPlanDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const ai = value.ai;
+  const resolution = value.resolution;
+  if (
+    !SEARCH_CANARY_PLAN_STATUSES.has(value.status) ||
+    !ai ||
+    typeof ai !== "object" ||
+    Array.isArray(ai) ||
+    typeof ai.used !== "boolean" ||
+    !SEARCH_CANARY_AI_VALIDATIONS.has(ai.validation) ||
+    !resolution ||
+    typeof resolution !== "object" ||
+    Array.isArray(resolution) ||
+    !Array.isArray(resolution.reasonCodes)
+  ) {
+    return null;
+  }
+  if (
+    resolution.reasonCodes.length < 1 ||
+    resolution.reasonCodes.length > 8 ||
+    new Set(resolution.reasonCodes).size !== resolution.reasonCodes.length ||
+    !resolution.reasonCodes.every(
+      (code) =>
+        typeof code === "string" &&
+        SEARCH_CANARY_PLAN_REASON_CODES.has(code),
+    )
+  ) {
+    return null;
+  }
+  const reasonCodes = [...resolution.reasonCodes];
+  const encoderMs = boundedNullableLatency(ai.latencyMs);
+  const inputTokens = boundedNullableCount(ai.inputTokens);
+  const outputTokens = boundedNullableCount(ai.outputTokens);
+  const modelId = boundedVersionIdentity(ai.modelId, 100);
+  const promptVersion = boundedVersionIdentity(value.promptVersion, 300);
+  const retrievalArms = value.executionPreview?.retrievalArms;
+
+  return {
+    status: value.status,
+    reasonCodes,
+    kimiUsed: ai.used,
+    aiValidation: ai.validation,
+    schemaPassed: ai.validation === "passed",
+    executablePlan:
+      value.status === "ready" &&
+      Array.isArray(retrievalArms) &&
+      retrievalArms.length > 0,
+    encoderMs,
+    inputTokens,
+    outputTokens,
+    usageReported: inputTokens !== null && outputTokens !== null,
+    modelId,
+    promptVersion,
+  };
+}
+
+export function resolveSearchCanaryFinalPlanDiagnostics({
+  semanticSucceeded,
+  finalPlan,
+  lastFailurePlanDiagnostics,
+}) {
+  return semanticSucceeded
+    ? projectSearchCanaryPlanDiagnostics(finalPlan)
+    : (lastFailurePlanDiagnostics ?? null);
+}
+
+export function searchCanaryPlanIdentityMatches(
+  records,
+  { modelId, promptVersion },
+) {
+  return (
+    Array.isArray(records) &&
+    records.length > 0 &&
+    typeof modelId === "string" &&
+    typeof promptVersion === "string" &&
+    records.every(
+      (record) =>
+        record?.modelId === modelId &&
+        record?.promptVersion === promptVersion,
+    )
+  );
+}
 
 export const SEARCH_CANARY_ATTAINABLE_POLICY = Object.freeze({
   version: "search-live-attainable-v1/2026-08-20.1",
@@ -952,8 +1087,26 @@ function boundedReview(record) {
       record.attainablePoolCandidateCount <= providerCoverage.cardsAccepted &&
       record.categoryResolutionRequests ===
         providerCoverage.categoryResolutionRequests);
+  const hasPlanDiagnostics =
+    record.planStatus !== undefined ||
+    record.planReasonCodes !== undefined ||
+    record.aiValidation !== undefined;
+  const planDiagnosticsValid =
+    !hasPlanDiagnostics ||
+    (SEARCH_CANARY_PLAN_STATUSES.has(record.planStatus) &&
+      SEARCH_CANARY_AI_VALIDATIONS.has(record.aiValidation) &&
+      Array.isArray(record.planReasonCodes) &&
+      record.planReasonCodes.length >= 1 &&
+      record.planReasonCodes.length <= 8 &&
+      new Set(record.planReasonCodes).size === record.planReasonCodes.length &&
+      record.planReasonCodes.every((code) =>
+        SEARCH_CANARY_PLAN_REASON_CODES.has(code),
+      ) &&
+      record.schemaPassed === (record.aiValidation === "passed") &&
+      record.kimiUsed === (record.aiValidation !== "not_used"));
   return (
     providerCoverageValid &&
+    planDiagnosticsValid &&
     (record.semanticSucceeded
       ? SEARCH_CANARY_CATEGORY_RESOLUTION_STATUSES.has(
           record.categoryResolutionStatus,
@@ -1149,7 +1302,13 @@ export function summarizeSearchCanary(records, versions) {
     (inputTokens / 1_000_000) * versions.inputUsdPerMillion +
     (outputTokens / 1_000_000) * versions.outputUsdPerMillion;
   const unpricedFailedAttempts = records.reduce(
-    (sum, entry) => sum + entry.failedAttemptCodes.length,
+    (sum, entry) =>
+      sum +
+      Math.max(
+        0,
+        entry.failedAttemptCodes.length -
+          (!entry.semanticSucceeded && entry.usageReported ? 1 : 0),
+      ),
     0,
   );
   const categoryResolution = Object.fromEntries(
@@ -1189,6 +1348,36 @@ export function summarizeSearchCanary(records, versions) {
         0,
       ),
     ]),
+  );
+  const reportedPlannerRecords = records.filter((entry) =>
+    SEARCH_CANARY_PLAN_STATUSES.has(entry.planStatus),
+  );
+  const plannerStatuses = Object.fromEntries([
+    ...[...SEARCH_CANARY_PLAN_STATUSES].map((status) => [
+      status,
+      records.filter((entry) => entry.planStatus === status).length,
+    ]),
+    ["unreported", records.length - reportedPlannerRecords.length],
+  ]);
+  const plannerValidations = Object.fromEntries([
+    ...[...SEARCH_CANARY_AI_VALIDATIONS].map((validation) => [
+      validation,
+      records.filter((entry) => entry.aiValidation === validation).length,
+    ]),
+    [
+      "unreported",
+      records.filter(
+        (entry) => !SEARCH_CANARY_AI_VALIDATIONS.has(entry.aiValidation),
+      ).length,
+    ],
+  ]);
+  const plannerReasonCodes = Object.fromEntries(
+    [...SEARCH_CANARY_PLAN_REASON_CODES].flatMap((reasonCode) => {
+      const count = records.filter((entry) =>
+        entry.planReasonCodes?.includes(reasonCode),
+      ).length;
+      return count > 0 ? [[reasonCode, count]] : [];
+    }),
   );
   const attainableMeasurementValid = records.every(
     (entry) =>
@@ -1377,6 +1566,13 @@ export function summarizeSearchCanary(records, versions) {
     hardGates,
     sloObservations,
     decisionSupport: {
+      plannerOutcomes: {
+        scope: "final_case_plan",
+        reportedCases: reportedPlannerRecords.length,
+        statuses: plannerStatuses,
+        validations: plannerValidations,
+        reasonCodes: plannerReasonCodes,
+      },
       executedArmPool: {
         scope: SEARCH_CANARY_ATTAINABLE_POLICY.measurementScope,
         maxCandidatesPerCase:
@@ -1416,7 +1612,7 @@ export function summarizeSearchCanary(records, versions) {
 }
 
 export const SEARCH_CANARY_EVALUATION_POLICY_VERSION =
-  "search-live-canary-v2/2026-08-21.1";
+  "search-live-canary-v2/2026-08-21.2";
 export const SEARCH_CANARY_RUBRIC_VERSION =
   "search-live-rubric-v1/2026-08-20.2";
 export const SEARCH_CANARY_THRESHOLDS = Object.freeze({
