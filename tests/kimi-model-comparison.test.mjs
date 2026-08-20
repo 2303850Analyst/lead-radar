@@ -404,9 +404,9 @@ const expectedCanaryVersions = Object.freeze({
   app: "0.4.0-alpha.1",
   model: "kimi-k2.6",
   modelPolicy: "kimi-model-policy/2026-08-20.6",
-  transportSchema: "mfjs-semantic-intent/2026-08-20.5",
+  transportSchema: "mfjs-semantic-intent/2026-08-20.6",
   prompt:
-    "semantic-intent-v2/2026-08-20.9+kimi-model-policy/2026-08-20.6:kimi-k2.6:k2.6-thinking-disabled:none",
+    "semantic-intent-v2/2026-08-20.10+kimi-model-policy/2026-08-20.6:kimi-k2.6:k2.6-thinking-disabled:none",
   semanticIntentSchema: "2.2",
   searchPlanSchema: "2.2",
   decisionPolicy: "decision-current",

@@ -227,6 +227,11 @@ export type KimiEncodeRequest = {
   signal?: AbortSignal;
 };
 
+export type ProviderNeutralCategoryCue = Readonly<{
+  essentialCategoryPhrase: string;
+  surfaceVenueForm: string | null;
+}>;
+
 export type KimiEncodeResult = {
   semanticIntent: SemanticIntentV2;
   /**
@@ -234,7 +239,7 @@ export type KimiEncodeResult = {
    * Trusted scenario adapters may omit it; it can restrict execution but can
    * never authorize a category absent from SemanticIntent and the registry.
    */
-  providerNeutralCategoryHeads?: readonly string[];
+  providerNeutralCategoryCue?: ProviderNeutralCategoryCue | null;
   modelId: string;
   finishReason: "stop";
   firstSseEventLatencyMs: number;

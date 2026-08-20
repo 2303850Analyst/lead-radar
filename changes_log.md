@@ -29,53 +29,37 @@
 
 ### Добавлено
 
-- После повторяемого live-промаха `climbing` при корректном общем понимании
-  запроса Kimi transport получил отдельный wire-only массив
-  `providerNeutralCategoryHeads`. Раньше краткий provider-neutral head был лишь
-  необязательной частью богатого `retrievalTerms.precision`, поэтому модель
-  могла вернуть понятное описание без единственного слова, которое полный
-  provider registry умеет сопоставить. Теперь для однозначного физического
-  запроса Kimi обязан вернуть от одного до четырёх английских natural-word
-  heads длиной до 64 символов и пяти слов; сервер NFKC-нормализует и
-  дедуплицирует их без truncation, добавляет перед обычными precision terms и
-  удаляет wire-поле до формирования публичного `SemanticIntentV2 2.2`.
-  Ambiguous, `non_physical` и `unclear` ответы обязаны оставлять heads и все
-  положительные semantic-массивы пустыми. Semantic auto-run разрешён только
-  если хотя бы один проверенный head дал точный leaf/path в полном закреплённом
-  Geoapify registry; неизвестный или parent-only head не может быть замаскирован
-  общим name-fallback. Dotted/underscored provider syntax, включая ID в скобках
-  и иной пунктуации, отклоняется до compiler. Wire precision ограничен восемью
-  исходными элементами, heads — четырьмя, а объединённый внутренний precision —
-  прежними двенадцатью; raw overflow и exclusions не обрезаются. Короткий
-  post-checkpoint live-срез показал две дополнительные системные ошибки K2.6:
-  голая поисковая фраза ошибочно считалась неявным non-place запросом, а длинный
-  список синонимов переполнял wire precision. Prompt теперь явно считает
-  `primaryQuery` уже находящимся в контексте поиска мест, отправляет generic
-  place-form nouns на clarification и после сериализованной K2.6 структуры
-  повторяет компактный cardinality contract. Следующий aggregate-only K2.6
-  срез подтвердил schema-pass `10/10`, но локализовал оставшиеся отказы в
-  semantic state и provider grounding. User payload теперь явно несёт
-  server-owned `business_place_search` context, а поздняя K2.6 state matrix
-  различает unresolved physical purpose (`unclear/required/ambiguous`) и
-  настоящий non-place (`non_physical/not_applicable`). Обратный локальный
-  инвариант запрещает `not_applicable` для любого другого entity kind.
-  Составной provider-neutral head по-прежнему не сокращается эвристически:
-  same-root сочетания вроде `cinema gym` или `bank workshop` остаются
-  fail-closed, пока wire-контракт не передаст semantic roles отдельно.
-  Локальная граница по-прежнему отклоняет девятый precision item вместо
-  усечения. Aggregate-only A/B сохраняет
-  только allowlisted plan reason-code counts, чтобы отличать non-place от
-  provider-coverage отказа без model text. Для дешёвой повторной диагностики
-  harness может запускать один строго allowlisted профиль через
-  `KIMI_COMPARISON_PROFILE_ID`; такой неполный запуск остаётся `PARTIAL` и не
-  может выбрать release-профиль. Изменение
-  поднимает Kimi model policy до `2026-08-20.6`, prompt content до
-  `2026-08-20.9`, MFJS transport schema до `2026-08-20.5`, provider compiler
-  policy остаётся `2026-08-20.6`, а decision policy — `2026-08-20.3`, тем самым
-  инвалидируя старые runtime cache/confirmation contexts. В публичный план,
-  persistent storage и live aggregate не попадают ни wire field, ни raw
-  model/provider responses; production canary теперь отдельно связывает отчёт
-  с точной transport-schema version.
+- После повторяемых live `PROVIDER_COVERAGE_GAP` при корректно понятом типе
+  бизнеса Kimi transport атомарно заменил временный массив category heads на
+  один wire-only `providerNeutralCategoryCue`. Поле
+  `essentialCategoryPhrase` содержит полную смысловую английскую фразу, а
+  `surfaceVenueForm` отдельно учитывает только отброшенную форму/контейнер
+  места. Сервер NFKC-нормализует обе строки без truncation, добавляет в
+  precision только essential phrase и удаляет весь cue до публичного
+  `SemanticIntentV2 2.2`. Surface form никогда не участвует в lookup, fallback,
+  provenance или readiness. Auto-run разрешён только когда essential phrase
+  даёт один точный leaf/path полного закреплённого Geoapify registry и этот ID
+  переживает exclusions; parent, collision, unknown и составные фразы вроде
+  `cinema gym` или `bank workshop` остаются fail-closed без suffix/subphrase
+  эвристик. Для ambiguous, `unclear` и `non_physical` оба cue-поля обязаны быть
+  `null`, а executable physical intent обязан иметь essential phrase.
+  Dotted/underscored provider syntax, URL/coordinates, extra keys, raw overflow
+  и противоречивые state tuples отклоняются локально, без repair-вызова.
+  Предшествующий aggregate-only K2.6 срез подтвердил schema `10/10` и улучшил
+  outcome/execution с `6/10` до `8/10`: `студия` и `зал` теперь корректно дают
+  `needs_confirmation`, а оставшиеся climbing/pottery промахи изолированы как
+  representation gap. User payload явно несёт server-owned
+  `business_place_search`; поздняя K2.6 state matrix различает unresolved
+  physical purpose (`unclear/required/ambiguous`) и настоящий non-place
+  (`non_physical/not_applicable`). Public guard и strict validator зеркалят оба
+  state-инварианта. Диагностический запуск одного allowlisted профиля остаётся
+  `PARTIAL` и не может выбрать release-профиль. Изменение сохраняет Kimi model
+  policy `2026-08-20.6`, поднимает prompt content до `2026-08-20.10`, MFJS
+  transport schema до `2026-08-20.6`, provider compiler/grounding policy до
+  `2026-08-20.7` и decision policy до `2026-08-20.4`, инвалидируя старые
+  runtime cache, plan hash и confirmation contexts. В публичный план,
+  persistent storage и aggregate не попадают cue, raw model/provider responses
+  или lead data.
 
 - Добавлена versioned server-side политика Kimi для latency-среза Issue #14:
   `kimi-k3` получает только совместимый `reasoning_effort=low|high|max`, а

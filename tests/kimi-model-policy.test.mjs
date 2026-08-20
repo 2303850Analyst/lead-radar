@@ -61,21 +61,30 @@ function kimiRequest() {
   };
 }
 
+function categoryCue(
+  essentialCategoryPhrase,
+  surfaceVenueForm = null,
+) {
+  return { essentialCategoryPhrase, surfaceVenueForm };
+}
+
 function kimiWireIntent(
   semanticIntent = semanticIntentFor(),
-  providerNeutralCategoryHeads,
+  providerNeutralCategoryCue,
 ) {
   const nonExecutable =
     semanticIntent.ambiguity?.isAmbiguous === true ||
-    semanticIntent.entityKind === "non_physical";
-  const heads =
-    providerNeutralCategoryHeads ??
+    ["non_physical", "unclear"].includes(semanticIntent.entityKind);
+  const cue =
+    providerNeutralCategoryCue ??
     (nonExecutable
-      ? []
-      : [semanticIntent.retrievalTerms?.precision?.[0] ?? "business"]);
+      ? categoryCue(null)
+      : categoryCue(
+          semanticIntent.retrievalTerms?.precision?.[0] ?? "business",
+        ));
   return {
     ...semanticIntent,
-    providerNeutralCategoryHeads: heads,
+    providerNeutralCategoryCue: cue,
   };
 }
 
@@ -117,11 +126,11 @@ function kimiSseValueResponse(model, value) {
 function kimiSseResponse(
   model,
   semanticIntent = semanticIntentFor(),
-  providerNeutralCategoryHeads,
+  providerNeutralCategoryCue,
 ) {
   return kimiSseValueResponse(
     model,
-    kimiWireIntent(semanticIntent, providerNeutralCategoryHeads),
+    kimiWireIntent(semanticIntent, providerNeutralCategoryCue),
   );
 }
 
@@ -151,8 +160,8 @@ test("K3 request uses only its server-owned reasoning effort policy", async () =
   assert.deepEqual(payload.stream_options, { include_usage: true });
   assert.match(payload.messages[0].content, /at most 8 coreBusinessTypes/);
   assert.match(payload.messages[0].content, /without an explicit physical business/);
-  assert.match(payload.messages[0].content, /shortest unambiguous English head phrase/);
-  assert.match(payload.messages[0].content, /providerNeutralCategoryHeads/);
+  assert.match(payload.messages[0].content, /essentialCategoryPhrase/);
+  assert.match(payload.messages[0].content, /surfaceVenueForm/);
   assert.match(payload.messages[0].content, /only then evaluate business-type ambiguity/);
   assert.match(
     payload.messages[0].content,
@@ -164,7 +173,7 @@ test("K3 request uses only its server-owned reasoning effort policy", async () =
   );
   assert.match(
     payload.messages[0].content,
-    /minimal lexical business-type head.*not a venue description/i,
+    /meaning-bearing qualifiers.*essentialCategoryPhrase/i,
   );
   assert.equal(
     JSON.parse(payload.messages[1].content).taskContext,
@@ -217,10 +226,19 @@ test("Kimi request uses an MFJS transport schema without weakening local validat
     transportSchema.properties.schemaVersion,
     { type: "string", enum: ["2.2"] },
   );
-  assert.ok(transportSchema.required.includes("providerNeutralCategoryHeads"));
-  assert.deepEqual(transportSchema.properties.providerNeutralCategoryHeads, {
-    type: "array",
-    items: { type: "string" },
+  assert.ok(transportSchema.required.includes("providerNeutralCategoryCue"));
+  assert.deepEqual(transportSchema.properties.providerNeutralCategoryCue, {
+    type: "object",
+    additionalProperties: false,
+    required: ["essentialCategoryPhrase", "surfaceVenueForm"],
+    properties: {
+      essentialCategoryPhrase: {
+        anyOf: [{ type: "string" }, { type: "null" }],
+      },
+      surfaceVenueForm: {
+        anyOf: [{ type: "string" }, { type: "null" }],
+      },
+    },
   });
   assert.throws(
     () =>
@@ -232,7 +250,7 @@ test("Kimi request uses an MFJS transport schema without weakening local validat
   );
 });
 
-test("Kimi wire category heads become bounded precision semantics without leaking the wire field", async () => {
+test("Kimi wire category cue grounds only its essential phrase without leaking wire fields", async () => {
   const semanticIntent = {
     ...semanticIntentFor("indoor rock wall venue"),
     coreBusinessTypes: ["indoor rock wall venue"],
@@ -247,7 +265,11 @@ test("Kimi wire category heads become bounded precision semantics without leakin
     model: "kimi-k3",
     reasoningEffort: "low",
     fetchImpl: async () =>
-      kimiSseResponse("kimi-k3", semanticIntent, [" climbing ", "CLIMBING"]),
+      kimiSseResponse(
+        "kimi-k3",
+        semanticIntent,
+        categoryCue(" climbing ", " gym "),
+      ),
   });
 
   const result = await client.encode(kimiRequest());
@@ -256,9 +278,13 @@ test("Kimi wire category heads become bounded precision semantics without leakin
     "indoor rock wall venue",
   ]);
   assert.equal(
-    Object.hasOwn(result.semanticIntent, "providerNeutralCategoryHeads"),
+    Object.hasOwn(result.semanticIntent, "providerNeutralCategoryCue"),
     false,
   );
+  assert.deepEqual(result.providerNeutralCategoryCue, {
+    essentialCategoryPhrase: "climbing",
+    surfaceVenueForm: "gym",
+  });
   assert.ok(
     compileGeoapifySemanticIntent(result.semanticIntent).categoryIds.includes(
       "entertainment.activity_park.climbing",
@@ -270,7 +296,11 @@ test("Kimi wire category heads become bounded precision semantics without leakin
     model: "kimi-k3",
     reasoningEffort: "low",
     fetchImpl: async () =>
-      kimiSseResponse("kimi-k3", semanticIntent, ["climbing"]),
+      kimiSseResponse(
+        "kimi-k3",
+        semanticIntent,
+        categoryCue("climbing", "gym"),
+      ),
   });
   const plan = await createSearchPlan(
     { primaryQuery: "крытый зал со стенами для лазания" },
@@ -287,10 +317,69 @@ test("Kimi wire category heads become bounded precision semantics without leakin
         ),
     ),
   );
-  assert.equal(JSON.stringify(plan).includes("providerNeutralCategoryHeads"), false);
+  assert.equal(JSON.stringify(plan).includes("providerNeutralCategoryCue"), false);
+  assert.equal(JSON.stringify(plan).includes("surfaceVenueForm"), false);
 });
 
-test("an unresolved, parent, or colliding wire head cannot be laundered through fallback", async () => {
+test("structured cues ground open physical cores without compiler suffix inference", async () => {
+  for (const item of [
+    {
+      query: "крытый зал со стенами для лазания",
+      richPhrase: "indoor rock wall venue",
+      essentialCategoryPhrase: "climbing",
+      surfaceVenueForm: "gym",
+      categoryId: "entertainment.activity_park.climbing",
+    },
+    {
+      query: "мастерская керамического ремесла",
+      richPhrase: "ceramic craft workshop",
+      essentialCategoryPhrase: "pottery",
+      surfaceVenueForm: "workshop",
+      categoryId: "production.pottery",
+    },
+    {
+      query: "школа обучения музыке",
+      richPhrase: "instrument lessons venue",
+      essentialCategoryPhrase: "music school",
+      surfaceVenueForm: null,
+      categoryId: "education.music_school",
+    },
+  ]) {
+    const semanticIntent = {
+      ...semanticIntentFor(item.richPhrase),
+      coreBusinessTypes: [item.richPhrase],
+      retrievalTerms: {
+        precision: [item.richPhrase],
+        recall: [],
+        exclude: [],
+      },
+    };
+    const client = createKimiClient({
+      apiKey,
+      model: "kimi-k3",
+      fetchImpl: async () =>
+        kimiSseResponse(
+          "kimi-k3",
+          semanticIntent,
+          categoryCue(
+            item.essentialCategoryPhrase,
+            item.surfaceVenueForm,
+          ),
+        ),
+    });
+    const plan = await createSearchPlan(
+      { primaryQuery: item.query },
+      { mode: "kimi", kimiClient: client },
+    );
+    assert.equal(plan.status, "ready", item.query);
+    assert.ok(
+      plan.executionPreview?.categoryLabels.includes(item.categoryId),
+      item.query,
+    );
+  }
+});
+
+test("an unresolved, parent, or colliding essential phrase cannot be laundered through fallback", async () => {
   const semanticIntent = {
     ...semanticIntentFor("unfindable artisan destination"),
     coreBusinessTypes: ["unfindable artisan destination"],
@@ -300,7 +389,7 @@ test("an unresolved, parent, or colliding wire head cannot be laundered through 
       exclude: [],
     },
   };
-  for (const head of [
+  for (const essentialCategoryPhrase of [
     "unfindable trade",
     "sport fitness",
     "spa",
@@ -316,7 +405,11 @@ test("an unresolved, parent, or colliding wire head cannot be laundered through 
       apiKey,
       model: "kimi-k3",
       fetchImpl: async () =>
-        kimiSseResponse("kimi-k3", semanticIntent, [head]),
+        kimiSseResponse(
+          "kimi-k3",
+          semanticIntent,
+          categoryCue(essentialCategoryPhrase, "venue"),
+        ),
     });
 
     const plan = await createSearchPlan(
@@ -324,13 +417,13 @@ test("an unresolved, parent, or colliding wire head cannot be laundered through 
       { mode: "kimi", kimiClient: client },
     );
 
-    assert.equal(plan.status, "unsupported", head);
-    assert.equal(plan.executionPreview, null, head);
-    assert.equal(plan.confidence.providerCoverage, "unknown", head);
+    assert.equal(plan.status, "unsupported", essentialCategoryPhrase);
+    assert.equal(plan.executionPreview, null, essentialCategoryPhrase);
+    assert.equal(plan.confidence.providerCoverage, "unknown", essentialCategoryPhrase);
     assert.deepEqual(
       plan.resolution.reasonCodes,
       ["PROVIDER_COVERAGE_GAP"],
-      head,
+      essentialCategoryPhrase,
     );
   }
 
@@ -347,7 +440,11 @@ test("an unresolved, parent, or colliding wire head cannot be laundered through 
     apiKey,
     model: "kimi-k3",
     fetchImpl: async () =>
-      kimiSseResponse("kimi-k3", legacySemanticIntent, ["unfindable trade"]),
+      kimiSseResponse(
+        "kimi-k3",
+        legacySemanticIntent,
+        categoryCue("unfindable trade"),
+      ),
   });
   const legacyPlan = await createSearchPlan(
     { primaryQuery: "qzxv неизвестная услуга" },
@@ -355,9 +452,37 @@ test("an unresolved, parent, or colliding wire head cannot be laundered through 
   );
   assert.equal(legacyPlan.status, "unsupported");
   assert.equal(legacyPlan.executionPreview, null);
+
+  const excludedClient = createKimiClient({
+    apiKey,
+    model: "kimi-k3",
+    fetchImpl: async () =>
+      kimiSseResponse(
+        "kimi-k3",
+        {
+          ...semanticIntentFor("indoor climbing venue"),
+          excludedBusinessTypes: ["climbing"],
+          retrievalTerms: {
+            precision: ["indoor climbing venue"],
+            recall: [],
+            exclude: ["climbing"],
+          },
+        },
+        categoryCue("climbing", "gym"),
+      ),
+  });
+  const excludedPlan = await createSearchPlan(
+    { primaryQuery: "зал, исключая скалодромы" },
+    { mode: "kimi", kimiClient: excludedClient },
+  );
+  assert.equal(excludedPlan.status, "unsupported");
+  assert.equal(excludedPlan.executionPreview, null);
+  assert.deepEqual(excludedPlan.resolution.reasonCodes, [
+    "PROVIDER_COVERAGE_GAP",
+  ]);
 });
 
-test("Kimi wire category heads fail closed without truncation or executable syntax", async () => {
+test("Kimi wire category cue fails closed without truncation or executable syntax", async () => {
   const cases = [
     {
       label: "missing",
@@ -365,41 +490,73 @@ test("Kimi wire category heads fail closed without truncation or executable synt
       issueCode: "required_field_missing",
     },
     {
+      label: "obsolete category heads without a cue",
+      value: {
+        ...semanticIntentFor(),
+        providerNeutralCategoryHeads: ["sports hall"],
+      },
+      issueCode: "required_field_missing",
+    },
+    {
+      label: "obsolete category heads alongside a cue",
+      value: {
+        ...kimiWireIntent(semanticIntentFor(), categoryCue("sports hall")),
+        providerNeutralCategoryHeads: ["sports hall"],
+      },
+      issueCode: "additional_property",
+    },
+    {
       label: "empty executable",
-      value: kimiWireIntent(semanticIntentFor(), []),
-      issueCode: "executable_heads_missing",
+      value: kimiWireIntent(semanticIntentFor(), categoryCue(null)),
+      issueCode: "executable_category_cue_missing",
     },
     {
-      label: "overflow",
-      value: kimiWireIntent(semanticIntentFor(), [
-        "sports hall",
-        "fitness centre",
-        "gymnasium",
-        "athletics centre",
-        "training facility",
-      ]),
-      issueCode: "array_max_provider_neutral_category_heads",
+      label: "essential phrase overflow",
+      value: kimiWireIntent(
+        semanticIntentFor(),
+        categoryCue("a".repeat(65)),
+      ),
+      issueCode: "category_cue_phrase_invalid",
     },
     {
-      label: "raw duplicate overflow",
-      value: kimiWireIntent(semanticIntentFor(), [
-        "sports hall",
-        " SPORTS HALL ",
-        "sports  hall",
-        "Sports Hall",
-        "SPORTS HALL",
-      ]),
-      issueCode: "array_max_provider_neutral_category_heads",
+      label: "surface form overflow",
+      value: kimiWireIntent(
+        semanticIntentFor(),
+        categoryCue("sports hall", "a".repeat(33)),
+      ),
+      issueCode: "category_cue_venue_form_invalid",
+    },
+    {
+      label: "surface form without essential phrase",
+      value: kimiWireIntent(
+        semanticIntentFor(),
+        categoryCue(null, "venue"),
+      ),
+      issueCode: "category_cue_state_invariant",
     },
     {
       label: "provider category ID",
-      value: kimiWireIntent(semanticIntentFor(), ["sport.fitness.gym"]),
+      value: kimiWireIntent(
+        semanticIntentFor(),
+        categoryCue("sport.fitness.gym"),
+      ),
       issueCode: "executable_value_forbidden",
     },
     {
       label: "underscored provider syntax",
-      value: kimiWireIntent(semanticIntentFor(), ["sports_hall"]),
-      issueCode: "category_head_invalid",
+      value: kimiWireIntent(
+        semanticIntentFor(),
+        categoryCue("sports_hall"),
+      ),
+      issueCode: "category_cue_phrase_invalid",
+    },
+    {
+      label: "extra cue key",
+      value: kimiWireIntent(semanticIntentFor(), {
+        ...categoryCue("sports hall"),
+        note: "unexpected",
+      }),
+      issueCode: "category_cue_invalid",
     },
     {
       label: "punctuation-wrapped provider ID in precision",
@@ -412,7 +569,7 @@ test("Kimi wire category heads fail closed without truncation or executable synt
             exclude: [],
           },
         },
-        ["sports hall"],
+        categoryCue("sports hall"),
       ),
       issueCode: "executable_value_forbidden",
     },
@@ -432,7 +589,7 @@ test("Kimi wire category heads fail closed without truncation or executable synt
             exclude: [],
           },
         },
-        ["sports hall"],
+        categoryCue("sports hall"),
       ),
       issueCode: "executable_value_forbidden",
     })),
@@ -456,7 +613,7 @@ test("Kimi wire category heads fail closed without truncation or executable synt
   }
 });
 
-test("Kimi wire forbids category heads for ambiguous and non-physical outcomes", async () => {
+test("Kimi wire forbids category cues for ambiguous and non-physical outcomes", async () => {
   const ambiguous = {
     ...semanticIntentFor(),
     coreBusinessTypes: [],
@@ -483,25 +640,28 @@ test("Kimi wire forbids category heads for ambiguous and non-physical outcomes",
     const accepted = createKimiClient({
       apiKey,
       model: "kimi-k3",
-      fetchImpl: async () => kimiSseResponse("kimi-k3", semanticIntent, []),
+      fetchImpl: async () =>
+        kimiSseResponse("kimi-k3", semanticIntent, categoryCue(null)),
     });
-    assert.deepEqual(
-      (await accepted.encode(kimiRequest())).semanticIntent.retrievalTerms
-        .precision,
-      [],
-    );
+    const acceptedResult = await accepted.encode(kimiRequest());
+    assert.deepEqual(acceptedResult.semanticIntent.retrievalTerms.precision, []);
+    assert.equal(acceptedResult.providerNeutralCategoryCue, null);
 
     const rejected = createKimiClient({
       apiKey,
       model: "kimi-k3",
       fetchImpl: async () =>
-        kimiSseResponse("kimi-k3", semanticIntent, ["sports hall"]),
+        kimiSseResponse(
+          "kimi-k3",
+          semanticIntent,
+          categoryCue("sports hall"),
+        ),
     });
     await assert.rejects(
       rejected.encode(kimiRequest()),
       (error) =>
         error instanceof KimiClientError &&
-        error.semanticValidationIssueCodes.includes("nonready_heads_present"),
+        error.semanticValidationIssueCodes.includes("nonready_category_cue_present"),
     );
 
     const positiveTerms = createKimiClient({
@@ -518,7 +678,7 @@ test("Kimi wire forbids category heads for ambiguous and non-physical outcomes",
               precision: ["sports hall"],
             },
           },
-          [],
+          categoryCue(null),
         ),
     });
     await assert.rejects(
@@ -541,11 +701,11 @@ test("an unclear entity cannot become executable without clarification", async (
     /unclear intent must be marked ambiguous/i,
   );
 
-  for (const heads of [[], ["climbing"]]) {
+  for (const cue of [categoryCue(null), categoryCue("climbing")]) {
     const client = createKimiClient({
       apiKey,
       model: "kimi-k3",
-      fetchImpl: async () => kimiSseResponse("kimi-k3", unclear, heads),
+      fetchImpl: async () => kimiSseResponse("kimi-k3", unclear, cue),
     });
     await assert.rejects(
       client.encode(kimiRequest()),
@@ -553,13 +713,16 @@ test("an unclear entity cannot become executable without clarification", async (
         error instanceof KimiClientError &&
         error.reason === "semantic_schema_invalid" &&
         error.semanticValidationIssueCodes.some((code) =>
-          ["unclear_intent_invariant", "nonready_heads_present"].includes(code),
+          [
+            "unclear_intent_invariant",
+            "nonready_category_cue_present",
+          ].includes(code),
         ),
     );
   }
 });
 
-test("Kimi wire precision and category-head bounds compose to the public limit", async () => {
+test("Kimi wire precision and category cue compose within the public limit", async () => {
   const precision = Array.from({ length: 8 }, (_, index) => `precision ${index}`);
   const semanticIntent = {
     ...semanticIntentFor(),
@@ -569,15 +732,14 @@ test("Kimi wire precision and category-head bounds compose to the public limit",
     apiKey,
     model: "kimi-k3",
     fetchImpl: async () =>
-      kimiSseResponse("kimi-k3", semanticIntent, [
-        "sports hall",
-        "fitness centre",
-        "gymnasium",
-        "athletics centre",
-      ]),
+      kimiSseResponse(
+        "kimi-k3",
+        semanticIntent,
+        categoryCue("sports hall", "venue"),
+      ),
   });
   const result = await client.encode(kimiRequest());
-  assert.equal(result.semanticIntent.retrievalTerms.precision.length, 12);
+  assert.equal(result.semanticIntent.retrievalTerms.precision.length, 9);
 
   for (const model of ["kimi-k3", "kimi-k2.6"]) {
     for (const overflowPrecision of [
@@ -597,7 +759,7 @@ test("Kimi wire precision and category-head bounds compose to the public limit",
         apiKey,
         model,
         fetchImpl: async () =>
-          kimiSseResponse(model, overflow, ["sports hall"]),
+          kimiSseResponse(model, overflow, categoryCue("sports hall")),
       });
       await assert.rejects(
         rejected.encode(kimiRequest()),
@@ -792,8 +954,8 @@ test("K2.6 request disables thinking without a K3-only field", async () => {
   assert.equal(Object.hasOwn(payload, "reasoning_effort"), false);
   assert.deepEqual(payload.response_format, { type: "json_object" });
   assert.match(systemPrompt, /schemaVersion/);
-  assert.match(systemPrompt, /providerNeutralCategoryHeads/);
-  const serializedSchemaAt = systemPrompt.indexOf('"providerNeutralCategoryHeads"');
+  assert.match(systemPrompt, /providerNeutralCategoryCue/);
+  const serializedSchemaAt = systemPrompt.indexOf('"providerNeutralCategoryCue"');
   const cardinalityContractAt = systemPrompt.lastIndexOf(
     "K2.6 cardinality contract",
   );
@@ -809,7 +971,7 @@ test("K2.6 request disables thinking without a K3-only field", async () => {
   );
   assert.match(
     systemPrompt.slice(cardinalityContractAt),
-    /ambiguous or non-physical intent, both arrays MUST contain exactly 0 items/i,
+    /ambiguous or non-physical intent.*cue fields MUST both be null/i,
   );
   assert.match(
     systemPrompt.slice(cardinalityContractAt),
@@ -825,7 +987,7 @@ test("K2.6 request disables thinking without a K3-only field", async () => {
   );
   assert.match(
     systemPrompt.slice(stateContractAt),
-    /missing valid category head.*ambiguity, never non_physical/i,
+    /missing valid essential category phrase.*ambiguity, never non_physical/i,
   );
   assert.match(
     systemPrompt.slice(stateContractAt),
@@ -1023,7 +1185,7 @@ test("non-executable semantic outcomes may omit positive retrieval terms", async
           entityKind: "unclear",
           physicalLocationRequirement: "not_applicable",
         },
-        [],
+        categoryCue(null),
       ),
   });
   await assert.rejects(
@@ -1046,7 +1208,7 @@ test("non-executable semantic outcomes may omit positive retrieval terms", async
           entityKind: "unclear",
           physicalLocationRequirement: "optional",
         },
-        [],
+        categoryCue(null),
       ),
   });
   await assert.rejects(

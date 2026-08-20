@@ -3,12 +3,16 @@ import {
   type CanonicalConceptId,
   getCanonicalConcept,
 } from "../taxonomy";
-import type { NormalizedSearchIntent, SemanticIntentV2 } from "../types";
+import type {
+  NormalizedSearchIntent,
+  ProviderNeutralCategoryCue,
+  SemanticIntentV2,
+} from "../types";
 import capabilitySnapshot from "./geoapify-categories.snapshot.json";
 
 export const GEOAPIFY_PROVIDER_CATALOG_VERSION = capabilitySnapshot.catalogVersion;
 export const GEOAPIFY_COMPILER_POLICY_VERSION =
-  "semantic-retrieval-v2/2026-08-20.6";
+  "semantic-retrieval-v2/2026-08-20.7";
 
 /**
  * Full provider capability registry captured from Geoapify's official Places
@@ -819,43 +823,142 @@ export function compileGeoapifySemanticIntent(
   };
 }
 
-function normalizedProviderNeutralCategoryHead(value: string): string {
-  return value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
+export type GroundedGeoapifyIntentResult =
+  | Readonly<{
+      kind: "grounded";
+      grounding: "exact_category_phrase" | "trusted_adapter";
+      capabilityPlan: CompiledGeoapifyCapabilityPlan;
+    }>
+  | Readonly<{
+      kind: "coverage_gap";
+      reason: "CATEGORY_CUE_MISSING" | "CATEGORY_PHRASE_UNRESOLVED";
+      capabilityPlan: CompiledGeoapifyCapabilityPlan;
+    }>;
+
+function exactCategoryCuePhrase(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[_./-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+type ExactCategoryCueMatch = Readonly<{
+  categoryId: string;
+  matches: ReadonlySet<"exact_leaf" | "exact_path">;
+}>;
+
+function exactCategoryCueMatches(
+  phrase: string,
+): readonly ExactCategoryCueMatch[] {
+  const normalizedPhrase = exactCategoryCuePhrase(phrase);
+  if (!normalizedPhrase) return [];
+  const matches: ExactCategoryCueMatch[] = [];
+  for (const capability of CAPABILITY_INDEX) {
+    if (capability.hasChildren || capability.segments.length === 1) continue;
+    const matchKinds = new Set<"exact_leaf" | "exact_path">();
+    if (
+      exactCategoryCuePhrase(capability.segments.at(-1) ?? "") ===
+      normalizedPhrase
+    ) {
+      matchKinds.add("exact_leaf");
+    }
+    if (
+      exactCategoryCuePhrase(capability.categoryId) === normalizedPhrase
+    ) {
+      matchKinds.add("exact_path");
+    }
+    if (matchKinds.size) {
+      matches.push({
+        categoryId: capability.categoryId,
+        matches: matchKinds,
+      });
+    }
+  }
+  return matches;
 }
 
 /**
- * Proves that at least one model-supplied provider-neutral head resolved to
- * exactly one leaf in the pinned registry. Rich precision terms, parents,
- * collisions, recall, adjacent, and name-fallback provenance cannot satisfy
- * this execution gate.
+ * Compiles semantic retrieval and separately proves the wire-only category
+ * cue against one exact leaf/path in the pinned registry. The venue form is
+ * deliberately outside this seam: it can neither expand nor authorize a
+ * category. Missing cue evidence is accepted only for trusted injected
+ * adapters that predate the production wire contract.
  */
-export function geoapifyPlanGroundsProviderNeutralCategoryHeads(
-  capabilityPlan: CompiledGeoapifyCapabilityPlan,
-  heads: readonly string[],
-): boolean {
-  const normalizedHeads = new Set(
-    heads.map(normalizedProviderNeutralCategoryHead),
+export function compileGroundedGeoapifyIntent(
+  semanticIntent: SemanticIntentV2,
+  sourceIntent: Pick<
+    NormalizedSearchIntent,
+    "primaryQuery" | "relatedQueries"
+  > | undefined,
+  categoryCue: ProviderNeutralCategoryCue | null | undefined,
+): GroundedGeoapifyIntentResult {
+  const capabilityPlan = compileGeoapifySemanticIntent(
+    semanticIntent,
+    sourceIntent,
   );
-  if (!normalizedHeads.size) return false;
-  const categoriesByHead = new Map<string, Set<string>>();
+  if (categoryCue === undefined) {
+    return {
+      kind: "grounded",
+      grounding: "trusted_adapter",
+      capabilityPlan,
+    };
+  }
+  if (categoryCue === null) {
+    return {
+      kind: "coverage_gap",
+      reason: "CATEGORY_CUE_MISSING",
+      capabilityPlan,
+    };
+  }
+
+  const exactCueMatches = exactCategoryCueMatches(
+    categoryCue.essentialCategoryPhrase,
+  );
+  const exactCueCategoryIds = new Set(
+    exactCueMatches.map((match) => match.categoryId),
+  );
+  if (exactCueCategoryIds.size !== 1) {
+    return {
+      kind: "coverage_gap",
+      reason: "CATEGORY_PHRASE_UNRESOLVED",
+      capabilityPlan,
+    };
+  }
+  const [expectedCategoryId] = exactCueCategoryIds;
+  const expectedMatchKinds = exactCueMatches.find(
+    (match) => match.categoryId === expectedCategoryId,
+  )?.matches;
+  const normalizedEssentialPhrase = exactCategoryCuePhrase(
+    categoryCue.essentialCategoryPhrase,
+  );
+  let grounded = false;
   for (const batch of capabilityPlan.batches) {
     if (batch.type !== "precision") continue;
     for (const item of batch.provenance) {
-      const head = normalizedProviderNeutralCategoryHead(item.semanticTerm);
       if (
         item.origin !== "retrievalTerms.precision" ||
+        exactCategoryCuePhrase(item.semanticTerm) !==
+          normalizedEssentialPhrase ||
+        item.categoryId !== expectedCategoryId ||
         (item.match !== "exact_leaf" && item.match !== "exact_path") ||
-        !isGeoapifyLeafCategoryId(item.categoryId) ||
-        !normalizedHeads.has(head)
+        !expectedMatchKinds?.has(item.match)
       ) continue;
-      const categories = categoriesByHead.get(head) ?? new Set<string>();
-      categories.add(item.categoryId);
-      categoriesByHead.set(head, categories);
+      grounded = true;
     }
   }
-  return [...categoriesByHead.values()].some(
-    (categoryIds) => categoryIds.size === 1,
-  );
+  return grounded
+    ? {
+        kind: "grounded",
+        grounding: "exact_category_phrase",
+        capabilityPlan,
+      }
+    : {
+        kind: "coverage_gap",
+        reason: "CATEGORY_PHRASE_UNRESOLVED",
+        capabilityPlan,
+      };
 }
 
 /**

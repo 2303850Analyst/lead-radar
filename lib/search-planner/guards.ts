@@ -62,6 +62,24 @@ const SEMANTIC_INTENT_KEYS = new Set([
   "confidence",
   "ambiguity",
 ]);
+const SEARCH_PLAN_KEYS = new Set([
+  "schemaVersion",
+  "taxonomyVersion",
+  "providerCatalogVersion",
+  "decisionPolicyVersion",
+  "promptVersion",
+  "requestCacheKey",
+  "planHash",
+  "parentPlanHash",
+  "status",
+  "intent",
+  "semanticIntent",
+  "confidence",
+  "resolution",
+  "executionPreview",
+  "ai",
+  "confirmation",
+]);
 const RETRIEVAL_TERM_KEYS = new Set(["precision", "recall", "exclude"]);
 const AMBIGUITY_KEYS = new Set([
   "isAmbiguous",
@@ -362,7 +380,11 @@ function isExecutionPreview(value: unknown): boolean {
 
 /** Rejects partial or malformed network payloads before the UI dereferences them. */
 export function isSearchPlan(value: unknown): value is SearchPlan {
-  if (!isRecord(value) || value.schemaVersion !== "2.2") return false;
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== "2.2" ||
+    !hasExactKeys(value, SEARCH_PLAN_KEYS)
+  ) return false;
   if (typeof value.status !== "string" || !PLAN_STATUSES.has(value.status)) return false;
   const confidence = value.confidence;
   const confirmation = value.confirmation;
