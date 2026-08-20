@@ -192,7 +192,7 @@ test("search orchestrator validates a confirmation before provider-backed geogra
         alternativeId: "alt-invalid",
         alternativeHash: "a".repeat(64),
         semanticIntent: {
-          schemaVersion: "2.0",
+          schemaVersion: "2.1",
         },
       },
     }),

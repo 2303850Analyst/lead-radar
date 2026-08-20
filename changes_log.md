@@ -29,6 +29,24 @@
 
 ### Добавлено
 
+- Добавлен opt-in production search canary через фактический NDJSON-orchestrator
+  с реальными Kimi и Geoapify и консервативной ручной оценкой относительно
+  literal baseline. Набор покрывает 12 сценариев, пять городов, три страны,
+  десять новых для legacy taxonomy типов и два mixed-language случая. В
+  versioned отчёт попадают только агрегаты, версии и checksum; запросы,
+  карточки, контакты, raw provider/model responses и ключи не сохраняются.
+  Fixed-k Precision@10 считает десять позиций на каждый запрос, provider
+  identities связываются между запросами только session-salted HMAC в памяти,
+  а deadline и p95 учитывают каждую попытку и полный retry journey.
+  Evaluation policy, набор кейсов, rubric, runtime profile, production bundle и
+  сам canary harness имеют отдельные версии/checksum. Перед запуском worker
+  собирается без Kimi key, затем secret wrapper включает ровно ключ из
+  отдельного secret-файла и восстанавливает обе совместимые env-переменные даже
+  при ошибке secret-scan. Временный provider-fact observer доступен только по
+  случайному canary-каналу, работает после bounded parse и сверяет все
+  показанные названия, адреса, координаты, категории, контакты, сайты и соцсети
+  без записи raw response или карточек на диск.
+
 - Добавлен frozen deterministic relevance gate на 600 явно размеченных
   синтетических `CandidateEvidence` по 150 различным provider-категориям: по
   150 `matched`, `maybe`, `rejected`, `not_checked` и по 15 prompt-injection
@@ -92,6 +110,53 @@
 
 ### Бизнес-логика и ограничения
 
+- Open Kimi boundary сохранён: модель по-прежнему возвращает только bounded
+  provider-neutral `SemanticIntentV2` и не получает pinned registry, его
+  категории или provider-native hints. Full registry, bounded compilation до
+  четырёх arms/upstream retrieval-запросов и вся executable policy остаются
+  server-owned и повторно валидируются перед Geoapify.
+- Geoapify compiler больше не принимает частичное пересечение слов как
+  категорийное совпадение: требуется exact normalized phrase; совпавший parent
+  остаётся явно broad. Общие бизнес-суффиксы удаляются как fallback только при
+  единственной точной leaf-category; неоднозначный остаток не компилируется.
+  Name-fallback теперь предпочитает
+  исходный primary/related query на языке пользователя и выполняется только
+  пока предыдущие arms дали меньше 10 результатов `matched + maybe`.
+- Source-language fallback больше не выбирает фразу только по минимальной
+  длине: содержательный primary из не более трёх слов имеет приоритет, а для
+  длинной формулировки related-варианты сортируются детерминированно. Поэтому
+  «музыкальная школа», «студия загара солярий» и «книжный магазин» не уступают
+  более короткому, но менее полному запросу; порядок relatedQueries не влияет
+  на план.
+- Английские retail-формы `bookstore`, `book store`, `bookshop`, `book shop`
+  разбираются общей суффиксной политикой и сужаются до единственного leaf
+  `commercial.books`. Контекст `store/shop` не разрешает выбирать одноимённый
+  leaf из другой ветки, а неоднозначные `petstore` и product-only запросы не
+  получают случайную категорию. Compiler policy повышена до
+  `semantic-retrieval-v2/2026-08-20.4`.
+- Добавлен default-off `GEOAPIFY_CATEGORY_HINTS_ENABLED`. При явном включении
+  Geoapify Autocomplete `features[].properties.category` может ограниченно уточнить только
+  внутренний name-fallback arm. Сервер принимает не более двух уникальных leaf
+  IDs полного pinned registry, применяет exclusions и никогда не изменяет
+  исходный `SemanticIntentV2`, подписанный `SearchPlan` или локальную relevance-
+  истину. Неизвестный, широкий, пустой или недоступный hint безопасно оставляет
+  прежний план без изменения.
+- Expansion-only provider evidence теперь повышает relevance только при
+  происхождении из core/precision intent; adjacent/recall категория без
+  независимого подтверждения не выдаётся за точное совпадение. UI по умолчанию
+  показывает рекомендованные `matched + maybe`, сохраняя доступ к `rejected` и
+  `not_checked` через фильтр.
+- Failed Kimi plans и infrastructure failures больше не попадают в runtime plan
+  cache. Cache keys, semantic alternative hashes, confirmation context и plan
+  hashes теперь включают compiler policy, версию и checksum provider registry,
+  поэтому изменение executable policy не переиспользует старый план.
+- Source-language name fallback отсекает prompt-control suffixes до compilation:
+  URL, provider instructions и инъекции из нормализованного пользовательского
+  запроса не попадают в executable name query или retrieval provenance.
+- Внутренняя schema `SemanticIntentV2` повышена с `2.0` до `2.1` после
+  backward-compatible ослабления `retrievalTerms.recall`; confirmation context,
+  runtime guards, corpus checksum и canary version identity синхронизированы.
+
 - Broad provider category больше не считается одновременно категорией и
   независимым текстовым доказательством. Статус повышается с `maybe` до
   `matched` только при отдельном совпадении в названии/описании либо двух
@@ -135,12 +200,14 @@
 - Семантический план обобщён до bounded retrieval arms: precision, recall,
   adjacent и server-owned name fallback. Каждый arm имеет стабильный ID,
   приоритет, происхождение из `SemanticIntentV2` и отдельный result budget;
-  независимо от вывода модели сервер допускает не более 4 arms, 4 Places-
-  запросов, 200 полученных карточек и 50 Details. Категория или filter из текста
-  модели по-прежнему никогда не исполняются напрямую.
+  независимо от вывода модели сервер допускает не более 4 arms, 4 upstream
+  retrieval-запросов, 200 полученных карточек и 50 Details. Категория или
+  filter из текста модели по-прежнему никогда не исполняются напрямую.
 - Понятный физический запрос без узкой категории теперь пробует ограниченный
-  поиск по названию внутри восьми фиксированных корневых категорий provider
-  registry до `PROVIDER_COVERAGE_GAP`. Это позволяет компилировать запросы
+  поиск по названию до `PROVIDER_COVERAGE_GAP`: unresolved fallback использует
+  bounded Forward Geocoding `type=amenity`, а подтверждённый provider-native
+  leaf — Places. Восемь корней остаются внутренней provenance/budget границей
+  и не отправляются как category filter. Это позволяет компилировать запросы
   «где занимаются кроссфитом», «студия звукозаписи», «питомник растений» и
   «прокат строительного инструмента» без ручных segment bindings.
 - Одинаковая организация, найденная несколькими arms, объединяется до Details
@@ -150,13 +217,18 @@
   primary/adjacent/fallback причины обнаружения; пользовательские и semantic
   exclusions проверяются по названию, provider categories и короткому source
   description до расхода Details-квоты.
+- Если Geoapify Place Details возвращает канонический provider ID, отличный от
+  ID исходной Places-карточки, оба значения сохраняются в `Lead.sources`. Это
+  удерживает контакты и сайт связанными с наблюдаемой организацией и позволяет
+  transient canary доказать происхождение обогащённых полей без ложной ошибки.
 - `SearchPlan.executionPreview` и `Lead.discovery` получили retrieval-arm
   metadata, а provider coverage — число arms, upstream requests и принятых
   уникальных карточек. UI показывает виды стратегий и их максимальные бюджеты.
 - Публичная схема `SearchPlan` повышена с `2.0` до `2.1`, потому что
   `executionPreview.retrievalArms` и provenance стали обязательной частью
   исполняемого плана. Клиент отклоняет старый или частичный plan payload до
-  отображения; версия внутреннего `SemanticIntentV2` остаётся `2.0`.
+  отображения; внутренняя `SemanticIntentV2` версионируется независимо и в
+  текущем дереве имеет schema `2.1`.
 - Неоднозначность переведена с canonical concept IDs на semantic alternatives.
   Каждый вариант содержит понятное объяснение, собственный `SemanticIntentV2`,
   opaque ID/hash и отличающийся retrieval preview. HMAC token V2 подписывает
@@ -221,6 +293,23 @@
   канонические координаты подтверждённой станции, а не клиентское утверждение.
 
 ### Проверено
+
+- 20.08.2026 повторный фактический production-orchestrator canary получил
+  честное решение `FAIL`: schema pass и executable plan rate — `1.0000`,
+  safety/provenance violations — `0`, но fixed-k Precision@10 `0.7500` не
+  достиг порога `0.85`. Консервативная ручная оценка 116 semantic и 46 literal
+  candidates нашла 90 уникальных релевантных организаций против 44, gain
+  `1.0455` и precision delta `+0.3833`; рост полноты не отменяет шум и пустые
+  позиции верхней выдачи. First progress p95 — 83 мс, terminal и semantic
+  journey p95 — 35 539 мс; все 12 attempts завершились с первой попытки и
+  уложились в per-request deadline 60 с. Encoder p95 — 29 073 мс и также не
+  прошёл цель 20 с. Usage всех вызовов — 11 346 input / 6 683 output tokens;
+  стоимость `$0.134283` не содержит неоценённого failed attempt.
+  Provider-native resolution выполнил три запроса: `not_needed=9`,
+  `no_match=1`, `degraded=0`, `resolved=2`; feature flag
+  остаётся выключенным. Issue #11, Issue #12 и release остаются
+  заблокированными. Полный агрегатный отчёт:
+  [`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md).
 
 - Semantic confirmation проверен transient-вызовами реального `kimi-k3` для
   запроса «склад»: финальный planner-вызов за 26,7 с вернул

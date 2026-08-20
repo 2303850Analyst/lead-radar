@@ -165,7 +165,7 @@ function parseClaims(value: unknown): ConfirmationTokenClaims {
     !Number.isInteger(claims.iat) ||
     !Number.isInteger(claims.exp) ||
     claims.searchPlanSchemaVersion !== "2.2" ||
-    claims.semanticIntentSchemaVersion !== "2.0" ||
+    claims.semanticIntentSchemaVersion !== "2.1" ||
     !Array.isArray(claims.allowedAlternativeHashes) ||
     claims.allowedAlternativeHashes.length < 1 ||
     claims.allowedAlternativeHashes.length > 3 ||

@@ -90,7 +90,7 @@ function isNormalizedIntent(value: unknown): boolean {
 }
 
 function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
-  if (!isRecord(value) || value.schemaVersion !== "2.0") return false;
+  if (!isRecord(value) || value.schemaVersion !== "2.1") return false;
   const retrieval = value.retrievalTerms;
   const ambiguity = value.ambiguity;
   return (
@@ -265,10 +265,12 @@ function isExecutionPreview(value: unknown): boolean {
                 "normalizedGoal",
                 "coreBusinessTypes",
                 "retrievalTerms.precision",
+                "source.primaryQuery",
+                "source.relatedQueries",
               ].includes(item.origin)
             : arm.type === "legacy"
               ? item.match !== "legacy_binding" || item.origin !== "legacy"
-              : !["exact_leaf", "exact_path", "parent"].includes(item.match) ||
+          : !["exact_leaf", "exact_path", "parent"].includes(item.match) ||
                 (arm.type === "precision"
                   ? ![
                       "coreBusinessTypes",

@@ -18,6 +18,8 @@
     "eval:open-world": "tsx --conditions=react-server tests/open-world-eval.mjs",
     "eval:relevance": "tsx --conditions=react-server tests/relevance-eval.mjs",
     "eval:kimi:live": "tsx --conditions=react-server tests/kimi-live-eval.mjs",
+    "canary:search:live": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-search-live-canary.ps1",
+    "canary:search:live:run": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/canary-search-live.mjs",
     "smoke:stream": "node scripts/smoke-search-stream.mjs",
     "smoke:kimi-geoapify:live": "npm run build && node scripts/smoke-kimi-geoapify-live.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",

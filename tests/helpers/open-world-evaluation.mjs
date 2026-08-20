@@ -402,7 +402,10 @@ function compiledPlanIsGrounded(entry, plan) {
       arm.provenance.every(
         (item) =>
           item.semanticField === "fallback" &&
-          item.semanticTerm === precisionTerm &&
+          ((item.origin === "retrievalTerms.precision" &&
+            item.semanticTerm === precisionTerm) ||
+            (item.origin === "source.primaryQuery" &&
+              item.semanticTerm === plan.intent.primaryQuery)) &&
           item.match === "name_fallback",
       ),
   );

@@ -60,7 +60,7 @@
     "mixedLanguageFamilies": 20,
     "expectedCases": 500,
     "expectedPhysicalTypes": 100,
-    "expandedChecksum": "16e4b7f97824827ef19945c225660dc7a124e9b9079b25a40b7a4d707cd27b6f"
+    "expandedChecksum": "c4eed4a4b56a251f374a68ffc3bd8fa15fc194ae2682ba650e08aae1cb3fdf0b"
   },
   "physicalFamilies": [
     { "familyId": "guest-house", "split": "development", "labelRu": "гостевой дом", "providerCategoryId": "accommodation.guest_house" },

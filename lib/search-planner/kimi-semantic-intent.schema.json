@@ -22,7 +22,7 @@
     "ambiguity"
   ],
   "properties": {
-    "schemaVersion": { "const": "2.0" },
+    "schemaVersion": { "const": "2.1" },
     "normalizedGoal": { "$ref": "#/definitions/longText" },
     "entityKind": {
       "type": "string",
@@ -59,7 +59,7 @@
         },
         "recall": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "maxItems": 16,
           "uniqueItems": true,
           "items": { "$ref": "#/definitions/term" }

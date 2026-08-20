@@ -8,6 +8,8 @@ import {
 import {
   compileGeoapifySemanticIntent,
   compileGeoapifySelectors,
+  GEOAPIFY_CAPABILITY_REGISTRY,
+  GEOAPIFY_COMPILER_POLICY_VERSION,
   GEOAPIFY_PROVIDER_CATALOG_VERSION,
   type CompiledGeoapifyCapabilityPlan,
 } from "./catalogs/geoapify";
@@ -50,8 +52,8 @@ import {
   type SemanticIntentV2,
 } from "./types";
 
-export const DECISION_POLICY_VERSION = "2026-08-17.4";
-export const KIMI_PROMPT_VERSION = "semantic-intent-v2/2026-08-17.2";
+export const DECISION_POLICY_VERSION = "2026-08-20.2";
+export const KIMI_PROMPT_VERSION = "semantic-intent-v2/2026-08-17.3";
 export const SEARCH_PLAN_RUNTIME_CACHE_TTL_MS = 10 * 60 * 1_000;
 export const SEARCH_PLAN_RUNTIME_CACHE_MAX_ENTRIES = 200;
 
@@ -155,6 +157,8 @@ export function plannerInputCacheMaterial(
     schemaVersion: SEARCH_PLAN_SCHEMA_VERSION,
     taxonomyVersion: CANONICAL_TAXONOMY_VERSION,
     providerCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
+    providerCatalogChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+    compilerPolicyVersion: GEOAPIFY_COMPILER_POLICY_VERSION,
     decisionPolicyVersion: DECISION_POLICY_VERSION,
     intent: intent as unknown as CanonicalJsonValue,
   };
@@ -210,6 +214,8 @@ export async function createSemanticAlternativeHash(
   return hashCanonicalJson({
     semanticIntentSchemaVersion: SEMANTIC_INTENT_SCHEMA_VERSION,
     providerCatalogVersion: GEOAPIFY_PROVIDER_CATALOG_VERSION,
+    providerCatalogChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+    compilerPolicyVersion: GEOAPIFY_COMPILER_POLICY_VERSION,
     decisionPolicyVersion: DECISION_POLICY_VERSION,
     semanticIntent: semanticIntent as unknown as CanonicalJsonValue,
   });
@@ -225,7 +231,7 @@ async function alternativesFromIds(
     .slice(0, 3)
     .map(async (conceptId) => {
       const semanticIntent = semanticIntentForConcept(conceptId, intent);
-      const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+      const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent, intent);
       const preview = semanticExecutionPreview(capabilityPlan);
       if (!preview) return null;
       const alternativeHash = await createSemanticAlternativeHash(semanticIntent);
@@ -345,6 +351,8 @@ function planHashMaterial(draft: PlanDraft): CanonicalJsonValue {
     schemaVersion: draft.schemaVersion,
     taxonomyVersion: draft.taxonomyVersion,
     providerCatalogVersion: draft.providerCatalogVersion,
+    providerCatalogChecksum: GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+    compilerPolicyVersion: GEOAPIFY_COMPILER_POLICY_VERSION,
     decisionPolicyVersion: draft.decisionPolicyVersion,
     promptVersion: draft.promptVersion,
     requestCacheKey: draft.requestCacheKey,
@@ -632,7 +640,7 @@ export async function createSearchPlan(
       signal: options.signal,
     });
     const semanticIntent = result.semanticIntent;
-    const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent);
+    const capabilityPlan = compileGeoapifySemanticIntent(semanticIntent, intent);
     const semanticResolution = resolveDeterministically(
       compatibilityIntent(intent, semanticIntent),
     );
@@ -843,6 +851,8 @@ export async function createSearchPlanFromEnv(
     SEARCH_PLAN_SCHEMA_VERSION,
     DECISION_POLICY_VERSION,
     GEOAPIFY_PROVIDER_CATALOG_VERSION,
+    GEOAPIFY_CAPABILITY_REGISTRY.checksum,
+    GEOAPIFY_COMPILER_POLICY_VERSION,
     KIMI_PROMPT_VERSION,
     signingKeyId,
     options.confirmationTtlSeconds ?? "default-ttl",
@@ -897,7 +907,11 @@ export async function createSearchPlanFromEnv(
       ? confirmationExpiresAt
       : Number.POSITIVE_INFINITY,
   );
-  if (expiresAtMs > nowMs) {
+  if (
+    expiresAtMs > nowMs &&
+    plan.ai.validation !== "failed" &&
+    !isSearchPlannerInfrastructureFailure(plan)
+  ) {
     for (const [key, entry] of runtimePlanCache) {
       if (entry.expiresAtMs <= nowMs) {
         runtimePlanCache.delete(key);
@@ -1026,7 +1040,7 @@ export async function confirmSearchPlan(
     );
   }
   const executionPreview: SearchPlanExecutionPreview | null =
-    semanticExecutionPreview(compileGeoapifySemanticIntent(semanticIntent));
+    semanticExecutionPreview(compileGeoapifySemanticIntent(semanticIntent, intent));
   if (!executionPreview) {
     throw new ConfirmationTokenError(
       "CONFIRMATION_CONTEXT_MISMATCH",

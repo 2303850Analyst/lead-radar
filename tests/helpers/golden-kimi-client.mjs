@@ -54,7 +54,7 @@ export function createGoldenKimiClient(fixture) {
       const isAmbiguous = entry.expectedStatus === "needs_confirmation";
       const isUnsupported = entry.expectedStatus === "unsupported";
       const semanticIntent = {
-        schemaVersion: "2.0",
+        schemaVersion: "2.1",
         normalizedGoal: isUnsupported
           ? request.intent.primaryQuery
           : `найти ${coreBusinessType}`,

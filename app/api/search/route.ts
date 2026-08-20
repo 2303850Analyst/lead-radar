@@ -1179,7 +1179,7 @@ const searchOrchestrator = createSearchOrchestrator({
           plan.ai.validation === "passed" ||
           plan.resolution.selectedConceptIds.length === 0;
         const semanticSelectors = useSemanticCompiler
-          ? compileGeoapifySemanticIntent(plan.semanticIntent)
+          ? compileGeoapifySemanticIntent(plan.semanticIntent, plan.intent)
           : null;
         const legacySelectors = semanticSelectors
           ? null

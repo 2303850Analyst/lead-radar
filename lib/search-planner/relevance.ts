@@ -12,7 +12,7 @@ export const RELEVANCE_STATUSES = [
   "not_checked",
 ] as const;
 
-export const RELEVANCE_CONTRACT_VERSION = "2026-08-17.2";
+export const RELEVANCE_CONTRACT_VERSION = "2026-08-20.1";
 export const CANDIDATE_EVIDENCE_SCHEMA_VERSION = "candidate-evidence-v2";
 
 export const RELEVANCE_EVIDENCE_FIELDS = [
@@ -35,6 +35,8 @@ export type CandidateRelevanceContext = {
   precisionCategoryIds: readonly string[];
   broadCategoryIds: readonly string[];
   exclusionTerms: readonly string[];
+  /** Adjacent/name-fallback retrieval cannot prove itself via provider category. */
+  expansionOnly?: boolean;
 };
 
 export type RelevanceClassifierInput = {
@@ -201,14 +203,22 @@ export function notCheckedRelevance(
   );
 }
 
-function positiveTerms(intent: SemanticIntentV2): string[] {
-  return [
+function positiveTerms(
+  intent: SemanticIntentV2,
+  expansionOnly: boolean,
+): string[] {
+  const trustedExpansionTerms = [
     ...intent.coreBusinessTypes,
-    ...intent.productsAndServices,
-    ...intent.includeSignals,
     ...intent.retrievalTerms.precision,
-    ...intent.retrievalTerms.recall,
   ];
+  return expansionOnly
+    ? trustedExpansionTerms
+    : [
+        ...trustedExpansionTerms,
+        ...intent.includeSignals,
+        ...intent.productsAndServices,
+        ...intent.retrievalTerms.recall,
+      ];
 }
 
 export function classifyCandidateRelevance(
@@ -255,7 +265,10 @@ export function classifyCandidateRelevance(
       value: categoryId,
     }));
   const termFacts = dedupeFacts(
-    positiveTerms(context.semanticIntent).flatMap((term) =>
+    positiveTerms(
+      context.semanticIntent,
+      context.expansionOnly === true,
+    ).flatMap((term) =>
       evidenceForTerm(evidence, term),
     ),
   );

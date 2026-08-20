@@ -12,6 +12,7 @@ import type {
   RussianMetroSystemId,
 } from "../metro";
 import {
+  applyGeoapifyNativeResolution,
   GEOAPIFY_CAPABILITY_REGISTRY,
   GEOAPIFY_PROVIDER_CATALOG_VERSION,
   isGeoapifyCategoryId,
@@ -30,13 +31,20 @@ import {
   type SearchProvider,
   type SearchProviderOptions,
 } from "./types";
+import { selectGeoapifyCategoryHints } from "./geoapify-category-resolver";
 
 const GEOCODE_ENDPOINT = "https://api.geoapify.com/v1/geocode/search";
+const AUTOCOMPLETE_ENDPOINT = "https://api.geoapify.com/v1/geocode/autocomplete";
 const PLACES_ENDPOINT = "https://api.geoapify.com/v2/places";
 const PLACE_DETAILS_ENDPOINT = "https://api.geoapify.com/v2/place-details";
 const FETCH_TIMEOUT_MS = 15_000;
 const DETAILS_FETCH_TIMEOUT_MS = 8_000;
 const DETAILS_STAGE_BUDGET_MS = 15_000;
+const PLACES_STAGE_BUDGET_MS = 7_000;
+const CATEGORY_HINT_TIMEOUT_MS = 1_500;
+const MIN_CATEGORY_HINT_BUDGET_MS = 300;
+const MAX_CATEGORY_HINT_RESPONSE_BYTES = 128 * 1024;
+const MIN_RECOMMENDED_PRIMARY_RESULTS_BEFORE_FALLBACK = 10;
 const MIN_REQUEST_INTERVAL_MS = 225;
 const MAX_GEOAPIFY_RESPONSE_BYTES = 8 * 1024 * 1024;
 
@@ -115,6 +123,66 @@ type GeoapifyCollection = {
   features?: GeoapifyFeature[];
 };
 
+type GeoapifyObservedFact = {
+  externalId: string;
+  name: string | null;
+  address: string;
+  coordinates: [number, number] | null;
+  categories: string[];
+  categoryLabel: string;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
+  telegram: string | null;
+  vk: string | null;
+  detailsObserved: boolean;
+};
+
+function emitGeoapifyCanaryFacts(features: GeoapifyFeature[]): void {
+  const channel = process.env.SEARCH_CANARY_FACT_OBSERVER_CHANNEL?.trim();
+  if (
+    process.env.RUN_SEARCH_LIVE_CANARY !== "1" ||
+    !channel ||
+    !/^[a-f0-9]{64}$/.test(channel)
+  ) {
+    return;
+  }
+  const observerSymbol = Symbol.for(
+    `lead-radar.geoapify-canary-fact-observer.v1.${channel}`,
+  );
+  const observer = (
+    globalThis as unknown as Record<symbol, unknown>
+  )[observerSymbol];
+  if (typeof observer !== "function") return;
+  const facts: GeoapifyObservedFact[] = features.map((feature) => {
+    const properties = feature.properties ?? {};
+    const coordinates = featureCoordinates(feature);
+    const categories = stringArray(properties.categories).slice(0, 32);
+    const contact = detailContact(properties);
+    return {
+      externalId: externalId(feature),
+      name: placeName(feature),
+      address: placeAddress(properties),
+      coordinates,
+      categories,
+      categoryLabel: categoryLabel(categories),
+      phone: firstContactValue(properties, "phone"),
+      email: firstContactValue(properties, "email"),
+      website: safeHttpUrl(firstContactValue(properties, "website")),
+      telegram:
+        socialUrl(contact.telegram ?? contact["contact:telegram"], "telegram") ??
+        null,
+      vk: socialUrl(contact.vk ?? contact["contact:vk"], "vk") ?? null,
+      detailsObserved: properties.feature_type === "details",
+    };
+  });
+  try {
+    (observer as (facts: GeoapifyObservedFact[]) => void)(facts);
+  } catch {
+    // A diagnostic observer must never alter search behavior or error mapping.
+  }
+}
+
 export type GeoapifyMetroStationDirectory = {
   systemId: RussianMetroSystemId;
   stations: MetroStation[];
@@ -126,6 +194,11 @@ type CategoryPlan = {
   batches: CompiledGeoapifyPlan["batches"];
   limits: CompiledGeoapifyPlan["limits"];
   exclusionTerms: string[];
+};
+
+type CategoryResolutionState = {
+  status: "disabled" | "not_needed" | "resolved" | "no_match" | "degraded";
+  requests: 0 | 1;
 };
 
 type PlaceObservation = {
@@ -142,6 +215,7 @@ type DetailEnrichment = {
   properties: Record<string, unknown> | null;
   succeeded: boolean;
   temporaryFailure: boolean;
+  canonicalExternalId?: string;
 };
 
 const CATEGORY_RULES: Array<{ terms: RegExp; categories: string[] }> = [
@@ -297,6 +371,14 @@ function containsTerm(searchable: string, term: string): boolean {
   return tokens.length > 1 && tokens.every((token) => searchable.includes(token));
 }
 
+function fallbackGeocodeText(nameQuery: string, location: string): string {
+  const normalizedLocation = location.trim();
+  return normalizedLocation &&
+    !/^точка\s+на\s+карте$/iu.test(normalizedLocation)
+    ? `${nameQuery}, ${normalizedLocation}`
+    : nameQuery;
+}
+
 export function resolveGeoapifyCategories(payload: SearchPayload): CategoryPlan {
   const categoryInput = [
     payload.primaryQuery,
@@ -429,6 +511,7 @@ async function requestGeoapify(
   apiKey: string,
   timeoutMs = FETCH_TIMEOUT_MS,
   signal?: AbortSignal,
+  maxResponseBytes = MAX_GEOAPIFY_RESPONSE_BYTES,
 ): Promise<GeoapifyCollection> {
   throwIfSearchAborted(signal);
   const query = new URLSearchParams(params);
@@ -479,7 +562,7 @@ async function requestGeoapify(
     try {
       const responseText = await readBoundedResponseText(
         response,
-        MAX_GEOAPIFY_RESPONSE_BYTES,
+        maxResponseBytes,
       );
       const data: unknown = JSON.parse(responseText);
       if (!isRecord(data)) {
@@ -504,7 +587,13 @@ async function requestGeoapify(
           "GEOAPIFY_INVALID_RESPONSE",
         );
       }
-      return { features: features as GeoapifyFeature[] | undefined };
+      const collection = {
+        features: features as GeoapifyFeature[] | undefined,
+      };
+      if (collection.features?.length) {
+        emitGeoapifyCanaryFacts(collection.features);
+      }
+      return collection;
     } catch (error) {
       if (error instanceof SearchProviderError) throw error;
       throw new SearchProviderError(
@@ -662,6 +751,8 @@ function provenanceMatchesArm(
         "normalizedGoal",
         "coreBusinessTypes",
         "retrievalTerms.precision",
+        "source.primaryQuery",
+        "source.relatedQueries",
       ].includes(item.origin)
     );
   }
@@ -789,6 +880,8 @@ function compiledPlanIsCoherent(
             "adjacentBusinessTypes",
             "retrievalTerms.precision",
             "retrievalTerms.recall",
+            "source.primaryQuery",
+            "source.relatedQueries",
             "legacy",
           ].includes(item.origin) ||
           ![
@@ -805,6 +898,46 @@ function compiledPlanIsCoherent(
     flattened.push(...batch.categoryIds);
   }
   return sameStringSet(plan.categoryIds, flattened);
+}
+
+function categoryPlanFromCompiled(
+  plan: NonNullable<SearchProviderOptions["compiledPlan"]>,
+): CategoryPlan {
+  return {
+    categories: [...plan.categoryIds],
+    batches: plan.batches.map((batch) => ({
+      ...batch,
+      categoryIds: [...batch.categoryIds],
+      provenance: batch.provenance.map((item) => ({ ...item })),
+    })),
+    limits: { ...plan.limits },
+    exclusionTerms: [...plan.exclusionTerms],
+  };
+}
+
+function needsNativeCategoryResolution(
+  plan: NonNullable<SearchProviderOptions["compiledPlan"]>,
+): boolean {
+  const hasFallback = plan.batches.some(
+    (batch) => batch.type === "fallback" && Boolean(batch.nameQuery),
+  );
+  const hasNarrowProviderCategory = plan.batches.some(
+    (batch) =>
+      (["precision", "recall", "legacy"] as const).includes(
+        batch.type as "precision" | "recall" | "legacy",
+      ) &&
+      batch.provenance.some(
+        (item) =>
+          ["exact_leaf", "exact_path", "legacy_binding"].includes(item.match) &&
+          [
+            "coreBusinessTypes",
+            "retrievalTerms.precision",
+            "retrievalTerms.recall",
+            "legacy",
+          ].includes(item.origin),
+      ),
+  );
+  return hasFallback && !hasNarrowProviderCategory;
 }
 
 type MetroStationObservation = {
@@ -1249,9 +1382,16 @@ function placeAddress(properties: Record<string, unknown>): string {
 function externalId(feature: GeoapifyFeature): string {
   const properties = feature.properties ?? {};
   return (
-    stringValue(properties.place_id, 500) ??
-    stringValue(feature.id, 500) ??
+    explicitExternalId(feature) ??
     `${placeName(feature) ?? "place"}:${placeAddress(properties)}`
+  );
+}
+
+function explicitExternalId(feature: GeoapifyFeature): string | null {
+  return (
+    stringValue(feature.properties?.place_id, 500) ??
+    stringValue(feature.id, 500) ??
+    null
   );
 }
 
@@ -1283,10 +1423,16 @@ function candidateEvidence(
   candidateId: string,
 ): CandidateEvidence {
   const properties = observation.feature.properties ?? {};
+  const expansionOnly = observation.retrievalArms.every(
+    (arm) => arm.type === "fallback" || arm.type === "adjacent",
+  );
   return {
     candidateId,
     name: placeName(observation.feature),
-    providerCategoryIds: [...observation.providerCategoryIds],
+    // A category obtained through the same fallback that retrieved the card is
+    // not independent evidence. Text can still support it, while exact/recall
+    // arms retain their observed provider categories.
+    providerCategoryIds: expansionOnly ? [] : [...observation.providerCategoryIds],
     locality:
       stringValue(properties.city, 120) ??
       stringValue(properties.town, 120) ??
@@ -1302,7 +1448,7 @@ function relevanceIntent(
 ): SemanticIntentV2 {
   if (provided) return provided;
   return {
-    schemaVersion: "2.0",
+    schemaVersion: "2.1",
     normalizedGoal: payload.description || payload.primaryQuery,
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -1431,6 +1577,9 @@ async function enrichPlace(
       properties: detailFeature?.properties ?? null,
       succeeded: Boolean(detailFeature?.properties),
       temporaryFailure: false,
+      ...(detailFeature
+        ? { canonicalExternalId: explicitExternalId(detailFeature) ?? undefined }
+        : {}),
     };
   } catch (error) {
     if (error instanceof SearchProviderError && isFatalDetailError(error)) {
@@ -1749,18 +1898,17 @@ export class GeoapifyProvider implements SearchProvider {
         "GEOAPIFY_INVALID_COMPILED_PLAN",
       );
     }
-    const categoryPlan = compiledPlan
-      ? {
-          categories: [...compiledPlan.categoryIds],
-          batches: compiledPlan.batches.map((batch) => ({
-            ...batch,
-            categoryIds: [...batch.categoryIds],
-            provenance: batch.provenance.map((item) => ({ ...item })),
-          })),
-          limits: { ...compiledPlan.limits },
-          exclusionTerms: [...compiledPlan.exclusionTerms],
-        }
+    let categoryPlan = compiledPlan
+      ? categoryPlanFromCompiled(compiledPlan)
       : resolveGeoapifyCategories(payload);
+    let categoryResolution: CategoryResolutionState = {
+      status:
+        process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED === "true"
+          ? "not_needed"
+          : "disabled",
+      requests: 0,
+    };
+    let resolvedFallbackArmId: string | null = null;
     if (
       !categoryPlan.categories.length ||
       !categoryPlan.batches.length ||
@@ -1820,6 +1968,77 @@ export class GeoapifyProvider implements SearchProvider {
         message: "География поиска определена",
       });
     }
+    if (
+      compiledPlan &&
+      options.semanticIntent &&
+      process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED === "true" &&
+      needsNativeCategoryResolution(compiledPlan)
+    ) {
+      const fallback = compiledPlan.batches.find(
+        (batch) => batch.type === "fallback" && Boolean(batch.nameQuery),
+      );
+      const hintTimeoutMs =
+        options.runtime?.stageTimeoutMs(
+          CATEGORY_HINT_TIMEOUT_MS,
+          PLACES_STAGE_BUDGET_MS + NORMALIZATION_RESERVE_MS,
+        ) ?? CATEGORY_HINT_TIMEOUT_MS;
+      if (!fallback?.nameQuery || hintTimeoutMs < MIN_CATEGORY_HINT_BUDGET_MS) {
+        categoryResolution = { status: "degraded", requests: 0 };
+      } else {
+        try {
+          categoryResolution = { status: "no_match", requests: 1 };
+          const hints = await requestGeoapify(
+            AUTOCOMPLETE_ENDPOINT,
+            {
+              text: fallback.nameQuery,
+              type: "amenity",
+              filter: `circle:${center[0]},${center[1]},${Math.round(
+                payload.radiusKm * 1_000,
+              )}`,
+              bias: `proximity:${center[0]},${center[1]}`,
+              lang: language,
+              format: "geojson",
+              limit: "5",
+            },
+            apiKey,
+            Math.min(CATEGORY_HINT_TIMEOUT_MS, hintTimeoutMs),
+            options.signal,
+            MAX_CATEGORY_HINT_RESPONSE_BYTES,
+          );
+          const hintedCategoryIds = selectGeoapifyCategoryHints(
+            hints.features ?? [],
+            {
+              center,
+              radiusMeters: payload.radiusKm * 1_000,
+              countryCode,
+            },
+          );
+          if (hintedCategoryIds.length) {
+            const refined = applyGeoapifyNativeResolution(
+              compiledPlan,
+              hintedCategoryIds,
+            );
+            const resolvedFallback = refined.batches.find(
+              (batch) => batch.type === "fallback",
+            );
+            if (resolvedFallback && resolvedFallback.id !== fallback.id) {
+              categoryPlan = categoryPlanFromCompiled(refined);
+              resolvedFallbackArmId = resolvedFallback.id;
+              categoryResolution = { status: "resolved", requests: 1 };
+            }
+          }
+        } catch (error) {
+          if (options.signal?.aborted) throw abortedSearchError();
+          if (
+            error instanceof SearchProviderError &&
+            error.code === "GEOAPIFY_FORBIDDEN"
+          ) {
+            throw error;
+          }
+          categoryResolution = { status: "degraded", requests: 1 };
+        }
+      }
+    }
     const observations = new Map<string, PlaceObservation>();
     const observationIdsByIdentity = new Map<string, string[]>();
     let cardsFound = 0;
@@ -1836,6 +2055,50 @@ export class GeoapifyProvider implements SearchProvider {
     const retrievalArms = categoryPlan.batches
       .slice(0, Math.min(categoryPlan.limits.maxArms, MAX_RETRIEVAL_ARMS))
       .sort((left, right) => left.priority - right.priority);
+    const acceptedIntent = relevanceIntent(payload, options.semanticIntent);
+    const precisionCategoryIds = [
+      ...new Set(
+        retrievalArms
+          .filter(
+            (arm) => arm.mode === "precision" && arm.type !== "fallback",
+          )
+          .flatMap((arm) =>
+            arm.provenance
+              .filter((item) => item.match !== "parent")
+              .map((item) => item.categoryId),
+          ),
+      ),
+    ];
+    const broadCategoryIds = [
+      ...new Set(
+        retrievalArms
+          .filter((arm) => arm.role === "primary")
+          .flatMap((arm) =>
+            arm.mode === "broad" && arm.type !== "fallback"
+              ? arm.categoryIds
+              : arm.provenance
+                  .filter((item) => item.match === "parent")
+                  .map((item) => item.categoryId),
+          ),
+      ),
+    ];
+    const recommendedPrimaryCount = () =>
+      [...observations.values()].filter((observation, index) => {
+        if (!observation.retrievalArms.some((arm) => arm.role === "primary")) {
+          return false;
+        }
+        const relevance = classifyCandidateRelevance(
+          candidateEvidence(observation, `preflight-${index + 1}`),
+          {
+            semanticIntent: acceptedIntent,
+            precisionCategoryIds,
+            broadCategoryIds,
+            exclusionTerms: effectiveExclusions,
+            expansionOnly: false,
+          },
+        );
+        return relevance.status === "matched" || relevance.status === "maybe";
+      }).length;
     let completedRetrievalArms = 0;
     await reportProgress({
       stage: "places",
@@ -1845,10 +2108,17 @@ export class GeoapifyProvider implements SearchProvider {
       total: retrievalArms.length,
     });
     const placesBudget = options.runtime?.beginStage(
-      7_000,
+      PLACES_STAGE_BUDGET_MS,
       NORMALIZATION_RESERVE_MS,
     );
     for (const categoryBatch of retrievalArms) {
+      if (
+        categoryBatch.type === "fallback" &&
+        recommendedPrimaryCount() >=
+          MIN_RECOMMENDED_PRIMARY_RESULTS_BEFORE_FALLBACK
+      ) {
+        continue;
+      }
       if (
         upstreamRequests >=
           Math.min(categoryPlan.limits.maxUpstreamRequests, MAX_RETRIEVAL_REQUESTS) ||
@@ -1865,8 +2135,15 @@ export class GeoapifyProvider implements SearchProvider {
         remainingCards,
       );
       if (requestLimit < 1) break;
+      const isNameFallback =
+        categoryBatch.type === "fallback" &&
+        Boolean(categoryBatch.nameQuery) &&
+        categoryBatch.id !== resolvedFallbackArmId;
+      const isResolvedNativeFallback =
+        categoryBatch.type === "fallback" &&
+        Boolean(categoryBatch.nameQuery) &&
+        categoryBatch.id === resolvedFallbackArmId;
       const requestParameters: Record<string, string> = {
-        categories: categoryIds.join(","),
         filter: `circle:${center[0]},${center[1]},${Math.round(
           payload.radiusKm * 1_000,
         )}`,
@@ -1874,12 +2151,23 @@ export class GeoapifyProvider implements SearchProvider {
         lang: language,
         limit: String(requestLimit),
       };
-      if (categoryBatch.type === "fallback" && categoryBatch.nameQuery) {
-        requestParameters.name = categoryBatch.nameQuery;
+      if (isNameFallback) {
+        // A free-text intent that does not map to a provider category must not
+        // be broadened to several root categories. Geoapify's forward geocoder
+        // resolves named amenities directly and returns the same GeoJSON feature
+        // shape, so the common dedupe/relevance/enrichment pipeline stays intact.
+        requestParameters.text = fallbackGeocodeText(
+          categoryBatch.nameQuery!,
+          payload.location,
+        );
+        requestParameters.type = "amenity";
+        requestParameters.format = "geojson";
+      } else {
+        requestParameters.categories = categoryIds.join(",");
       }
       const placesTimeoutMs = placesBudget
-        ? placesBudget.timeoutMs(7_000)
-        : 7_000;
+        ? placesBudget.timeoutMs(PLACES_STAGE_BUDGET_MS)
+        : PLACES_STAGE_BUDGET_MS;
       if (placesTimeoutMs < 1) {
         if (observations.size > 0) {
           markDegraded("places", "STAGE_BUDGET_EXHAUSTED");
@@ -1889,14 +2177,58 @@ export class GeoapifyProvider implements SearchProvider {
       }
       let collection: GeoapifyCollection;
       try {
+        upstreamRequests += 1;
         collection = await requestGeoapify(
-          PLACES_ENDPOINT,
+          isNameFallback ? GEOCODE_ENDPOINT : PLACES_ENDPOINT,
           requestParameters,
           apiKey,
           placesTimeoutMs,
           options.signal,
         );
       } catch (error) {
+        const canFailSoft =
+          isResolvedNativeFallback &&
+          error instanceof SearchProviderError &&
+          [
+            "GEOAPIFY_TIMEOUT",
+            "GEOAPIFY_UPSTREAM_ERROR",
+            "GEOAPIFY_NETWORK_ERROR",
+            "GEOAPIFY_INVALID_RESPONSE",
+          ].includes(error.code) &&
+          upstreamRequests <
+            Math.min(
+              categoryPlan.limits.maxUpstreamRequests,
+              MAX_RETRIEVAL_REQUESTS,
+            );
+        if (canFailSoft) {
+          const fallbackTimeoutMs = placesBudget
+            ? placesBudget.timeoutMs(PLACES_STAGE_BUDGET_MS)
+            : PLACES_STAGE_BUDGET_MS;
+          if (fallbackTimeoutMs >= 1) {
+            upstreamRequests += 1;
+            collection = await requestGeoapify(
+              GEOCODE_ENDPOINT,
+              {
+                filter: requestParameters.filter,
+                bias: requestParameters.bias,
+                lang: requestParameters.lang,
+                limit: requestParameters.limit,
+                text: fallbackGeocodeText(
+                  categoryBatch.nameQuery!,
+                  payload.location,
+                ),
+                type: "amenity",
+                format: "geojson",
+              },
+              apiKey,
+              fallbackTimeoutMs,
+              options.signal,
+            );
+            categoryResolution = { status: "degraded", requests: 1 };
+          } else {
+            throw error;
+          }
+        } else {
         if (
           options.runtime &&
           observations.size > 0 &&
@@ -1907,8 +2239,45 @@ export class GeoapifyProvider implements SearchProvider {
           break;
         }
         throw error;
+        }
       }
-      upstreamRequests += 1;
+      if (
+        isResolvedNativeFallback &&
+        !(collection.features ?? []).some(
+          (feature) => placeName(feature) && isCountryPlace(feature, countryCode),
+        ) &&
+        upstreamRequests <
+          Math.min(
+            categoryPlan.limits.maxUpstreamRequests,
+            MAX_RETRIEVAL_REQUESTS,
+          )
+      ) {
+        const fallbackTimeoutMs = placesBudget
+          ? placesBudget.timeoutMs(PLACES_STAGE_BUDGET_MS)
+          : PLACES_STAGE_BUDGET_MS;
+        if (fallbackTimeoutMs >= 1) {
+          upstreamRequests += 1;
+          collection = await requestGeoapify(
+            GEOCODE_ENDPOINT,
+            {
+              filter: requestParameters.filter,
+              bias: requestParameters.bias,
+              lang: requestParameters.lang,
+              limit: requestParameters.limit,
+              text: fallbackGeocodeText(
+                categoryBatch.nameQuery!,
+                payload.location,
+              ),
+              type: "amenity",
+              format: "geojson",
+            },
+            apiKey,
+            fallbackTimeoutMs,
+            options.signal,
+          );
+          categoryResolution = { status: "degraded", requests: 1 };
+        }
+      }
       const receivedFeatures = (collection.features ?? []).slice(0, requestLimit);
       cardsFound += receivedFeatures.length;
       const armObservation: LeadRetrievalArm = {
@@ -2012,25 +2381,6 @@ export class GeoapifyProvider implements SearchProvider {
       completed: 0,
       total: namedPlaces.length,
     });
-    const acceptedIntent = relevanceIntent(payload, options.semanticIntent);
-    const precisionCategoryIds = [
-      ...new Set(
-        retrievalArms
-          .filter(
-            (arm) => arm.mode === "precision" && arm.type !== "fallback",
-          )
-          .flatMap((arm) => arm.categoryIds),
-      ),
-    ];
-    const broadCategoryIds = [
-      ...new Set(
-        retrievalArms
-          .filter(
-            (arm) => arm.mode === "broad" || arm.type === "fallback",
-          )
-          .flatMap((arm) => arm.categoryIds),
-      ),
-    ];
     const evidenceById = new Map<string, CandidateEvidence>();
     const externalIdByCandidateId = new Map<string, string>();
     const relevanceById = new Map<string, LeadRelevance>();
@@ -2048,6 +2398,9 @@ export class GeoapifyProvider implements SearchProvider {
           precisionCategoryIds,
           broadCategoryIds,
           exclusionTerms: effectiveExclusions,
+          expansionOnly: observation.retrievalArms.every(
+            (arm) => arm.type === "fallback" || arm.type === "adjacent",
+          ),
         }),
       );
     }
@@ -2281,7 +2634,14 @@ export class GeoapifyProvider implements SearchProvider {
     });
     const detailsById = new Map<string, DetailEnrichment>();
     detailTargets.forEach((observation, index) => {
-      detailsById.set(observation.externalId, detailResults[index]);
+      const enrichment = detailResults[index];
+      detailsById.set(observation.externalId, enrichment);
+      if (
+        enrichment.canonicalExternalId &&
+        !observation.externalIds.includes(enrichment.canonicalExternalId)
+      ) {
+        observation.externalIds.push(enrichment.canonicalExternalId);
+      }
     });
     const detailsSucceeded = detailResults.filter((result) => result.succeeded).length;
 
@@ -2303,7 +2663,25 @@ export class GeoapifyProvider implements SearchProvider {
           notCheckedRelevance(observation.externalId),
       );
     });
-    leads.sort((left, right) => right.scores.opportunity - left.scores.opportunity);
+    const relevancePriority: Record<LeadRelevance["status"], number> = {
+      matched: 0,
+      maybe: 1,
+      not_checked: 2,
+      rejected: 3,
+    };
+    const textEvidenceCount = (lead: Lead) =>
+      lead.relevance?.evidence.filter(
+        (fact) => fact.field === "name" || fact.field === "sourceDescription",
+      ).length ?? 0;
+    leads.sort(
+      (left, right) =>
+        relevancePriority[left.relevance?.status ?? "not_checked"] -
+          relevancePriority[right.relevance?.status ?? "not_checked"] ||
+        textEvidenceCount(right) - textEvidenceCount(left) ||
+        (right.relevance?.confidence ?? -1) -
+          (left.relevance?.confidence ?? -1) ||
+        right.scores.opportunity - left.scores.opportunity,
+    );
     const foundByPrimary = leads.filter((lead) => lead.discovery.primaryFound).length;
     const foundOnlyExpanded = leads.length - foundByPrimary;
     const generatedAt = new Date().toISOString();
@@ -2328,6 +2706,7 @@ export class GeoapifyProvider implements SearchProvider {
         },
         coverage: {
           categories: categoryPlan.categories,
+          categoryResolution,
           retrievalArms: retrievalArms.length,
           upstreamRequests,
           cardsAccepted: observations.size,

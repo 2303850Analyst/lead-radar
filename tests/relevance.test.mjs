@@ -13,7 +13,7 @@ import {
 } from "../lib/search-planner/relevance.ts";
 
 const semanticIntent = {
-  schemaVersion: "2.0",
+  schemaVersion: "2.1",
   normalizedGoal: "найти спортивные залы для взрослых",
   entityKind: "physical_business",
   physicalLocationRequirement: "required",
@@ -191,6 +191,93 @@ test("a broad category cannot count twice as category and independent text evide
   assert.deepEqual(result.reasonCodes, ["PARTIAL_EVIDENCE_MATCH"]);
 });
 
+test("expansion-only retrieval requires a core text signal", () => {
+  const withoutCoreEvidence = classifyCandidateRelevance(
+    {
+      candidateId: "fallback-spa",
+      name: "Мужской клуб",
+      providerCategoryIds: [],
+      locality: "Екатеринбург",
+      sourceDescription: null,
+    },
+    {
+      ...relevanceContext,
+      expansionOnly: true,
+      semanticIntent: {
+        ...semanticIntent,
+        coreBusinessTypes: ["massage studio"],
+        includeSignals: ["massage"],
+        productsAndServices: ["spa treatment"],
+        retrievalTerms: {
+          precision: ["massage studio", "студия массажа"],
+          recall: ["spa", "wellness"],
+          exclude: [],
+        },
+      },
+    },
+  );
+  assert.equal(withoutCoreEvidence.status, "not_checked");
+
+  const withCoreEvidence = classifyCandidateRelevance(
+    {
+      candidateId: "fallback-massage",
+      name: "Студия массажа на Ленина",
+      providerCategoryIds: [],
+      locality: "Екатеринбург",
+      sourceDescription: null,
+    },
+    {
+      ...relevanceContext,
+      expansionOnly: true,
+      semanticIntent: {
+        ...semanticIntent,
+        coreBusinessTypes: ["massage studio"],
+        includeSignals: ["массаж"],
+        retrievalTerms: {
+          precision: ["студия массажа"],
+          recall: ["spa"],
+          exclude: [],
+        },
+      },
+    },
+  );
+  assert.equal(withCoreEvidence.status, "maybe");
+  assert.deepEqual(withCoreEvidence.evidence, [
+    { field: "name", value: "Студия массажа на Ленина" },
+  ]);
+});
+
+test("expansion-only retrieval does not promote adjacent include signals", () => {
+  const result = classifyCandidateRelevance(
+    {
+      candidateId: "fallback-spa-wellness",
+      name: "SPA Wellness",
+      providerCategoryIds: [],
+      locality: "Новосибирск",
+      sourceDescription: null,
+    },
+    {
+      ...relevanceContext,
+      expansionOnly: true,
+      semanticIntent: {
+        ...semanticIntent,
+        coreBusinessTypes: ["tanning salon"],
+        adjacentBusinessTypes: ["spa"],
+        includeSignals: ["spa"],
+        productsAndServices: ["spa treatment"],
+        retrievalTerms: {
+          precision: ["tanning salon"],
+          recall: ["spa"],
+          exclude: [],
+        },
+      },
+    },
+  );
+
+  assert.equal(result.status, "not_checked");
+  assert.deepEqual(result.evidence, []);
+});
+
 test("classifier evidence outside CandidateEvidence fails closed", () => {
   const evidence = {
     candidateId: "candidate-1",
@@ -294,6 +381,9 @@ test("Geoapify classifies after dedupe and enriches only matched or maybe cards"
 
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname === "/v1/geocode/search") {
+      return Response.json({ type: "FeatureCollection", features: [] });
+    }
     if (url.pathname === "/v2/places") {
       return Response.json({
         type: "FeatureCollection",
@@ -432,6 +522,9 @@ test("Geoapify skips optional classifier and Details when the global budget is e
   process.env.KIMI_LEAD_CLASSIFICATION_ENABLED = "true";
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname === "/v1/geocode/search") {
+      return Response.json({ type: "FeatureCollection", features: [] });
+    }
     if (url.pathname === "/v2/places") {
       return Response.json({
         type: "FeatureCollection",
@@ -561,6 +654,9 @@ test("Geoapify pacing, Places arms and Details waves share their stage budgets",
 
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname === "/v1/geocode/search") {
+      return Response.json({ type: "FeatureCollection", features: [] });
+    }
     if (url.pathname === "/v2/places") {
       placesCalls += 1;
       return Response.json({
@@ -694,6 +790,9 @@ test("optional classifier failure keeps cards as not_checked without enrichment"
 
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname === "/v1/geocode/search") {
+      return Response.json({ type: "FeatureCollection", features: [] });
+    }
     if (url.pathname === "/v2/places") {
       return Response.json({
         type: "FeatureCollection",
@@ -757,6 +856,16 @@ test("optional classifier failure keeps cards as not_checked without enrichment"
       },
     );
 
+    assert.ok(
+      classifierInput,
+      JSON.stringify(
+        result.leads.map((lead) => ({
+          name: lead.name,
+          relevance: lead.relevance,
+          retrieval: lead.discovery.retrieval,
+        })),
+      ),
+    );
     assert.deepEqual(
       Object.keys(classifierInput.candidates[0]).sort(),
       ["candidateId", "locality", "name", "providerCategoryIds", "sourceDescription"],

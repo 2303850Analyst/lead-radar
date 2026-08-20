@@ -3,10 +3,12 @@ import {
   type CanonicalConceptId,
   getCanonicalConcept,
 } from "../taxonomy";
-import type { SemanticIntentV2 } from "../types";
+import type { NormalizedSearchIntent, SemanticIntentV2 } from "../types";
 import capabilitySnapshot from "./geoapify-categories.snapshot.json";
 
 export const GEOAPIFY_PROVIDER_CATALOG_VERSION = capabilitySnapshot.catalogVersion;
+export const GEOAPIFY_COMPILER_POLICY_VERSION =
+  "semantic-retrieval-v2/2026-08-20.4";
 
 /**
  * Full provider capability registry captured from Geoapify's official Places
@@ -102,7 +104,9 @@ export type GeoapifyCapabilityProvenance = {
     | "industries"
     | "adjacentBusinessTypes"
     | "retrievalTerms.precision"
-    | "retrievalTerms.recall";
+    | "retrievalTerms.recall"
+    | "source.primaryQuery"
+    | "source.relatedQueries";
   match: "exact_leaf" | "exact_path" | "parent" | "name_fallback";
   categoryId: string;
 };
@@ -191,6 +195,14 @@ export function compileGeoapifySelectors(
 
 const MAX_CATEGORIES_PER_BATCH = 8;
 const MAX_TERM_CACHE_ENTRIES = 500;
+const GENERIC_BUSINESS_SUFFIXES = new Set([
+  "clinic",
+  "company",
+  "office",
+  "shop",
+  "store",
+  "studio",
+]);
 
 function normalizedCapabilityToken(value: string): string {
   const token = value.toLocaleLowerCase("en-US");
@@ -217,6 +229,61 @@ function normalizedCapabilityPhrase(value: string): string {
   return capabilityTokens(value).join(" ");
 }
 
+function semanticCapabilityPhrases(value: string): string[] {
+  const tokens = capabilityTokens(value);
+  if (!tokens.length) return [];
+  const expandedTokens =
+    tokens.length === 1
+      ? (() => {
+          const token = tokens[0];
+          const suffix = ["store", "shop"].find(
+            (candidate) =>
+              token.endsWith(candidate) &&
+              token.length >= candidate.length + 3,
+          );
+          if (!suffix) return tokens;
+          const stem = normalizedCapabilityToken(
+            token.slice(0, -suffix.length),
+          );
+          return stem.length >= 3 ? [stem, suffix] : tokens;
+        })()
+      : tokens;
+  const variants = [tokens];
+  if (expandedTokens.join(" ") !== tokens.join(" ")) {
+    variants.push(expandedTokens);
+  }
+  const phrases: string[] = [];
+  for (const variant of variants) {
+    phrases.push(variant.join(" "));
+    let end = variant.length;
+    while (end > 1 && GENERIC_BUSINESS_SUFFIXES.has(variant[end - 1])) {
+      end -= 1;
+      phrases.push(variant.slice(0, end).join(" "));
+    }
+  }
+  return [...new Set(phrases)];
+}
+
+function commercialRetailStem(value: string): string | null {
+  const tokens = capabilityTokens(value);
+  if (!tokens.length) return null;
+  if (
+    tokens.length >= 2 &&
+    (tokens.at(-1) === "store" || tokens.at(-1) === "shop")
+  ) {
+    return tokens.slice(0, -1).join(" ");
+  }
+  if (tokens.length !== 1) return null;
+  const token = tokens[0];
+  const suffix = ["store", "shop"].find(
+    (candidate) =>
+      token.endsWith(candidate) && token.length >= candidate.length + 3,
+  );
+  return suffix
+    ? normalizedCapabilityToken(token.slice(0, -suffix.length))
+    : null;
+}
+
 type CapabilityCandidate = {
   categoryId: string;
   score: number;
@@ -233,7 +300,6 @@ type IndexedCapability = {
   segments: string[];
   leafPhrase: string;
   pathPhrase: string;
-  pathTokens: Set<string>;
   hasChildren: boolean;
 };
 
@@ -243,6 +309,10 @@ const CAPABILITY_PARENT_IDS = new Set(
     return segments.slice(1).map((_, index) => segments.slice(0, index + 1).join("."));
   }),
 );
+
+export function isGeoapifyLeafCategoryId(value: string): boolean {
+  return isGeoapifyCategoryId(value) && !CAPABILITY_PARENT_IDS.has(value);
+}
 const CAPABILITY_INDEX: readonly IndexedCapability[] = GEOAPIFY_CATEGORY_IDS.map(
   (categoryId) => {
     const segments = categoryId.split(".");
@@ -252,7 +322,6 @@ const CAPABILITY_INDEX: readonly IndexedCapability[] = GEOAPIFY_CATEGORY_IDS.map
       segments,
       leafPhrase: normalizedCapabilityPhrase(segments.at(-1) ?? ""),
       pathPhrase,
-      pathTokens: new Set(pathPhrase.split(" ").filter(Boolean)),
       hasChildren: CAPABILITY_PARENT_IDS.has(categoryId),
     };
   },
@@ -278,10 +347,11 @@ function candidatesForTerm(
   semanticTerm: string,
   origin: GeoapifyCapabilityProvenance["origin"],
 ): CapabilityCandidate[] {
-  const termPhrase = normalizedCapabilityPhrase(semanticTerm);
-  const termTokens = termPhrase.split(" ").filter(Boolean);
-  if (!termPhrase || !termTokens.length) return [];
-  const cached = CAPABILITY_TERM_CACHE.get(termPhrase);
+  const termPhrases = semanticCapabilityPhrases(semanticTerm);
+  const retailStem = commercialRetailStem(semanticTerm);
+  const cacheKey = termPhrases.join("\u001e");
+  if (!termPhrases.length) return [];
+  const cached = CAPABILITY_TERM_CACHE.get(cacheKey);
   if (cached) {
     return cached.map((candidate) => ({
       categoryId: candidate.categoryId,
@@ -298,39 +368,63 @@ function candidatesForTerm(
   const baseCandidates: Array<
     Omit<CapabilityCandidate, "provenance"> & { match: GeoapifyCapabilityProvenance["match"] }
   > = [];
-  const exactLeafMatches = CAPABILITY_INDEX.filter(
-    (entry) => entry.leafPhrase === termPhrase,
-  );
-  const rootMatch = exactLeafMatches.find((entry) => entry.segments.length === 1);
+  for (const [phraseIndex, termPhrase] of termPhrases.entries()) {
+    const termTokens = termPhrase.split(" ").filter(Boolean);
+    const exactLeafMatches = CAPABILITY_INDEX.filter(
+      (entry) => entry.leafPhrase === termPhrase,
+    );
+    const rootMatch = exactLeafMatches.find((entry) => entry.segments.length === 1);
+    const phraseCandidates: typeof baseCandidates = [];
 
-  for (const entry of CAPABILITY_INDEX) {
-    const { categoryId, segments, leafPhrase, pathPhrase, pathTokens, hasChildren } = entry;
-    // Top-level provider roots are too broad to be actionable lead searches.
-    if (segments.length === 1) continue;
-    let match: GeoapifyCapabilityProvenance["match"] | null = null;
-    let score = 0;
-    if (termPhrase === leafPhrase) {
-      if (termTokens.length === 1 && rootMatch) continue;
-      match = hasChildren ? "parent" : "exact_leaf";
-      score = hasChildren ? 100 - segments.length : 110 + segments.length;
-    } else if (termPhrase === pathPhrase) {
-      match = "exact_path";
-      score = 105 + segments.length;
-    } else if (
-      termTokens.length >= 2 &&
-      termTokens.every((token) => pathTokens.has(token))
-    ) {
-      match = segments.length <= 2 ? "parent" : "exact_path";
-      score = 70 + termTokens.length * 5 + segments.length;
+    for (const entry of CAPABILITY_INDEX) {
+      const { categoryId, segments, leafPhrase, pathPhrase, hasChildren } = entry;
+      // Top-level provider roots are too broad to be actionable lead searches.
+      if (segments.length === 1) continue;
+      let match: GeoapifyCapabilityProvenance["match"] | null = null;
+      let score = 0;
+      if (termPhrase === leafPhrase) {
+        if (termTokens.length === 1 && rootMatch) continue;
+        match = hasChildren ? "parent" : "exact_leaf";
+        score = hasChildren ? 100 - segments.length : 110 + segments.length;
+      } else if (termPhrase === pathPhrase) {
+        match = "exact_path";
+        score = 105 + segments.length;
+      }
+      if (!match) continue;
+      phraseCandidates.push({
+        categoryId,
+        score: score - phraseIndex,
+        match,
+      });
     }
-    if (!match) continue;
-    baseCandidates.push({
-      categoryId,
-      score,
-      match,
-    });
+    const acceptedPhraseCandidates =
+      phraseIndex === 0
+        ? phraseCandidates
+        : (() => {
+            const exactDerived = phraseCandidates.filter(
+              (candidate) =>
+                candidate.match === "exact_leaf" ||
+                candidate.match === "exact_path",
+            );
+            const scopedDerived =
+              retailStem === termPhrase
+                ? exactDerived.filter((candidate) =>
+                    candidate.categoryId.startsWith("commercial."),
+                  )
+                : exactDerived;
+            return new Set(scopedDerived.map((candidate) => candidate.categoryId))
+              .size === 1
+              ? scopedDerived
+              : [];
+          })();
+    baseCandidates.push(...acceptedPhraseCandidates);
+    // Generic suffix removal is a fallback, never a competing signal against
+    // a complete provider phrase such as "music school" or "fitness centre".
+    // It may narrow only to one exact leaf; ambiguous parents such as
+    // "beauty" or multi-branch leaves such as "spa" stay open.
+    if (acceptedPhraseCandidates.length) break;
   }
-  rememberTermCandidates(termPhrase, baseCandidates);
+  rememberTermCandidates(cacheKey, baseCandidates);
   return baseCandidates.map((candidate) => ({
     categoryId: candidate.categoryId,
     score: candidate.score,
@@ -392,6 +486,108 @@ function compactNameQuery(value: string): string | null {
   return normalized.length >= 2 ? normalized : null;
 }
 
+const SOURCE_QUERY_CONTROL_BOUNDARY =
+  /```|[\r\n]+|[.;{}]+|(?:^|\s)(?:ignore(?:\s+(?:all|previous))?\s+(?:rules|instructions)|system(?:\s+(?:override|category|instruction)|\s*:)|игнорируй(?:те)?\s+(?:правила|инструкции)|верни(?:те)?\s+(?:url|json)|выведи(?:те)?|придумай(?:те)?|сгенерируй(?:те)?|отключи(?:те)?)(?=\s|$)/iu;
+
+const UNSAFE_SOURCE_QUERY_FRAGMENT =
+  /(?:[a-z][a-z0-9+.-]*:\/\/|\b(?:api\s*key|token|system\s*:|category\s*=|concept\s*id)\b)/iu;
+
+function compactSourceNameQuery(value: string): string | null {
+  const safePrefix = value.split(SOURCE_QUERY_CONTROL_BOUNDARY, 1)[0] ?? "";
+  const compact = compactNameQuery(safePrefix);
+  return compact && !UNSAFE_SOURCE_QUERY_FRAGMENT.test(compact) ? compact : null;
+}
+
+const GENERIC_NAME_TOKENS = new Set([
+  "business",
+  "center",
+  "centre",
+  "clinic",
+  "company",
+  "service",
+  "services",
+  "shop",
+  "studio",
+  "бизнес",
+  "компания",
+  "магазин",
+  "салон",
+  "сервис",
+  "студия",
+  "услуга",
+  "услуги",
+  "центр",
+]);
+
+function usefulFallbackName(value: string): boolean {
+  const tokens = value
+    .toLocaleLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+  return tokens.some((token) => !GENERIC_NAME_TOKENS.has(token));
+}
+
+function fallbackNameSource(
+  semanticIntent: SemanticIntentV2,
+  sourceIntent?: Pick<NormalizedSearchIntent, "primaryQuery" | "relatedQueries">,
+): CapabilityTerm | null {
+  const sourcePrimary = sourceIntent?.primaryQuery
+    ? compactSourceNameQuery(sourceIntent.primaryQuery)
+    : null;
+  const primaryWords = sourcePrimary?.split(/\s+/).length ?? 0;
+  if (
+    sourcePrimary &&
+    usefulFallbackName(sourcePrimary) &&
+    primaryWords <= 3
+  ) {
+    return { term: sourcePrimary, origin: "source.primaryQuery" };
+  }
+  const relatedCandidates = (sourceIntent?.relatedQueries ?? [])
+    .flatMap((value) => {
+      const term = compactSourceNameQuery(value);
+      return term && usefulFallbackName(term) ? [term] : [];
+    })
+    .sort((left, right) => {
+      const leftWords = left.split(/\s+/).length;
+      const rightWords = right.split(/\s+/).length;
+      return (
+        leftWords - rightWords ||
+        left.length - right.length ||
+        left.localeCompare(right, "ru")
+      );
+    });
+  if (relatedCandidates[0]) {
+    return {
+      term: relatedCandidates[0],
+      origin: "source.relatedQueries",
+    };
+  }
+  if (sourcePrimary && usefulFallbackName(sourcePrimary)) {
+    return { term: sourcePrimary, origin: "source.primaryQuery" };
+  }
+
+  const candidates: CapabilityTerm[] = [
+    ...capabilityTerms(
+      semanticIntent.retrievalTerms.precision,
+      "retrievalTerms.precision",
+    ),
+    ...capabilityTerms(semanticIntent.coreBusinessTypes, "coreBusinessTypes"),
+  ];
+  const normalized = candidates.flatMap((candidate) => {
+    const term = compactNameQuery(candidate.term);
+    return term ? [{ ...candidate, term }] : [];
+  });
+  const trustedSemantic = normalized.find((candidate) =>
+    usefulFallbackName(candidate.term),
+  );
+  if (trustedSemantic) return trustedSemantic;
+
+  const normalizedGoal = compactNameQuery(semanticIntent.normalizedGoal);
+  return normalizedGoal && usefulFallbackName(normalizedGoal)
+    ? { term: normalizedGoal, origin: "normalizedGoal" }
+    : null;
+}
+
 function armHash(parts: readonly string[]): string {
   let hash = 0x811c9dc5;
   for (const character of parts.join("\u001f")) {
@@ -427,6 +623,7 @@ function capabilityTerms(
  */
 export function compileGeoapifySemanticIntent(
   semanticIntent: SemanticIntentV2,
+  sourceIntent?: Pick<NormalizedSearchIntent, "primaryQuery" | "relatedQueries">,
 ): CompiledGeoapifyCapabilityPlan {
   const precisionTerms = [
     ...capabilityTerms(
@@ -511,29 +708,16 @@ export function compileGeoapifySemanticIntent(
       type: "adjacent",
       mode: "broad",
       role: "adjacent",
-      priority: 3,
+      priority: 4,
       resultBudget: ARM_BUDGETS.adjacent,
       categoryIds: adjacent.map((candidate) => candidate.categoryId),
       nameQuery: null,
       provenance: adjacent.map((candidate) => candidate.provenance),
     }));
   }
-  const hasNarrowPrecision = precision.some(
-    (candidate) => candidate.provenance.match !== "parent",
-  );
-  const fallbackSource: CapabilityTerm = semanticIntent.retrievalTerms.precision[0]
-    ? {
-        term: semanticIntent.retrievalTerms.precision[0],
-        origin: "retrievalTerms.precision",
-      }
-    : semanticIntent.coreBusinessTypes[0]
-      ? {
-          term: semanticIntent.coreBusinessTypes[0],
-          origin: "coreBusinessTypes",
-        }
-      : { term: semanticIntent.normalizedGoal, origin: "normalizedGoal" };
-  const fallbackName = compactNameQuery(fallbackSource.term);
-  if (!hasNarrowPrecision && fallbackName) {
+  const fallbackSource = fallbackNameSource(semanticIntent, sourceIntent);
+  const fallbackName = fallbackSource?.term ?? null;
+  if (fallbackSource && fallbackName) {
     const fallbackCategoryIds = FALLBACK_CATEGORY_IDS.filter(
       (categoryId) => !conflictsWithExclusion(categoryId),
     );
@@ -541,7 +725,7 @@ export function compileGeoapifySemanticIntent(
       type: "fallback",
       mode: "broad",
       role: "fallback",
-      priority: 4,
+      priority: 3,
       resultBudget: ARM_BUDGETS.fallback,
       categoryIds: fallbackCategoryIds,
       nameQuery: fallbackName,
@@ -570,6 +754,99 @@ export function compileGeoapifySemanticIntent(
     limits: GEOAPIFY_RETRIEVAL_LIMITS,
     exclusionTerms: [...new Set(exclusionTerms.map((term) => term.trim()).filter(Boolean))],
   };
+}
+
+/**
+ * Refines an executable provider draft with provider-native category hints.
+ * The hint is retrieval-only: it does not mutate SemanticIntent, the signed
+ * SearchPlan, or the local relevance truth. Unknown, broad, and excluded IDs
+ * are dropped before this function creates an internal runtime arm.
+ */
+type NativeResolutionDraft = {
+  categoryIds: string[];
+  batches: Array<{
+    id: string;
+    type: string;
+    priority: number;
+    resultBudget: number;
+    categoryIds: string[];
+    nameQuery: string | null;
+    provenance: Array<{
+      semanticField: string;
+      semanticTerm: string;
+      origin: string;
+      match: string;
+      categoryId: string;
+    }>;
+  }>;
+  exclusionTerms: string[];
+};
+
+export function applyGeoapifyNativeResolution<TPlan extends NativeResolutionDraft>(
+  draft: TPlan,
+  hintedCategoryIds: readonly string[],
+): TPlan {
+  const excludedCategoryIds = new Set(
+    draft.exclusionTerms.flatMap((term) =>
+      candidatesForTerm("precision", term, "retrievalTerms.precision").map(
+        (candidate) => candidate.categoryId,
+      ),
+    ),
+  );
+  const conflictsWithExclusion = (categoryId: string) =>
+    [...excludedCategoryIds].some(
+      (excludedId) =>
+        categoryId === excludedId ||
+        categoryId.startsWith(`${excludedId}.`) ||
+        excludedId.startsWith(`${categoryId}.`),
+    );
+  const validHints = [...new Set(hintedCategoryIds)]
+    .filter(isGeoapifyLeafCategoryId)
+    .filter((categoryId) => !conflictsWithExclusion(categoryId))
+    .filter(
+      (categoryId, _index, all) =>
+        !all.some(
+          (otherId) =>
+            otherId !== categoryId && otherId.startsWith(`${categoryId}.`),
+        ),
+    )
+    .slice(0, 2);
+  if (!validHints.length) return draft;
+
+  const fallback = draft.batches.find((batch) => batch.type === "fallback");
+  if (!fallback?.nameQuery) return draft;
+  const fallbackProvenance = fallback.provenance[0];
+  if (!fallbackProvenance) return draft;
+  const runtimeBatches = draft.batches.map((batch) =>
+    batch.id !== fallback.id
+      ? {
+          ...batch,
+          categoryIds: [...batch.categoryIds],
+          provenance: batch.provenance.map((item) => ({ ...item })),
+        }
+      : {
+          ...batch,
+          id: `arm-fallback-${armHash([
+            "fallback",
+            String(batch.priority),
+            batch.nameQuery ?? "",
+            ...validHints,
+          ])}`,
+          categoryIds: validHints,
+          provenance: validHints.map((categoryId) => ({
+            ...fallbackProvenance,
+            categoryId,
+          })),
+        },
+  );
+  const categoryIds = [
+    ...new Set(runtimeBatches.flatMap((batch) => batch.categoryIds)),
+  ];
+  return {
+    ...draft,
+    categoryIds,
+    batches: runtimeBatches,
+  } as TPlan;
 }
 
 export function validateGeoapifyCatalogCoverage(): {

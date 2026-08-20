@@ -73,6 +73,7 @@ GEOAPIFY_API_KEY=новый_серверный_ключ
 SEARCH_PROVIDER=geoapify
 GEOAPIFY_PLACES_LIMIT=100
 GEOAPIFY_DETAILS_LIMIT=20
+GEOAPIFY_CATEGORY_HINTS_ENABLED=false
 ```
 
 Перед внешним deployment отзовите использованный dev-ключ, если он когда-либо
@@ -169,6 +170,27 @@ Remove-Item Env:RUN_KIMI_LIVE_EVAL
 Скрипт записывает в игнорируемый `work/evaluations/` только canonical IDs,
 статусы, latency и token usage. Prompt, ключ, reasoning и карточки компаний не
 сохраняются.
+
+Сквозной canary фактического production-orchestrator с Kimi, Geoapify и
+консервативной ручной оценкой запускается отдельно. Он расходует квоты обоих сервисов и
+требует настроенный `GEOAPIFY_API_KEY`:
+
+```powershell
+$env:RUN_SEARCH_LIVE_CANARY="1"
+npm run canary:search:live
+Remove-Item Env:RUN_SEARCH_LIVE_CANARY
+```
+
+Canary намеренно включает category hints только внутри своего процесса для
+измерения. Рабочий default остаётся `GEOAPIFY_CATEGORY_HINTS_ENABLED=false`.
+Production worker собирается до загрузки Kimi key, а SHA-256 фактически
+запущенного bundle и canary harness входят в агрегатный отчёт. После сбора
+выдачи команда печатает transient URL: откройте его, примените
+показанный rubric и отправьте в `/submit` номера релевантных позиций из
+приложенного шаблона. Полный intent доступен только в памяти этого запуска.
+Raw-кандидаты не записываются в итоговый файл; versioned результат публикуется
+только агрегатами в
+[`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md).
 
 ## API приложения
 
@@ -311,9 +333,10 @@ fallback. Ответ содержит только нормализованны�
 `needs_confirmation`, `unsupported` или `degraded`, объектом
 `semanticIntent`, отдельной уверенностью в смысле запроса и покрытии источника,
 версиями prompt/schema, usage, latency и проверяемыми hash. Вложенный
-`SemanticIntentV2` сохраняет собственную schema `2.0`. Во время миграции
-плана в нём также сохраняются legacy canonical IDs для уже поддерживаемых ниш;
-они вычисляются сервером после Kimi и не передаются модели. `needs_confirmation`
+`SemanticIntentV2` сохраняет собственную schema `2.1`. Во время миграции
+legacy canonical IDs для уже поддерживаемых ниш могут отдельно присутствовать
+в `SearchPlan.resolution.selectedConceptIds`; они вычисляются сервером после
+Kimi и не передаются модели. `needs_confirmation`
 на этом endpoint является обычным HTTP 200: UI должен показать трактовку и не
 запускать карты до подтверждения.
 
@@ -441,11 +464,25 @@ retrieval terms полному зафиксированному каталогу
 Компилятор формирует до четырёх независимых retrieval arms: точный, расширенный,
 смежный и безопасный поиск по названию. У каждого есть стабильный ID,
 приоритет, происхождение из `SemanticIntentV2` и собственный лимит результата;
-общий серверный предел — четыре Places-запроса и 200 наблюдённых карточек.
+общий серверный предел — четыре retrieval-запроса и 200 наблюдённых карточек.
+Категорийные arms используют Places, а unresolved name-fallback — bounded
+Forward Geocoding `type=amenity`; восемь корневых категорий fallback-плана
+остаются внутренней provenance/budget границей, а не строкой provider filter.
 Если узкой категории нет, сервер использует фиксированный широкий scope из
 registry вместе с ограниченным `name`, а не исполняет категорию из текста
 модели. Каждый category ID повторно проверяется перед отправкой провайдеру.
 Старый словарь 40 ниш остаётся только fallback обратной совместимости.
+
+Provider compiler принимает только точные нормализованные phrase-совпадения
+полного registry; совпавший parent остаётся явно broad, а частичное пересечение
+слов не исполняется. Общий суффикс вида `studio`, `clinic` или `shop` удаляется
+лишь тогда, когда остаток однозначно указывает на одну точную leaf-category.
+Для name-fallback
+предпочитается исходная формулировка на языке пользователя; fallback-запрос не
+запускается, если предыдущие arms уже дали не менее 10 результатов
+`matched + maybe`. Опциональный provider-native hint может уточнить только этот
+fallback, не меняет `SemanticIntentV2` или подписанный `SearchPlan`, проходит
+повторную проверку по pinned registry и по умолчанию выключен.
 
 Карточки из разных arms дедуплицируются до получения Details и сохраняют все
 причины обнаружения. Точные, смежные и fallback-находки различимы в
@@ -454,13 +491,17 @@ registry вместе с ограниченным `name`, а не исполня
 доступным названию, provider categories и короткому source description до
 расхода квоты Details.
 
-Open-vocabulary encoder проверен на реальном `kimi-k3` для трёх обычных
-формулировок: барбершоп, спортивный зал и ремонт телефонов. Валидные ответы
-заняли 13,8–30,3 с; два промежуточных вызова достигли текущего timeout 30 с.
-Это функциональный canary и аргумент для отдельной калибровки deadline, а не
-доказательство SLA. Два успешных live smoke «Спортивный зал» прошли через Kimi
-и Geoapify за 27,4–27,7 с: готовый provider plan, 3–20 обнаруженных карточек и
-3 из 3 запрошенных Details; raw ответы и лиды не сохранялись.
+Расширяющая provider-category сама по себе считается evidence только при
+происхождении из core/precision intent, а не из одного adjacent/recall сигнала.
+Таблица и карта по умолчанию показывают рекомендованные `matched + maybe`;
+`rejected` и `not_checked` остаются доступны через фильтр и не удаляются.
+
+Open-vocabulary encoder и скомпилированный поиск проверяются versioned live
+canary через фактический production-orchestrator. Canary завершён, но Issue #11
+quality gate имеет решение `FAIL`: не пройдены fixed-k Precision@10 и целевой
+encoder p95. Это не доказательство внешнего SLA. Метрики и границы вывода
+зафиксированы в
+[`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md).
 
 ## Экспериментальный API Яндекса
 
@@ -489,7 +530,11 @@ scoring, CSV или отображения поверх сторонней ка�
   server-side deadline работают только в одном экземпляре Node.js. Нет auth,
   shared/distributed limiter, multi-tenancy или межпроцессной координации;
   live API предназначен только для владельца на `127.0.0.1`.
-- Несколько live canary-вызовов не подтверждают p95: внешний SLA отсутствует.
+- Production-orchestrator canary выполнил все 12 сценариев и прошёл
+  schema/executability/deadline/safety gates, но не прошёл business-quality
+  gate: fixed-k Precision@10 `0.7500` при цели `0.85`. Encoder p95 составил
+  29,073 с при цели 20 с. Geoapify-only поиск и внешний SLA имеют решение
+  `NO-GO` до улучшения provider grounding/fallback и повторного canary.
 - Provider boundary мигрирован частично: retrieval arms уже компилируются из
   открытого intent, а exclusions и дедупликация выполняются до Details, но
   geocoding и enrichment ещё не вынесены в отдельный двухфазный search service.
@@ -527,6 +572,8 @@ scoring, CSV или отображения поверх сторонней ка�
   — исполнимое ТЗ и release quality gates.
 - [`docs/evaluations/v0.4.0-alpha.1-query-intelligence.md`](docs/evaluations/v0.4.0-alpha.1-query-intelligence.md)
   — обезличенный initial evaluation report и решение `NO-GO` для production.
+- [`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md)
+  — агрегатный production-orchestrator canary с решением `FAIL` по quality gate.
 - [`AGENTS.md`](AGENTS.md) — постоянные правила версий и релизов.
 
 README имеет стабильную структуру и не используется как хронологический журнал.

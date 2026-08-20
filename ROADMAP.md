@@ -1,6 +1,6 @@
 # LeadRadar Roadmap
 
-Актуально на: 2026-08-17
+Актуально на: 2026-08-20
 
 Текущая версия: `0.4.0-alpha.1`
 
@@ -10,7 +10,9 @@
 precision, recall, adjacent и name-fallback arms; обычные и редкие физические
 ниши больше не требуют ручного добавления сегмента. Production release и
 внешний SLA имеют решение `NO-GO` до закрытия quality, reliability и security
-gates.
+gates. Issue #11 остаётся открытым: real production-orchestrator выполнил все
+12 сценариев, но fixed-k Precision@10 `0.7500` не достиг порога `0.85`, а
+encoder p95 остаётся выше целевых 20 секунд.
 
 ## Цель продукта
 
@@ -174,8 +176,12 @@ scoring, экспорт и показ на сторонней карте не в
   cases сохранены как compatibility suite;
 - open-vocabulary encoder проверен реальным `kimi-k3` на барбершопе,
   спортивном зале и ремонте телефонов: валидные ответы заняли 13,8–30,3 с;
-  прежний V1 Kimi → Geoapify canary не считается доказательством нового
-  end-to-end пути и будет повторён после capability compiler;
+- Issue #11 production-orchestrator canary выполнен 20.08.2026 на 12 live
+  cases в пяти городах и трёх странах: schema/executable rate `1.0000`, safety
+  `0`, 90 уникальных релевантных организаций против 44 у literal baseline.
+  Однако fixed-k Precision@10 `0.7500` не прошёл порог `0.85`, поэтому сам
+  Issue #11, migration Issue #12 и production release остаются
+  заблокированными. Encoder p95 29 073 мс также не прошёл целевые 20 секунд;
 - география переключается между городом, районом, метро, областью и ручным
   радиусом; для метро доступны все семь действующих систем России, поиск
   конкретной станции, 1,5 км по умолчанию и server-side Geoapify fallback;
@@ -184,9 +190,13 @@ scoring, экспорт и показ на сторонней карте не в
 
 Частично выполнено:
 
-- полный Geoapify registry, bounded multi-arm compiler и open-world intent
-  corpus на 500 сценариев готовы; дальше требуется расширить размеченный
-  relevance corpus и измерить качество post-search классификации;
+- полный Geoapify registry, bounded multi-arm compiler, open-world intent corpus
+  500/500 и deterministic relevance corpus 600/600 готовы; optional post-search
+  Kimi classifier остаётся отдельным data-flow/live-quality gate;
+- provider-native category hint реализован как bounded default-off refinement.
+  В Issue #11 canary было три обращения (`no_match=1`, `resolved=2`) без
+  `degraded`, но включать механизм по умолчанию без более широкой выборки
+  нельзя;
 - provider adapter принимает скомпилированные категории, но geocoding,
   exclusions/dedupe и Details ещё не вынесены в отдельный двухфазный search
   service;
@@ -206,31 +216,35 @@ scoring, экспорт и показ на сторонней карте не в
   stability 30×3 и 30 реальных поисковых задач;
 - официальный MFJS `walle` gate и versioned production evaluation с решением
   `GO`;
-- cost gate: три обычных live cases использовали 3210–4127 input tokens, что
-  выше цели `≤ 3000`; пять canary-вызовов стоили оценочно $0,051522 при
-  измеренном usage 15 399 input / 355 output tokens.
+- cost gate остаётся неполным: Issue #11 canary использовал 11 346 input и
+  6 683 output tokens; оценка `$0.134283` покрывает usage всех 12 attempts, но
+  выборка недостаточна для внешнего cost SLA.
 
-Текущие сроки ответа являются внутренней гипотезой, а не SLA. На нескольких
-canary наблюдаемый API p50 составил 3,798 с, а p95 на n=5 — 4,695 с, но этого
-недостаточно для заявленного p95. Цели local Tier-0 остаются `p95 ≤ 15 с` без
-Kimi, `p95 ≤ 55 с` с Kimi и deadline `60 с`; production target после минимум
-Tier-1 — `p95 ≤ 25 с` и deadline `45 с`.
+Текущие сроки ответа являются внутренней гипотезой, а не SLA. Issue #11 canary
+наблюдал first-progress p95 83 мс, encoder p95 29 073 мс, terminal p95
+35 539 мс и semantic-journey p95 35 539 мс на 12 attempts. Terminal-цель 55 с
+и global per-request deadline 60 с выполнены, но
+encoder-цель 20 с не выполнена. Production target после минимум Tier-1 —
+`p95 ≤ 25 с` и deadline `45 с`.
 Первые 500 jobs/7 дней нужны только для калибровки. Внешний SLA не публикуется
 до минимум 10 000 репрезентативных jobs за 28 дней.
 
 ## Следующие шаги до production v0.4.0
 
-1. Добавить auth, shared quota/admission limiter и multi-instance telemetry;
+1. Поднять fixed-k Precision@10 с `0.7500` до `0.85`: улучшить grounding и
+   fallback редких ниш либо добавить юридически совместимый второй источник,
+   затем повторить неизменённый Issue #11 canary.
+2. Добавить auth, shared quota/admission limiter и multi-instance telemetry;
    in-process Tier-0 scheduler, circuit breaker и deadline уже готовы.
-2. Завершить двухфазную provider boundary и измерить качество relevance до
+3. Завершить двухфазную provider boundary и измерить качество relevance до
    enrichment на размеченной выборке.
-3. После разрешения data-flow добавить отдельный live Kimi relevance benchmark;
+4. После разрешения data-flow добавить отдельный live Kimi relevance benchmark;
    deterministic relevance 600/600 и open-world planner 500/500 уже готовы.
-4. Прогнать model comparison, stability, browser E2E, load и 30 реальных
+5. Прогнать model comparison, stability, browser E2E, load и 30 реальных
    search tasks с versioned обезличенным отчётом.
-5. Оптимизировать prompt до token/cost gate и измерить минимум 100 поисков и
-   50 Kimi calls для local SLO.
-6. Только после всех hard gates и `GO` выпускать/tag `v0.4.0`.
+6. Снизить encoder p95 до 20 с, закрыть полный token/cost gate и измерить минимум
+   100 поисков и 50 Kimi calls для local SLO.
+7. Только после всех hard gates и `GO` выпускать/tag `v0.4.0`.
 
 Архитектура и исполнимое ТЗ:
 

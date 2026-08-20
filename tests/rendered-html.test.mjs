@@ -1281,7 +1281,7 @@ test("search plan encodes an unseen business intent without canonical candidates
   };
   let capturedRequest = null;
   const semanticIntent = {
-    schemaVersion: "2.0",
+    schemaVersion: "2.1",
     normalizedGoal: "найти спортивные залы и фитнес-клубы",
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -1391,7 +1391,7 @@ test("search plan encodes an unseen business intent without canonical candidates
     assert.ok(capturedRequest);
     const plan = await response.json();
     assert.equal(plan.schemaVersion, "2.2");
-    assert.equal(plan.semanticIntent.schemaVersion, "2.0");
+    assert.equal(plan.semanticIntent.schemaVersion, "2.1");
     assert.equal(plan.semanticIntent.normalizedGoal, semanticIntent.normalizedGoal);
     assert.deepEqual(plan.semanticIntent.coreBusinessTypes, semanticIntent.coreBusinessTypes);
     assert.deepEqual(plan.semanticIntent.adjacentBusinessTypes, semanticIntent.adjacentBusinessTypes);
@@ -1443,9 +1443,10 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
   );
   const allowedCategories = new Set(registry.categories);
   const requestedBatches = [];
+  let fallbackCalls = 0;
   let kimiCalls = 0;
   const semanticIntent = {
-    schemaVersion: "2.0",
+    schemaVersion: "2.1",
     normalizedGoal: "найти спортивные залы, тренажёрные залы и фитнес-клубы",
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -1509,6 +1510,10 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
       );
     }
     assert.equal(url.hostname, "api.geoapify.com");
+    if (url.pathname === "/v1/geocode/search") {
+      fallbackCalls += 1;
+      return Response.json({ type: "FeatureCollection", features: [] });
+    }
     assert.equal(url.pathname, "/v2/places");
     const categories = (url.searchParams.get("categories") ?? "")
       .split(",")
@@ -1568,9 +1573,10 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
     assert.equal(kimiCalls, 1);
     assert.ok(requestedBatches.length >= 1 && requestedBatches.length <= 4);
     assert.ok(requestedBatches.flat().includes("sport.fitness.gym"));
+    assert.equal(fallbackCalls, 1);
     assert.equal(
       result.plan.executionPreview.retrievalArms.length,
-      requestedBatches.length,
+      requestedBatches.length + fallbackCalls,
     );
     assert.equal(
       result.leads[0].discovery.retrievalArms.length,
@@ -1681,6 +1687,7 @@ test("warehouse semantic confirmation executes only the signed selected preview"
   };
   const signingSecret = "e2e-semantic-confirmation-secret-32-bytes";
   const placesCalls = [];
+  const fallbackCalls = [];
   let kimiCalls = 0;
   process.env.QUERY_INTELLIGENCE_MODE = "kimi";
   process.env.SEARCH_PROVIDER = "geoapify";
@@ -1690,7 +1697,7 @@ test("warehouse semantic confirmation executes only the signed selected preview"
   process.env.GEOAPIFY_DETAILS_LIMIT = "0";
   process.env.SEARCH_PLAN_SIGNING_SECRET = signingSecret;
   const semanticIntent = {
-    schemaVersion: "2.0",
+    schemaVersion: "2.1",
     normalizedGoal: "найти складские организации",
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
@@ -1743,6 +1750,10 @@ test("warehouse semantic confirmation executes only the signed selected preview"
       );
     }
     assert.equal(url.hostname, "api.geoapify.com");
+    if (url.pathname === "/v1/geocode/search") {
+      fallbackCalls.push(url);
+      return Response.json({ type: "FeatureCollection", features: [] });
+    }
     assert.equal(url.pathname, "/v2/places");
     placesCalls.push(url);
     return Response.json({ type: "FeatureCollection", features: [] });
@@ -1854,9 +1865,15 @@ test("warehouse semantic confirmation executes only the signed selected preview"
     assert.deepEqual(result.plan.executionPreview, selected.executionPreview);
     assert.deepEqual(
       placesCalls.map((url) => url.searchParams.get("categories")),
-      selected.executionPreview.retrievalArms.map((arm) =>
-        arm.categoryLabels.join(","),
-      ),
+      selected.executionPreview.retrievalArms
+        .filter((arm) => !arm.usesNameFallback)
+        .map((arm) => arm.categoryLabels.join(",")),
+    );
+    assert.equal(
+      fallbackCalls.length,
+      selected.executionPreview.retrievalArms.filter(
+        (arm) => arm.usesNameFallback,
+      ).length,
     );
     assert.equal(kimiCalls, 1, "confirmation must not re-run Kimi");
 
@@ -1907,7 +1924,7 @@ test("SemanticIntentV2 executes through the production search orchestrator", { c
     const body = JSON.parse(String(init?.body));
     assert.equal(JSON.stringify(body).includes('"candidates"'), false);
     const encoded = {
-      schemaVersion: "2.0",
+      schemaVersion: "2.1",
       normalizedGoal: "найти барбершопы и мужские парикмахерские",
       entityKind: "physical_business",
       physicalLocationRequirement: "required",

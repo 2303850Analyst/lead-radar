@@ -36,6 +36,8 @@ export type CompiledGeoapifyPlan = {
         | "adjacentBusinessTypes"
         | "retrievalTerms.precision"
         | "retrievalTerms.recall"
+        | "source.primaryQuery"
+        | "source.relatedQueries"
         | "legacy";
       match:
         | "exact_leaf"

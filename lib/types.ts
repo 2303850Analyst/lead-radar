@@ -45,6 +45,10 @@ export type SearchProviderMetadata = {
     cardsAccepted?: number;
     detailsRequested: number;
     detailsSucceeded: number;
+    categoryResolution?: {
+      status: "disabled" | "not_needed" | "resolved" | "no_match" | "degraded";
+      requests: 0 | 1;
+    };
     degradedStages?: Array<{
       stage: "places" | "details" | "relevance_classification";
       reason:
@@ -78,7 +82,12 @@ export type LeadRetrievalArm = {
     semanticField: "precision" | "recall" | "adjacent" | "fallback" | "legacy";
     semanticTerm: string;
     origin: string;
-    match: "exact_leaf" | "exact_path" | "parent" | "name_fallback" | "legacy_binding";
+    match:
+      | "exact_leaf"
+      | "exact_path"
+      | "parent"
+      | "name_fallback"
+      | "legacy_binding";
     categoryId: string;
   }>;
 };
