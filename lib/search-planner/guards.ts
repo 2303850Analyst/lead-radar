@@ -113,7 +113,10 @@ function isNormalizedIntent(value: unknown): boolean {
   );
 }
 
-function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
+function isSemanticIntent(
+  value: unknown,
+  requireProviderNeutralTerm = true,
+): value is SemanticIntentV2 {
   if (
     !isRecord(value) ||
     value.schemaVersion !== SEMANTIC_INTENT_SCHEMA_VERSION ||
@@ -172,6 +175,7 @@ function isSemanticIntent(value: unknown): value is SemanticIntentV2 {
     permitsEmptyPositiveTerms ||
     (value.coreBusinessTypes.length > 0 && retrieval.precision.length > 0);
   const providerNeutralTermIsPresent =
+    !requireProviderNeutralTerm ||
     permitsEmptyPositiveTerms ||
     [...retrieval.precision, ...retrieval.recall].some((term) =>
       /[a-z]/i.test(term),
@@ -366,6 +370,14 @@ export function isSearchPlan(value: unknown): value is SearchPlan {
   if (typeof value.status !== "string" || !PLAN_STATUSES.has(value.status)) return false;
   const confidence = value.confidence;
   const confirmation = value.confirmation;
+  const resolution = value.resolution;
+  const ai = value.ai;
+  const requiresProviderNeutralTerm =
+    isRecord(resolution) &&
+    resolution.method === "kimi" &&
+    isRecord(ai) &&
+    ai.used === true &&
+    ai.validation === "passed";
   return (
     typeof value.taxonomyVersion === "string" &&
     typeof value.providerCatalogVersion === "string" &&
@@ -375,15 +387,15 @@ export function isSearchPlan(value: unknown): value is SearchPlan {
     typeof value.planHash === "string" &&
     isNullableString(value.parentPlanHash) &&
     isNormalizedIntent(value.intent) &&
-    isSemanticIntent(value.semanticIntent) &&
-    isResolution(value.resolution) &&
+    isSemanticIntent(value.semanticIntent, requiresProviderNeutralTerm) &&
+    isResolution(resolution) &&
     isRecord(confidence) &&
     typeof confidence.intent === "string" &&
     CONFIDENCE_VALUES.has(confidence.intent) &&
     typeof confidence.providerCoverage === "string" &&
     CONFIDENCE_VALUES.has(confidence.providerCoverage) &&
     isExecutionPreview(value.executionPreview) &&
-    isAiMetadata(value.ai) &&
+    isAiMetadata(ai) &&
     isRecord(confirmation) &&
     isNullableString(confirmation.token) &&
     isNullableString(confirmation.expiresAt)

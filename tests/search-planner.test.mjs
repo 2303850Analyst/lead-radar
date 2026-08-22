@@ -2585,7 +2585,7 @@ test("SemanticIntentV2 schema is strict, bounded, and open vocabulary", () => {
   );
 });
 
-test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering", () => {
+test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering", async () => {
   assert.equal(isSearchPlan(null), false);
   assert.equal(
     isSearchPlan({
@@ -2637,6 +2637,26 @@ test("SearchPlan runtime guard rejects partial V2 payloads before UI rendering",
     confirmation: { token: null, expiresAt: null },
   };
   assert.equal(isSearchPlan(renderablePlan), true);
+  const localizedFallbackPlan = await createSearchPlan(plannerInput("Бар"), {
+    mode: "deterministic",
+  });
+  assert.equal(
+    isSearchPlan(JSON.parse(JSON.stringify(localizedFallbackPlan))),
+    true,
+    "a server-built localized fallback plan must remain renderable",
+  );
+  assert.equal(
+    isSearchPlan({
+      ...renderablePlan,
+      semanticIntent: {
+        ...renderablePlan.semanticIntent,
+        coreBusinessTypes: ["бар"],
+        retrievalTerms: { precision: ["бар"], recall: [], exclude: [] },
+      },
+    }),
+    false,
+    "a successful Kimi plan must still contain a provider-neutral term",
+  );
   const withoutPlanHash = { ...renderablePlan };
   delete withoutPlanHash.planHash;
   assert.equal(isSearchPlan(withoutPlanHash), false);

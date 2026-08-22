@@ -29,6 +29,14 @@
 
 ### Добавлено
 
+- Исправлена несовместимость UI runtime guard с новым open-world fallback:
+  серверный deterministic SearchPlan с локализованными `coreBusinessTypes` и
+  `retrievalTerms` (например, русским `Бар`) был исполнимым, но браузер ошибочно
+  применял к нему Kimi-only требование английского provider-neutral терма и
+  показывал «неподдерживаемый формат ответа». Теперь это требование действует
+  только при `resolution.method=kimi`, `ai.used=true` и успешной AI validation;
+  остальные structural/state invariants SearchPlan не ослаблены.
+
 - Любой schema-valid, однозначный физический intent теперь получает исполнимый
   Geoapify-план независимо от наличия локального concept ID и confidence band.
   Kimi по-прежнему возвращает только смысл, синонимы и требования, а provider
