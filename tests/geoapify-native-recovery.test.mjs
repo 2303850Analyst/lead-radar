@@ -404,3 +404,114 @@ test("required native recovery falls back to source text when autocomplete is un
     }
   }
 });
+
+test("source-text fallback drops unrelated nearby organizations", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const previousHints = process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+  const previousDetails = process.env.GEOAPIFY_DETAILS_LIMIT;
+  process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "false";
+  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
+  const compiled = compileGeoapifySemanticIntent(
+    physicalIntent("eyelash extension studio"),
+    { primaryQuery: "Наращивание ресниц", relatedQueries: [] },
+  );
+  const authorization = projectGeoapifyNativeRecovery(compiled);
+  assert.ok(authorization);
+  const paths = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    paths.push(url.pathname);
+    if (url.pathname === "/v1/geocode/autocomplete") {
+      return Response.json({ error: "temporary" }, { status: 503 });
+    }
+    assert.equal(url.pathname, "/v1/geocode/search");
+    assert.match(
+      url.searchParams.get("text") ?? "",
+      /наращивание ресниц/i,
+    );
+    return Response.json({
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          properties: {
+            place_id: "nearby-office-1",
+            name: "Nextons",
+            country_code: "ru",
+            formatted: "Лесная улица 7, Москва",
+            categories: ["office"],
+          },
+          geometry: { type: "Point", coordinates: [37.5907, 55.78] },
+        },
+        {
+          type: "Feature",
+          properties: {
+            place_id: "nearby-atm-1",
+            name: "Промсвязьбанк",
+            country_code: "ru",
+            formatted: "Лесная улица 7, Москва",
+            categories: ["service.financial.atm"],
+          },
+          geometry: { type: "Point", coordinates: [37.5907, 55.78] },
+        },
+        {
+          type: "Feature",
+          properties: {
+            place_id: "nearby-restaurant-1",
+            name: "Mozza",
+            country_code: "ru",
+            formatted: "Лесная улица 7, Москва",
+            categories: ["catering.restaurant"],
+          },
+          geometry: { type: "Point", coordinates: [37.5907, 55.78] },
+        },
+      ],
+    });
+  };
+
+  try {
+    const result = await new GeoapifyProvider("test-only-key").search(
+      {
+        description: "",
+        primaryQuery: "Наращивание ресниц",
+        relatedQueries: [],
+        excludeQueries: [],
+        location: "Москва, ул. Лесная, 7",
+        center: [37.5907, 55.78],
+        radiusKm: 15,
+        services: [],
+        locale: "ru-RU",
+        countryCodes: ["RU"],
+      },
+      {
+        semanticIntent: physicalIntent("eyelash extension studio"),
+        compiledPlan: {
+          ...authorization.capabilityPlan,
+          nativeCategoryResolutionRequired: true,
+          countryCode: "RU",
+          language: "ru",
+          conceptIds: [],
+        },
+      },
+    );
+    assert.deepEqual(paths, [
+      "/v1/geocode/autocomplete",
+      "/v1/geocode/search",
+    ]);
+    assert.equal(result.outcome, "success_empty");
+    assert.equal(result.summary.cardsFound, 0);
+    assert.equal(result.leads.length, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousHints === undefined) {
+      delete process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
+    } else {
+      process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = previousHints;
+    }
+    if (previousDetails === undefined) {
+      delete process.env.GEOAPIFY_DETAILS_LIMIT;
+    } else {
+      process.env.GEOAPIFY_DETAILS_LIMIT = previousDetails;
+    }
+  }
+});

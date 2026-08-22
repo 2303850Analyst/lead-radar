@@ -2435,6 +2435,39 @@ export class GeoapifyProvider implements SearchProvider {
         categoryIds: [...categoryBatch.categoryIds],
         provenance: categoryBatch.provenance.map((item) => ({ ...item })),
       };
+      const hasRelevantExpansionEvidence = (
+        feature: GeoapifyFeature,
+        index: number,
+      ) => {
+        if (!placeName(feature) || !isCountryPlace(feature, countryCode)) {
+          return false;
+        }
+        const provisionalObservation: PlaceObservation = {
+          feature,
+          externalId: externalId(feature),
+          externalIds: [externalId(feature)],
+          placeId: stringValue(feature.properties?.place_id, 500),
+          providerCategoryIds: boundedProviderCategoryIds(
+            feature.properties?.categories,
+            feature.properties?.category,
+          ),
+          retrievalArms: [armObservation],
+        };
+        const relevance = classifyCandidateRelevance(
+          candidateEvidence(
+            provisionalObservation,
+            `expansion-preflight-${index + 1}`,
+          ),
+          {
+            semanticIntent: acceptedIntent,
+            precisionCategoryIds,
+            broadCategoryIds,
+            exclusionTerms: effectiveExclusions,
+            expansionOnly: true,
+          },
+        );
+        return relevance.status === "matched" || relevance.status === "maybe";
+      };
       const placesTimeoutMs = placesBudget
         ? placesBudget.timeoutMs(PLACES_STAGE_BUDGET_MS)
         : PLACES_STAGE_BUDGET_MS;
@@ -2446,6 +2479,7 @@ export class GeoapifyProvider implements SearchProvider {
         requiredStageTimeout(placesTimeoutMs);
       }
       let collection: GeoapifyCollection;
+      let collectionFromNameGeocoder = isNameFallback;
       try {
         upstreamRequests += 1;
         collection = await requestGeoapify(
@@ -2494,6 +2528,7 @@ export class GeoapifyProvider implements SearchProvider {
               fallbackTimeoutMs,
               options.signal,
             );
+            collectionFromNameGeocoder = true;
             categoryResolution = { status: "degraded", requests: 1 };
           } else {
             throw error;
@@ -2515,36 +2550,7 @@ export class GeoapifyProvider implements SearchProvider {
         collection.features ?? []
       )
         .slice(0, requestLimit)
-        .some((feature, index) => {
-          if (!placeName(feature) || !isCountryPlace(feature, countryCode)) {
-            return false;
-          }
-          const provisionalObservation: PlaceObservation = {
-            feature,
-            externalId: externalId(feature),
-            externalIds: [externalId(feature)],
-            placeId: stringValue(feature.properties?.place_id, 500),
-            providerCategoryIds: boundedProviderCategoryIds(
-              feature.properties?.categories,
-              feature.properties?.category,
-            ),
-            retrievalArms: [armObservation],
-          };
-          const relevance = classifyCandidateRelevance(
-            candidateEvidence(
-              provisionalObservation,
-              `resolved-preflight-${index + 1}`,
-            ),
-            {
-              semanticIntent: acceptedIntent,
-              precisionCategoryIds,
-              broadCategoryIds,
-              exclusionTerms: effectiveExclusions,
-              expansionOnly: true,
-            },
-          );
-          return relevance.status === "matched" || relevance.status === "maybe";
-        });
+        .some(hasRelevantExpansionEvidence);
       if (
         isResolvedNativeFallback &&
         !resolvedCollectionHasRelevantEvidence &&
@@ -2577,12 +2583,16 @@ export class GeoapifyProvider implements SearchProvider {
             fallbackTimeoutMs,
             options.signal,
           );
+          collectionFromNameGeocoder = true;
           categoryResolution = { status: "degraded", requests: 1 };
         }
       }
       const receivedFeatures = (collection.features ?? []).slice(0, requestLimit);
       cardsFound += receivedFeatures.length;
-      for (const feature of receivedFeatures) {
+      const acceptedFeatures = collectionFromNameGeocoder
+        ? receivedFeatures.filter(hasRelevantExpansionEvidence)
+        : receivedFeatures;
+      for (const feature of acceptedFeatures) {
         // Unnamed industrial footprints are not actionable business leads and
         // usually have no contacts; skip them before spending detail credits.
         if (
@@ -3052,7 +3062,7 @@ export class GeoapifyProvider implements SearchProvider {
       },
       query: payload,
       summary: {
-        cardsFound,
+        cardsFound: observations.size,
         uniqueLocations: leads.length,
         assumedBusinesses: leads.length,
         foundByPrimary,

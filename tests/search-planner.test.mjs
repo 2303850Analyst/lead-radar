@@ -1120,7 +1120,7 @@ test("Geoapify resolves a weak open intent through provider-native category hint
           {
             properties: {
               place_id: "optician-1",
-              name: "Central Optics",
+              name: "Central Optical Shop",
               formatted: "Москва, Россия",
               country_code: "ru",
               categories: ["commercial.health_and_beauty.optician"],
@@ -1161,7 +1161,7 @@ test("Geoapify resolves a weak open intent through provider-native category hint
       },
     );
     assert.ok(seenPaths.includes("/v1/geocode/autocomplete"));
-    assert.equal(result.leads[0]?.name, "Central Optics");
+    assert.equal(result.leads[0]?.name, "Central Optical Shop");
     assert.ok(
       result.provider.coverage?.categories.includes(
         "commercial.health_and_beauty.optician",
@@ -2058,7 +2058,11 @@ test("rare physical intent uses a server-owned category scope with bounded name 
       ),
     );
     assert.equal(result.leads[0]?.relevance?.status, "maybe");
-    assert.equal(result.leads[1]?.name, "Flower Shop North");
+    assert.equal(result.leads.length, 1);
+    assert.equal(
+      result.leads.some((lead) => lead.name === "Flower Shop North"),
+      false,
+    );
     assert.equal(result.provider.coverage.upstreamRequests, upstreamUrls.length);
     assert.equal(upstreamUrls.length, fallbackQueries.length);
     assert.ok(upstreamUrls.length >= 1 && upstreamUrls.length <= 3);
@@ -2098,7 +2102,7 @@ test("Geoapify bounds singular geocoder categories without laundering fallback r
       features: [{
         properties: {
           place_id: "singular-category-fallback",
-          name: "Opaque Atelier",
+          name: "Body Art Atelier",
           formatted: "Москва, Россия",
           country_code: "ru",
           category:
@@ -2196,11 +2200,11 @@ test("Geoapify uses cross-fallback corroboration only to break ranking ties", { 
       features:
         geocodeRequest === 1
           ? [
-              feature("single-fallback", "Opaque Single", 37.61),
-              feature("corroborated-fallback", "Opaque Shared", 37.62),
+              feature("single-fallback", "Engraving Workshop Single", 37.61),
+              feature("corroborated-fallback", "Engraving Workshop Shared", 37.62),
             ]
           : geocodeRequest === 2
-            ? [feature("corroborated-fallback", "Opaque Shared", 37.62)]
+            ? [feature("corroborated-fallback", "Engraving Workshop Shared", 37.62)]
             : [],
     });
   };
@@ -2224,11 +2228,11 @@ test("Geoapify uses cross-fallback corroboration only to break ranking ties", { 
     );
 
     assert.equal(geocodeRequest, 3);
-    assert.equal(result.leads[0].name, "Opaque Shared");
-    assert.equal(result.leads[0].relevance.status, "not_checked");
+    assert.equal(result.leads[0].name, "Engraving Workshop Shared");
+    assert.equal(result.leads[0].relevance.status, "maybe");
     assert.equal(result.leads[0].discovery.retrievalArms.length, 2);
-    assert.equal(result.leads[1].name, "Opaque Single");
-    assert.equal(result.leads[1].relevance.status, "not_checked");
+    assert.equal(result.leads[1].name, "Engraving Workshop Single");
+    assert.equal(result.leads[1].relevance.status, "maybe");
   } finally {
     globalThis.fetch = previousFetch;
     if (previousDetailsLimit === undefined) delete process.env.GEOAPIFY_DETAILS_LIMIT;
