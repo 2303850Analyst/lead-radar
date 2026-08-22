@@ -318,7 +318,7 @@ test("planner signs one source-native recovery arm for any unambiguous physical 
   );
 });
 
-test("required native recovery falls back to source text when autocomplete has no quorum", { concurrency: false }, async () => {
+test("required native recovery falls back to source text when autocomplete is unavailable", { concurrency: false }, async () => {
   const previousFetch = globalThis.fetch;
   const previousHints = process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
   const previousDetails = process.env.GEOAPIFY_DETAILS_LIMIT;
@@ -335,7 +335,7 @@ test("required native recovery falls back to source text when autocomplete has n
     const url = new URL(typeof input === "string" ? input : input.url);
     paths.push(url.pathname);
     if (url.pathname === "/v1/geocode/autocomplete") {
-      return Response.json({ type: "FeatureCollection", features: [] });
+      return Response.json({ error: "temporary" }, { status: 503 });
     }
     assert.equal(url.pathname, "/v1/geocode/search");
     assert.match(

@@ -1177,7 +1177,12 @@ const searchOrchestrator = createSearchOrchestrator({
       throw error;
     }
   },
-  isPlannerInfrastructureFailure: isSearchPlannerInfrastructureFailure,
+  // A valid ambiguous plan is still a clarification outcome even when this
+  // runtime cannot issue a confirmation token. The user can revise the query;
+  // provider execution remains blocked by ensureExecutablePlan.
+  isPlannerInfrastructureFailure: (plan) =>
+    plan.status !== "needs_confirmation" &&
+    isSearchPlannerInfrastructureFailure(plan),
   selectProvider: selectedProvider,
   providers: {
     demo: {

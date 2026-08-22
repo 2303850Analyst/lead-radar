@@ -34,7 +34,8 @@
   Kimi по-прежнему возвращает только смысл, синонимы и требования, а provider
   IDs, география и retrieval arms вычисляются сервером. Неизвестный тип сначала
   проходит один bounded Autocomplete-запрос; отсутствие надёжной leaf-category
-  переводит тот же source-derived arm в Forward Geocoding `type=amenity` вместо
+  или recoverable timeout/upstream failure переводит тот же source-derived arm
+  в Forward Geocoding `type=amenity` вместо
   терминального `NO_SUPPORTED_CONCEPT`/HTTP 422. Если Autocomplete подтвердил
   широкую категорию, Places-карточки принимаются только при независимом
   текстовом evidence исходного типа; нулевая или нерелевантная выборка также

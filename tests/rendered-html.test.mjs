@@ -2148,6 +2148,27 @@ test("warehouse semantic confirmation executes only the signed selected preview"
     assert.equal(unsignedFailure.plan.status, "needs_confirmation");
     assert.equal(unsignedFailure.plan.confirmation.token, null);
     assert.equal(placesCalls.length, placesBeforeUnsignedPlan);
+
+    const unsignedSearchResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...input,
+          description: "warehouse without signing capability",
+        }),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(unsignedSearchResponse.status, 409);
+    const unsignedSearchFailure = await unsignedSearchResponse.json();
+    assert.equal(unsignedSearchFailure.outcome, "clarification_required");
+    assert.equal(
+      unsignedSearchFailure.code,
+      "SEARCH_PLAN_CONFIRMATION_REQUIRED",
+    );
+    assert.equal(placesCalls.length, placesBeforeUnsignedPlan);
   } finally {
     globalThis.fetch = previousFetch;
     for (const [name, value] of Object.entries(previousEnv)) {

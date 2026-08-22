@@ -2204,8 +2204,20 @@ export class GeoapifyProvider implements SearchProvider {
         categoryResolution = resolved.categoryResolution;
       } catch (error) {
         if (error instanceof GeoapifyNativeRecoveryError) {
-          if (error.code === "no_match") {
-            categoryResolution = { status: "no_match", requests: 1 };
+          if (
+            [
+              "no_match",
+              "rate_limited",
+              "timeout",
+              "network",
+              "upstream",
+              "invalid_response",
+            ].includes(error.code)
+          ) {
+            categoryResolution = {
+              status: error.code === "no_match" ? "no_match" : "degraded",
+              requests: error.requests,
+            };
           } else {
             throw providerErrorForNativeRecovery(error);
           }
