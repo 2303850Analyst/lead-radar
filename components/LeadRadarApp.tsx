@@ -275,17 +275,10 @@ function ProviderAttribution({ response }: { response: SearchResponse }) {
 }
 
 const DEFAULT_QUERY: SearchPayload = {
-  description:
-    "Компании, которые хранят, комплектуют и отправляют товары продавцов маркетплейсов",
-  primaryQuery: "Фулфилмент",
-  relatedQueries: [
-    "Ответственное хранение",
-    "Складские услуги",
-    "Комплектация заказов",
-    "Упаковка и маркировка",
-    "Логистика для маркетплейсов",
-  ],
-  excludeQueries: ["Камеры хранения", "Склады индивидуального хранения", "Аренда гаражей"],
+  description: "",
+  primaryQuery: "",
+  relatedQueries: [],
+  excludeQueries: [],
   location: "Москва, ул. Лесная, 7",
   locationMode: "radius",
   radiusKm: 15,
