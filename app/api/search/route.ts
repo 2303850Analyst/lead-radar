@@ -67,6 +67,7 @@ import packageMetadata from "@/package.json";
 const YANDEX_ENDPOINT = "https://search-maps.yandex.ru/v1/";
 const MAX_QUERY_TERMS = 8;
 const FETCH_TIMEOUT_MS = 15_000;
+const GEOCODING_STAGE_BUDGET_MS = FETCH_TIMEOUT_MS;
 
 function requiresGeoapifyNativeRecovery(plan: SearchPlan): boolean {
   return (
@@ -685,7 +686,7 @@ async function yandexSearch(
       ? "Используем точку, выбранную на карте"
       : "Определяем координаты указанной географии",
   });
-  const geocodingBudget = runtime?.beginStage(5_000, 1_000);
+  const geocodingBudget = runtime?.beginStage(GEOCODING_STAGE_BUDGET_MS, 1_000);
   const center: [number, number] = payload.center
     ? [payload.center[0], payload.center[1]]
     : await resolveSearchCenter(
@@ -693,8 +694,10 @@ async function yandexSearch(
         apiKey,
         signal,
         geocodingBudget
-          ? requiredStageTimeout(geocodingBudget.timeoutMs(5_000))
-          : 5_000,
+          ? requiredStageTimeout(
+              geocodingBudget.timeoutMs(GEOCODING_STAGE_BUDGET_MS),
+            )
+          : GEOCODING_STAGE_BUDGET_MS,
       );
   await emitProgress(onProgress, {
     stage: "geocoding",

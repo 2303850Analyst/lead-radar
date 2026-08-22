@@ -46,6 +46,7 @@ const AUTOCOMPLETE_ENDPOINT = "https://api.geoapify.com/v1/geocode/autocomplete"
 const PLACES_ENDPOINT = "https://api.geoapify.com/v2/places";
 const PLACE_DETAILS_ENDPOINT = "https://api.geoapify.com/v2/place-details";
 const FETCH_TIMEOUT_MS = 15_000;
+const GEOCODING_STAGE_BUDGET_MS = FETCH_TIMEOUT_MS;
 const DETAILS_FETCH_TIMEOUT_MS = 8_000;
 const DETAILS_STAGE_BUDGET_MS = 15_000;
 const PLACES_STAGE_BUDGET_MS = 7_000;
@@ -2103,7 +2104,7 @@ export class GeoapifyProvider implements SearchProvider {
       });
     } else {
       const geocodingBudget = options.runtime?.beginStage(
-        5_000,
+        GEOCODING_STAGE_BUDGET_MS,
         NORMALIZATION_RESERVE_MS,
       );
       await reportProgress({
@@ -2118,8 +2119,10 @@ export class GeoapifyProvider implements SearchProvider {
         countryCode,
         language,
         geocodingBudget
-          ? requiredStageTimeout(geocodingBudget.timeoutMs(5_000))
-          : 5_000,
+          ? requiredStageTimeout(
+              geocodingBudget.timeoutMs(GEOCODING_STAGE_BUDGET_MS),
+            )
+          : GEOCODING_STAGE_BUDGET_MS,
       );
       await reportProgress({
         stage: "geocoding",

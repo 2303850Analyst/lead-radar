@@ -139,6 +139,60 @@ function geoapifySearchPayload() {
   };
 }
 
+test("Geoapify address geocoding receives the full provider timeout budget", { concurrency: false }, async () => {
+  const previousFetch = globalThis.fetch;
+  const stageBudgets = [];
+  const controller = new AbortController();
+  const runtime = {
+    signal: controller.signal,
+    deadlineAt: Date.now() + 60_000,
+    remainingMs: () => 60_000,
+    stageTimeoutMs: (maximumMs) => maximumMs,
+    beginStage(maximumMs, reserveMs = 0) {
+      stageBudgets.push({ maximumMs, reserveMs });
+      return {
+        deadlineAt: Date.now() + maximumMs,
+        remainingMs: () => maximumMs,
+        timeoutMs: (perCallMaximumMs) => Math.min(maximumMs, perCallMaximumMs),
+      };
+    },
+    throwIfAborted() {},
+    cancel() {},
+    dispose() {},
+  };
+
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname === "/v1/geocode/search") {
+      return Response.json({
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          properties: {},
+          geometry: { type: "Point", coordinates: [37.6176, 55.7558] },
+        }],
+      });
+    }
+    if (url.pathname === "/v2/places") {
+      return Response.json({ type: "FeatureCollection", features: [] });
+    }
+    throw new Error(`Unexpected Geoapify endpoint: ${url.pathname}`);
+  };
+
+  try {
+    await new GeoapifyProvider("test-only-placeholder-key").search(
+      { ...geoapifySearchPayload(), center: undefined },
+      { compiledPlan: validCompiledGeoapifyPlan(), runtime },
+    );
+    assert.deepEqual(stageBudgets[0], {
+      maximumMs: 15_000,
+      reserveMs: 1_000,
+    });
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 async function signedLegacyV1Token(secret, claims) {
   const claimsPart = Buffer.from(JSON.stringify({ v: 1, ...claims })).toString(
     "base64url",
