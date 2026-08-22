@@ -8,7 +8,7 @@ import capabilitySnapshot from "./geoapify-categories.snapshot.json";
 
 export const GEOAPIFY_PROVIDER_CATALOG_VERSION = capabilitySnapshot.catalogVersion;
 export const GEOAPIFY_COMPILER_POLICY_VERSION =
-  "semantic-retrieval-v2/2026-08-21.2";
+  "semantic-retrieval-v2/2026-08-22.1";
 
 /**
  * Full provider capability registry captured from Geoapify's official Places

@@ -6,7 +6,6 @@ import {
 } from "../lib/search-planner/catalogs/geoapify.ts";
 import { createSearchPlan } from "../lib/search-planner/planner.ts";
 import { GeoapifyProvider } from "../lib/providers/geoapify.ts";
-import { SearchProviderError } from "../lib/providers/types.ts";
 import {
   GeoapifyNativeRecoveryError,
   projectGeoapifyNativeRecovery,
@@ -264,8 +263,11 @@ test("native recovery cannot manufacture quorum from blank provider IDs", async 
   );
 });
 
-test("planner signs one source-native recovery arm for a high-confidence provider gap", async () => {
-  const semanticIntent = physicalIntent("optical shop");
+test("planner signs one source-native recovery arm for any unambiguous physical provider gap", async () => {
+  const semanticIntent = {
+    ...physicalIntent("custom keyboard workshop"),
+    confidence: "medium",
+  };
   const client = {
     modelId: "mock-kimi-native-recovery",
     async encode() {
@@ -287,7 +289,7 @@ test("planner signs one source-native recovery arm for a high-confidence provide
 
   const plan = await createSearchPlan(
     {
-      primaryQuery: "салон оптики",
+      primaryQuery: "мастерская кастомных клавиатур",
       relatedQueries: [],
       excludeQueries: [],
       locale: "ru-RU",
@@ -316,15 +318,15 @@ test("planner signs one source-native recovery arm for a high-confidence provide
   );
 });
 
-test("required native recovery stops before retrieval when autocomplete has no quorum", { concurrency: false }, async () => {
+test("required native recovery falls back to source text when autocomplete has no quorum", { concurrency: false }, async () => {
   const previousFetch = globalThis.fetch;
   const previousHints = process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
   const previousDetails = process.env.GEOAPIFY_DETAILS_LIMIT;
   process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "false";
   process.env.GEOAPIFY_DETAILS_LIMIT = "0";
   const compiled = compileGeoapifySemanticIntent(
-    physicalIntent("optical shop"),
-    { primaryQuery: "салон оптики", relatedQueries: [] },
+    physicalIntent("custom keyboard workshop"),
+    { primaryQuery: "мастерская кастомных клавиатур", relatedQueries: [] },
   );
   const authorization = projectGeoapifyNativeRecovery(compiled);
   assert.ok(authorization);
@@ -335,15 +337,32 @@ test("required native recovery stops before retrieval when autocomplete has no q
     if (url.pathname === "/v1/geocode/autocomplete") {
       return Response.json({ type: "FeatureCollection", features: [] });
     }
-    throw new Error(`retrieval must stay blocked: ${url.pathname}`);
+    assert.equal(url.pathname, "/v1/geocode/search");
+    assert.match(
+      url.searchParams.get("text") ?? "",
+      /мастерская кастомных клавиатур/i,
+    );
+    return Response.json({
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        properties: {
+          place_id: "custom-keyboard-workshop-1",
+          name: "Custom Keyboard Workshop",
+          country_code: "ru",
+          formatted: "Москва",
+          categories: ["commercial"],
+        },
+        geometry: { type: "Point", coordinates: [37.62, 55.756] },
+      }],
+    });
   };
 
   try {
-    await assert.rejects(
-      new GeoapifyProvider("test-only-key").search(
+    const result = await new GeoapifyProvider("test-only-key").search(
         {
           description: "",
-          primaryQuery: "салон оптики",
+          primaryQuery: "мастерская кастомных клавиатур",
           relatedQueries: [],
           excludeQueries: [],
           location: "Москва",
@@ -354,7 +373,7 @@ test("required native recovery stops before retrieval when autocomplete has no q
           countryCodes: ["RU"],
         },
         {
-          semanticIntent: physicalIntent("optical shop"),
+          semanticIntent: physicalIntent("custom keyboard workshop"),
           compiledPlan: {
             ...authorization.capabilityPlan,
             nativeCategoryResolutionRequired: true,
@@ -363,100 +382,14 @@ test("required native recovery stops before retrieval when autocomplete has no q
             conceptIds: [],
           },
         },
-      ),
-      (error) =>
-        error instanceof SearchProviderError &&
-        error.code === "GEOAPIFY_UNSUPPORTED_CATEGORY",
-    );
-    assert.deepEqual(paths, ["/v1/geocode/autocomplete"]);
-  } finally {
-    globalThis.fetch = previousFetch;
-    if (previousHints === undefined) {
-      delete process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
-    } else {
-      process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = previousHints;
-    }
-    if (previousDetails === undefined) {
-      delete process.env.GEOAPIFY_DETAILS_LIMIT;
-    } else {
-      process.env.GEOAPIFY_DETAILS_LIMIT = previousDetails;
-    }
-  }
-});
-
-test("required native recovery never falls back to name geocoding after a Places failure", { concurrency: false }, async () => {
-  const previousFetch = globalThis.fetch;
-  const previousHints = process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED;
-  const previousDetails = process.env.GEOAPIFY_DETAILS_LIMIT;
-  process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED = "false";
-  process.env.GEOAPIFY_DETAILS_LIMIT = "0";
-  const compiled = compileGeoapifySemanticIntent(
-    physicalIntent("optical shop"),
-    { primaryQuery: "салон оптики", relatedQueries: [] },
-  );
-  const authorization = projectGeoapifyNativeRecovery(compiled);
-  assert.ok(authorization);
-  const paths = [];
-  globalThis.fetch = async (input) => {
-    const url = new URL(typeof input === "string" ? input : input.url);
-    paths.push(url.pathname);
-    if (url.pathname === "/v1/geocode/autocomplete") {
-      return Response.json({
-        type: "FeatureCollection",
-        features: [1, 2].map((index) => ({
-          type: "Feature",
-          properties: {
-            category: "commercial.health_and_beauty.optician",
-            country_code: "ru",
-            place_id: `optician-evidence-${index}`,
-          },
-          geometry: {
-            type: "Point",
-            coordinates: [37.6176 + index * 0.001, 55.7558],
-          },
-        })),
-      });
-    }
-    if (url.pathname === "/v2/places") {
-      return Response.json({ error: "temporary" }, { status: 503 });
-    }
-    throw new Error(`name geocoding must stay blocked: ${url.pathname}`);
-  };
-
-  try {
-    await assert.rejects(
-      new GeoapifyProvider("test-only-key").search(
-        {
-          description: "",
-          primaryQuery: "салон оптики",
-          relatedQueries: [],
-          excludeQueries: [],
-          location: "Москва",
-          center: [37.6176, 55.7558],
-          radiusKm: 5,
-          services: [],
-          locale: "ru-RU",
-          countryCodes: ["RU"],
-        },
-        {
-          semanticIntent: physicalIntent("optical shop"),
-          compiledPlan: {
-            ...authorization.capabilityPlan,
-            nativeCategoryResolutionRequired: true,
-            countryCode: "RU",
-            language: "ru",
-            conceptIds: [],
-          },
-        },
-      ),
-      (error) =>
-        error instanceof SearchProviderError &&
-        error.code === "GEOAPIFY_UPSTREAM_ERROR",
-    );
+      );
     assert.deepEqual(paths, [
       "/v1/geocode/autocomplete",
-      "/v2/places",
+      "/v1/geocode/search",
     ]);
+    assert.equal(result.outcome, "success_with_results");
+    assert.equal(result.leads.length, 1);
+    assert.equal(result.leads[0].relevance.status, "maybe");
   } finally {
     globalThis.fetch = previousFetch;
     if (previousHints === undefined) {

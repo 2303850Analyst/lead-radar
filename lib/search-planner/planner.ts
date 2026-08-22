@@ -55,7 +55,7 @@ import {
   type SemanticIntentV2,
 } from "./types";
 
-export const DECISION_POLICY_VERSION = "2026-08-21.1";
+export const DECISION_POLICY_VERSION = "2026-08-22.1";
 export const KIMI_PROMPT_CONTENT_VERSION =
   "semantic-intent-v2/2026-08-20.9";
 export const KIMI_PROMPT_VERSION =
@@ -606,10 +606,15 @@ export async function createSearchPlan(
   );
   if (mode === "deterministic") {
     const hasAlternatives = deterministicAlternatives.length > 0;
+    const fallbackRecovery = hasAlternatives
+      ? null
+      : projectGeoapifyNativeRecovery(
+          compileGeoapifySemanticIntent(common.semanticIntent, intent),
+        );
     return finalizePlan(
       {
         ...common,
-        status: hasAlternatives ? "needs_confirmation" : "unsupported",
+        status: hasAlternatives ? "needs_confirmation" : "ready",
         resolution: {
           method: "fallback",
           selectedConceptIds: [],
@@ -617,12 +622,12 @@ export async function createSearchPlan(
           confidenceBand: "unknown",
           reasonCodes: hasAlternatives
             ? ["AMBIGUOUS_SCOPE"]
-            : ["NO_SUPPORTED_CONCEPT"],
+            : ["PROVIDER_COVERAGE_GAP"],
           clarificationQuestion: hasAlternatives
             ? clarificationQuestion(intent.locale)
             : null,
         },
-        executionPreview: null,
+        executionPreview: fallbackRecovery?.executionPreview ?? null,
         ai: AI_NOT_USED,
       },
       signingOptions,
@@ -757,10 +762,15 @@ export async function createSearchPlan(
       );
     }
 
-    const nativeRecovery =
-      !categoryHeadIsGrounded && semanticIntent.confidence === "high"
-        ? projectGeoapifyNativeRecovery(capabilityPlan)
-        : null;
+    const nativeRecovery = !categoryHeadIsGrounded
+      ? projectGeoapifyNativeRecovery(capabilityPlan) ??
+        projectGeoapifyNativeRecovery(
+          compileGeoapifySemanticIntent(
+            synthesizedSemanticIntent(intent, semanticIntent.confidence),
+            intent,
+          ),
+        )
+      : null;
     if (nativeRecovery) {
       return finalizePlan(
         {

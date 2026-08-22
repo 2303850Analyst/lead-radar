@@ -1800,6 +1800,7 @@ function normalizeLead(
   details: Record<string, unknown> | null,
   detailsChecked: boolean,
   payload: SearchPayload,
+  semanticIntent: SemanticIntentV2,
   observedAt: string,
   center: [number, number],
   relevance: LeadRelevance,
@@ -1857,6 +1858,44 @@ function normalizeLead(
   if (!detailsChecked) {
     digitalProblems.push("Расширенные контактные данные не проверены");
   }
+  const businessTerms = new Set(
+    [
+      payload.primaryQuery,
+      ...payload.relatedQueries,
+      ...semanticIntent.coreBusinessTypes,
+      ...semanticIntent.adjacentBusinessTypes,
+      ...semanticIntent.productsAndServices,
+      ...semanticIntent.retrievalTerms.precision,
+      ...semanticIntent.retrievalTerms.recall,
+    ].map(normalizeText),
+  );
+  const requirementText = normalizeText(
+    [
+      placeName(observation.feature),
+      placeAddress(properties),
+      stringValue(properties.description, 500),
+      stringValue(properties.building, 160),
+      stringValue(properties.level, 80),
+      stringValue(properties.floor, 80),
+      stringValue(details?.description, 500),
+      stringValue(details?.building, 160),
+      stringValue(details?.level, 80),
+      stringValue(details?.floor, 80),
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+  const requirements = [...new Set(semanticIntent.includeSignals)]
+    .filter((signal) => {
+      const normalized = normalizeText(signal);
+      return normalized && !businessTerms.has(normalized);
+    })
+    .map((requirement) => ({
+      requirement,
+      status: matchesQueryTerm(requirementText, requirement)
+        ? ("confirmed_match" as const)
+        : ("unknown" as const),
+    }));
 
   return {
     id: `geoapify-${observation.externalId}`,
@@ -1917,6 +1956,7 @@ function normalizeLead(
     recommendedOffer: recommendedOffer(payload, websiteStatus),
     possibleBranches: [],
     relevance,
+    requirements,
   };
 }
 
@@ -2164,9 +2204,14 @@ export class GeoapifyProvider implements SearchProvider {
         categoryResolution = resolved.categoryResolution;
       } catch (error) {
         if (error instanceof GeoapifyNativeRecoveryError) {
-          throw providerErrorForNativeRecovery(error);
+          if (error.code === "no_match") {
+            categoryResolution = { status: "no_match", requests: 1 };
+          } else {
+            throw providerErrorForNativeRecovery(error);
+          }
+        } else {
+          throw error;
         }
-        throw error;
       }
     }
     if (
@@ -2367,6 +2412,14 @@ export class GeoapifyProvider implements SearchProvider {
       } else {
         requestParameters.categories = categoryIds.join(",");
       }
+      const armObservation: LeadRetrievalArm = {
+        id: categoryBatch.id,
+        type: categoryBatch.type,
+        role: categoryBatch.role,
+        priority: categoryBatch.priority,
+        categoryIds: [...categoryBatch.categoryIds],
+        provenance: categoryBatch.provenance.map((item) => ({ ...item })),
+      };
       const placesTimeoutMs = placesBudget
         ? placesBudget.timeoutMs(PLACES_STAGE_BUDGET_MS)
         : PLACES_STAGE_BUDGET_MS;
@@ -2389,7 +2442,6 @@ export class GeoapifyProvider implements SearchProvider {
         );
       } catch (error) {
         const canFailSoft =
-          !nativeCategoryResolutionRequired &&
           isResolvedNativeFallback &&
           error instanceof SearchProviderError &&
           [
@@ -2444,12 +2496,43 @@ export class GeoapifyProvider implements SearchProvider {
         throw error;
         }
       }
+      const resolvedCollectionHasRelevantEvidence = (
+        collection.features ?? []
+      )
+        .slice(0, requestLimit)
+        .some((feature, index) => {
+          if (!placeName(feature) || !isCountryPlace(feature, countryCode)) {
+            return false;
+          }
+          const provisionalObservation: PlaceObservation = {
+            feature,
+            externalId: externalId(feature),
+            externalIds: [externalId(feature)],
+            placeId: stringValue(feature.properties?.place_id, 500),
+            providerCategoryIds: boundedProviderCategoryIds(
+              feature.properties?.categories,
+              feature.properties?.category,
+            ),
+            retrievalArms: [armObservation],
+          };
+          const relevance = classifyCandidateRelevance(
+            candidateEvidence(
+              provisionalObservation,
+              `resolved-preflight-${index + 1}`,
+            ),
+            {
+              semanticIntent: acceptedIntent,
+              precisionCategoryIds,
+              broadCategoryIds,
+              exclusionTerms: effectiveExclusions,
+              expansionOnly: true,
+            },
+          );
+          return relevance.status === "matched" || relevance.status === "maybe";
+        });
       if (
-        !nativeCategoryResolutionRequired &&
         isResolvedNativeFallback &&
-        !(collection.features ?? []).some(
-          (feature) => placeName(feature) && isCountryPlace(feature, countryCode),
-        ) &&
+        !resolvedCollectionHasRelevantEvidence &&
         upstreamRequests <
           Math.min(
             categoryPlan.limits.maxUpstreamRequests,
@@ -2484,14 +2567,6 @@ export class GeoapifyProvider implements SearchProvider {
       }
       const receivedFeatures = (collection.features ?? []).slice(0, requestLimit);
       cardsFound += receivedFeatures.length;
-      const armObservation: LeadRetrievalArm = {
-        id: categoryBatch.id,
-        type: categoryBatch.type,
-        role: categoryBatch.role,
-        priority: categoryBatch.priority,
-        categoryIds: [...categoryBatch.categoryIds],
-        provenance: categoryBatch.provenance.map((item) => ({ ...item })),
-      };
       for (const feature of receivedFeatures) {
         // Unnamed industrial footprints are not actionable business leads and
         // usually have no contacts; skip them before spending detail credits.
@@ -2872,6 +2947,7 @@ export class GeoapifyProvider implements SearchProvider {
         enrichment?.properties ?? null,
         enrichment?.succeeded ?? false,
         payload,
+        acceptedIntent,
         observedAt,
         center,
         relevanceById.get(observation.externalId) ??
@@ -2928,6 +3004,7 @@ export class GeoapifyProvider implements SearchProvider {
     });
 
     const response: SearchResponse = {
+      outcome: leads.length ? "success_with_results" : "success_empty",
       mode: "geoapify",
       provider: {
         id: "geoapify",

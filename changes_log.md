@@ -29,21 +29,24 @@
 
 ### Добавлено
 
-- Для schema-valid high-confidence физического intent без grounded Geoapify
-  leaf planner формирует `ready` план с reason codes `SEMANTIC_MATCH` и
-  `PROVIDER_COVERAGE_GAP`, содержащий ровно один подписанный recovery arm из
-  исходного `primaryQuery`/`relatedQueries`. Runtime повторно сверяет этот arm
-  с подписанным preview, делает максимум один bounded Autocomplete-запрос и
-  допускает Places только после quorum из двух различных same-country,
-  in-radius наблюдений одной allowlisted leaf-category. Model-authored terms и
-  provider IDs не становятся recovery-запросом; no-match и upstream failure
-  завершаются до Forward Geocoding, Places и Details. Флаг
-  `GEOAPIFY_CATEGORY_HINTS_ENABLED` по-прежнему управляет только отдельным
-  optional fail-soft refinement. Decision policy повышена до `2026-08-21.1`,
-  compiler policy — до `semantic-retrieval-v2/2026-08-21.2`; публичная схема
-  SearchPlan остаётся `2.2`. Перед внешним вызовом recovery authorization
-  теперь повторно сравнивается в canonical JSON с серверной проекцией, а
-  пустые/whitespace provider IDs не могут искусственно создать quorum.
+- Любой schema-valid, однозначный физический intent теперь получает исполнимый
+  Geoapify-план независимо от наличия локального concept ID и confidence band.
+  Kimi по-прежнему возвращает только смысл, синонимы и требования, а provider
+  IDs, география и retrieval arms вычисляются сервером. Неизвестный тип сначала
+  проходит один bounded Autocomplete-запрос; отсутствие надёжной leaf-category
+  переводит тот же source-derived arm в Forward Geocoding `type=amenity` вместо
+  терминального `NO_SUPPORTED_CONCEPT`/HTTP 422. Если Autocomplete подтвердил
+  широкую категорию, Places-карточки принимаются только при независимом
+  текстовом evidence исходного типа; нулевая или нерелевантная выборка также
+  запускает Forward Geocoding. Пустой финальный ответ является HTTP 200 с
+  `outcome=success_empty`, непустой — `success_with_results`, ambiguity —
+  `clarification_required`, а инфраструктурные ошибки — `technical_failure`.
+  Условия помещения оцениваются после карточек и без данных получают `unknown`.
+  UI показывает Kimi только при `ai.used=true` и `ai.validation=passed`.
+  Ручных aliases и нового provider не добавлено. Decision policy повышена до
+  `2026-08-22.1`, compiler/runtime policy — до
+  `semantic-retrieval-v2/2026-08-22.1`; публичная SearchPlan schema остаётся
+  `2.2`, а SearchResponse получил явное поле outcome.
 
 - Production search canary теперь немедленно сводит `plan` из terminal error
   event к bounded диагностике: allowlisted status/reason codes, AI validation,

@@ -287,6 +287,7 @@ export function createDemoResponse(query: SearchPayload): SearchResponse {
   }));
 
   return {
+    outcome: leads.length ? "success_with_results" : "success_empty",
     mode: "demo",
     provider: {
       id: "demo",

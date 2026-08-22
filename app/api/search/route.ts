@@ -39,6 +39,7 @@ import type {
   SearchPayload,
   SearchProgressEvent,
   SearchResponse,
+  SearchOutcome,
 } from "@/lib/types";
 import {
   RUSSIAN_METRO_SYSTEMS,
@@ -69,8 +70,13 @@ const FETCH_TIMEOUT_MS = 15_000;
 
 function requiresGeoapifyNativeRecovery(plan: SearchPlan): boolean {
   return (
-    plan.resolution.reasonCodes.includes("SEMANTIC_MATCH") &&
-    plan.resolution.reasonCodes.includes("PROVIDER_COVERAGE_GAP")
+    plan.resolution.reasonCodes.includes("PROVIDER_COVERAGE_GAP") &&
+    plan.resolution.selectedConceptIds.length === 0 &&
+    Boolean(
+      plan.executionPreview?.retrievalArms.some(
+        (arm) => arm.type === "fallback" && arm.usesNameFallback,
+      ),
+    )
   );
 }
 
@@ -876,6 +882,7 @@ async function yandexSearch(
     message: `Подготовлено лидов: ${leads.length}`,
   });
   const response: SearchResponse = {
+    outcome: leads.length ? "success_with_results" : "success_empty",
     mode: "yandex",
     provider: {
       id: "yandex",
@@ -1016,6 +1023,7 @@ export async function GET() {
 }
 
 type PublicSearchError = {
+  outcome: Extract<SearchOutcome, "clarification_required" | "technical_failure">;
   error: string;
   code: string;
   status: number;
@@ -1308,6 +1316,7 @@ const searchOrchestrator = createSearchOrchestrator({
 function publicSearchError(error: unknown): PublicSearchError {
   if (error instanceof SearchRuntimeError) {
     return {
+      outcome: "technical_failure",
       error: error.message,
       code: error.code,
       status: error.code === "SEARCH_DEADLINE_EXCEEDED" ? 504 : 408,
@@ -1316,6 +1325,10 @@ function publicSearchError(error: unknown): PublicSearchError {
   }
   if (error instanceof SearchPlanOutcomeError) {
     return {
+      outcome:
+        error.code === "SEARCH_PLAN_CONFIRMATION_REQUIRED"
+          ? "clarification_required"
+          : "technical_failure",
       error: error.message,
       code: error.code,
       status: error.status,
@@ -1325,6 +1338,7 @@ function publicSearchError(error: unknown): PublicSearchError {
   }
   if (error instanceof SearchProviderError) {
     return {
+      outcome: "technical_failure",
       error: error.message,
       code: error.code,
       status:
@@ -1349,6 +1363,7 @@ function publicSearchError(error: unknown): PublicSearchError {
   }
   if (error instanceof YandexProviderError) {
     return {
+      outcome: "technical_failure",
       error: error.message,
       code: error.code,
       status: 502,
@@ -1361,6 +1376,7 @@ function publicSearchError(error: unknown): PublicSearchError {
     };
   }
   return {
+    outcome: "technical_failure",
     error: "Неизвестная ошибка источника данных",
     code: "SEARCH_UNKNOWN_ERROR",
     status: 502,
@@ -1439,6 +1455,7 @@ function streamSearch(
           );
           sendTerminal({
             type: "error",
+            outcome: failure.outcome,
             error: failure.error,
             code: failure.code,
             retryable: failure.retryable,
@@ -1477,11 +1494,16 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    const failure = { type: "error", error: "Некорректный JSON", code: "INVALID_JSON" };
+    const failure = {
+      type: "error",
+      outcome: "technical_failure" as const,
+      error: "Некорректный JSON",
+      code: "INVALID_JSON",
+    };
     return streamRequested
-      ? ndjsonResponseLine(failure, 400)
+        ? ndjsonResponseLine(failure, 400)
       : Response.json(
-          { error: failure.error, code: failure.code },
+          { outcome: failure.outcome, error: failure.error, code: failure.code },
           { status: 400 },
         );
   }
@@ -1489,13 +1511,14 @@ export async function POST(request: Request) {
   if (!parsed.ok) {
     const failure = {
       type: "error",
+      outcome: "technical_failure" as const,
       error: parsed.error,
       code: "INVALID_SEARCH_PAYLOAD",
     };
     return streamRequested
       ? ndjsonResponseLine(failure, 400)
       : Response.json(
-          { error: failure.error, code: failure.code },
+          { outcome: failure.outcome, error: failure.error, code: failure.code },
           { status: 400 },
         );
   }
@@ -1517,6 +1540,7 @@ export async function POST(request: Request) {
     );
     return Response.json(
       {
+        outcome: failure.outcome,
         error: failure.error,
         code: failure.code,
         retryable: failure.retryable,

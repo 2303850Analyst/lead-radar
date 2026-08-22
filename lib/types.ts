@@ -22,6 +22,18 @@ export type WebsiteVerifiedStatus =
 
 export type SearchProviderId = "demo" | "yandex" | "geoapify";
 
+export type SearchOutcome =
+  | "success_with_results"
+  | "success_empty"
+  | "clarification_required"
+  | "technical_failure";
+
+export type RequirementMatchStatus =
+  | "confirmed_match"
+  | "confirmed_mismatch"
+  | "unknown"
+  | "conflicting";
+
 export type ProviderPersistencePolicy =
   | "synthetic"
   | "allowed_with_attribution"
@@ -204,6 +216,11 @@ export type Lead = {
   recommendedOffer: string;
   possibleBranches: string[];
   relevance?: LeadRelevance;
+  /** Post-retrieval evidence for non-category constraints from the intent. */
+  requirements?: Array<{
+    requirement: string;
+    status: RequirementMatchStatus;
+  }>;
 };
 
 export type RelevanceStatus =
@@ -249,6 +266,7 @@ export type SearchSummary = {
 };
 
 export type SearchResponse = {
+  outcome: Extract<SearchOutcome, "success_with_results" | "success_empty">;
   mode: SearchProviderId;
   provider: SearchProviderMetadata;
   query: SearchPayload;

@@ -76,11 +76,17 @@ function confidenceLabel(confidence: SearchPlan["resolution"]["confidenceBand"])
   return "Уверенность ещё не определена";
 }
 
-function methodLabel(method: SearchPlan["resolution"]["method"]) {
-  if (method === "exact") return "Точное совпадение со словарём";
-  if (method === "semantic") return "Семантическое сопоставление";
-  if (method === "kimi") return "Проверено Kimi";
-  if (method === "user_confirmed") return "Подтверждено вами";
+function methodLabel(plan: SearchPlan) {
+  if (plan.resolution.method === "exact") return "Точное совпадение со словарём";
+  if (plan.resolution.method === "semantic") return "Семантическое сопоставление";
+  if (
+    plan.resolution.method === "kimi" &&
+    plan.ai.used &&
+    plan.ai.validation === "passed"
+  ) {
+    return "Проверено Kimi";
+  }
+  if (plan.resolution.method === "user_confirmed") return "Подтверждено вами";
   return "Безопасный локальный fallback";
 }
 
@@ -233,7 +239,7 @@ export default function SearchIntentPanel({
       <div className={styles.footer}>
         <span className={styles.method}>
           <ShieldCheck size={14} aria-hidden="true" />
-          {methodLabel(plan.resolution.method)}
+          {methodLabel(plan)}
           {plan.ai.cacheHit ? " · из кэша" : ""}
         </span>
 

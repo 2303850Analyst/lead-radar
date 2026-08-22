@@ -1637,7 +1637,7 @@ test("sports intent executes Kimi to Geoapify through the real search seam", { c
   }
 });
 
-test("signed native recovery reaches Places only after Autocomplete quorum", { concurrency: false }, async () => {
+test("Hookah bar reaches Geoapify and rejects an ungrounded broad category", { concurrency: false }, async () => {
   const previousFetch = globalThis.fetch;
   const previousEnv = {
     QUERY_INTELLIGENCE_MODE: process.env.QUERY_INTELLIGENCE_MODE,
@@ -1650,6 +1650,7 @@ test("signed native recovery reaches Places only after Autocomplete quorum", { c
       process.env.GEOAPIFY_CATEGORY_HINTS_ENABLED,
   };
   const upstreamPaths = [];
+  const upstreamUrls = [];
   process.env.QUERY_INTELLIGENCE_MODE = "kimi";
   process.env.SEARCH_PROVIDER = "geoapify";
   process.env.MOONSHOT_API_KEY = "fake-kimi-native-recovery-key";
@@ -1660,23 +1661,23 @@ test("signed native recovery reaches Places only after Autocomplete quorum", { c
 
   const semanticIntent = {
     schemaVersion: "2.2",
-    normalizedGoal: "найти салоны оптики",
+    normalizedGoal: "find a hookah bar in a residential basement",
     entityKind: "physical_business",
     physicalLocationRequirement: "required",
-    industries: ["optical retail"],
-    coreBusinessTypes: ["optical shop"],
+    industries: ["hospitality"],
+    coreBusinessTypes: ["hookah bar"],
     adjacentBusinessTypes: [],
     excludedBusinessTypes: [],
-    productsAndServices: ["eyeglasses"],
-    includeSignals: ["оптика"],
+    productsAndServices: ["hookah smoking"],
+    includeSignals: ["basement", "residential building"],
     excludeSignals: [],
     retrievalTerms: {
-      precision: ["optical shop"],
-      recall: ["eyewear"],
+      precision: ["hookah bar"],
+      recall: ["shisha lounge"],
       exclude: [],
     },
     brandSearch: "include",
-    confidence: "high",
+    confidence: "medium",
     ambiguity: {
       isAmbiguous: false,
       reason: null,
@@ -1696,7 +1697,7 @@ test("signed native recovery reaches Places only after Autocomplete quorum", { c
               delta: {
                 content: JSON.stringify({
                   ...semanticIntent,
-                  providerNeutralCategoryHeads: ["optical shop"],
+                  providerNeutralCategoryHeads: ["hookah bar"],
                 }),
               },
               finish_reason: null,
@@ -1718,15 +1719,15 @@ test("signed native recovery reaches Places only after Autocomplete quorum", { c
     }
     assert.equal(url.hostname, "api.geoapify.com");
     upstreamPaths.push(url.pathname);
+    upstreamUrls.push(url);
     if (url.pathname === "/v1/geocode/autocomplete") {
-      assert.equal(url.searchParams.get("text"), "салон оптики");
       return Response.json({
         type: "FeatureCollection",
         features: [1, 2].map((index) => ({
           type: "Feature",
           properties: {
-            place_id: `optician-hint-${index}`,
-            category: "commercial.health_and_beauty.optician",
+            place_id: `bar-hint-${index}`,
+            category: "catering.bar",
             country_code: "ru",
           },
           geometry: {
@@ -1736,22 +1737,35 @@ test("signed native recovery reaches Places only after Autocomplete quorum", { c
         })),
       });
     }
-    assert.equal(url.pathname, "/v2/places");
-    assert.equal(
-      url.searchParams.get("categories"),
-      "commercial.health_and_beauty.optician",
-    );
-    assert.equal(url.searchParams.has("text"), false);
+    if (url.pathname === "/v2/places") {
+      return Response.json({
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          properties: {
+            place_id: "ordinary-bar-1",
+            name: "Ordinary Bar",
+            country_code: "ru",
+            formatted: "Москва",
+            categories: ["catering.bar"],
+          },
+          geometry: { type: "Point", coordinates: [37.62, 55.756] },
+        }],
+      });
+    }
+    if (url.pathname !== "/v1/geocode/search") {
+      return Response.json({ error: "unexpected mock endpoint" }, { status: 500 });
+    }
     return Response.json({
       type: "FeatureCollection",
       features: [{
         type: "Feature",
         properties: {
-          place_id: "optician-result-1",
-          name: "Оптика Центр",
+          place_id: "hookah-result-1",
+          name: "Hookah Bar One",
           country_code: "ru",
-          formatted: "Оптика Центр, Москва",
-          categories: ["commercial.health_and_beauty.optician"],
+          formatted: "Москва",
+          categories: ["catering.bar"],
           lon: 37.62,
           lat: 55.756,
         },
@@ -1767,7 +1781,8 @@ test("signed native recovery reaches Places only after Autocomplete quorum", { c
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          primaryQuery: "салон оптики",
+          description: "Hookah bar in a residential basement",
+          primaryQuery: "Hookah bar",
           relatedQueries: [],
           excludeQueries: [],
           services: [],
@@ -1781,7 +1796,7 @@ test("signed native recovery reaches Places only after Autocomplete quorum", { c
       runtimeEnv,
       runtimeContext,
     );
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 200, await response.clone().text());
     const result = await response.json();
     assert.deepEqual(result.plan.resolution.reasonCodes, [
       "SEMANTIC_MATCH",
@@ -1790,8 +1805,19 @@ test("signed native recovery reaches Places only after Autocomplete quorum", { c
     assert.deepEqual(upstreamPaths, [
       "/v1/geocode/autocomplete",
       "/v2/places",
+      "/v1/geocode/search",
     ]);
-    assert.equal(result.leads[0].name, "Оптика Центр");
+    assert.equal(upstreamPaths.length, 3);
+    assert.match(upstreamUrls[0].searchParams.get("text") ?? "", /^hookah bar$/i);
+    assert.equal(upstreamUrls[1].searchParams.get("categories"), "catering.bar");
+    assert.equal(upstreamUrls[1].searchParams.has("text"), false);
+    assert.match(upstreamUrls[2].searchParams.get("text") ?? "", /hookah bar/i);
+    assert.equal(result.outcome, "success_with_results");
+    assert.deepEqual(result.leads.map((lead) => lead.name), ["Hookah Bar One"]);
+    assert.deepEqual(
+      result.leads[0].requirements.map((item) => item.status),
+      ["unknown", "unknown"],
+    );
   } finally {
     globalThis.fetch = previousFetch;
     for (const [name, value] of Object.entries(previousEnv)) {
@@ -1854,6 +1880,7 @@ test("known niche keeps its precise legacy categories when Kimi is unavailable",
     );
     assert.equal(response.status, 200);
     const result = await response.json();
+    assert.equal(result.outcome, "success_empty");
     assert.equal(result.plan.status, "degraded");
     assert.equal(result.plan.ai.validation, "failed");
     assert.deepEqual(result.plan.resolution.selectedConceptIds, [
@@ -1995,6 +2022,22 @@ test("warehouse semantic confirmation executes only the signed selected preview"
     assert.equal(plan.status, "needs_confirmation");
     assert.equal(plan.schemaVersion, "2.2");
     assert.equal(plan.resolution.alternatives.length, 2);
+    assert.equal(placesCalls.length, 0);
+    assert.equal(kimiCalls, 1);
+
+    const unresolvedResponse = await worker.fetch(
+      new Request("http://localhost/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+      runtimeEnv,
+      runtimeContext,
+    );
+    assert.equal(unresolvedResponse.status, 409);
+    const unresolvedFailure = await unresolvedResponse.json();
+    assert.equal(unresolvedFailure.outcome, "clarification_required");
+    assert.equal(unresolvedFailure.code, "SEARCH_PLAN_CONFIRMATION_REQUIRED");
     assert.equal(placesCalls.length, 0);
     assert.equal(kimiCalls, 1);
     const selected = plan.resolution.alternatives[0];

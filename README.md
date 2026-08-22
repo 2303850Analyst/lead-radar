@@ -384,12 +384,17 @@ Kimi и не передаются модели. `needs_confirmation`
 передавать только текстовую географию.
 
 Обычный endpoint возвращает JSON с параметрами запроса, provider-метаданными,
-сводкой и массивом `leads`. У каждого лида есть массив `sources` с provider ID,
-внешним ID и временем наблюдения. Ошибки валидации возвращаются с HTTP 400.
-Неоднозначный intent возвращает HTTP 409 с
-`SEARCH_PLAN_CONFIRMATION_REQUIRED`, неподдерживаемый — HTTP 422 с
-`SEARCH_PLAN_UNSUPPORTED`. Ошибка live-провайдера возвращается с HTTP 502 и не
-подменяется демоданными.
+сводкой, массивом `leads` и явным `outcome`. Непустой ответ имеет
+`success_with_results`, пустая выборка источника — `success_empty` и HTTP 200.
+У каждого лида есть массив `sources` с provider ID, внешним ID и временем
+наблюдения; дополнительные условия помещения возвращаются в `requirements` со
+статусом `confirmed_match`, `confirmed_mismatch`, `unknown` или `conflicting`.
+Отсутствие данных не считается совпадением и даёт `unknown`. Неоднозначный
+intent возвращает HTTP 409 с `outcome=clarification_required` и
+`SEARCH_PLAN_CONFIRMATION_REQUIRED`. Ошибки валидации и инфраструктуры имеют
+`outcome=technical_failure`; ошибка live-провайдера не подменяется демоданными.
+Однозначный физический intent без локального concept ID не получает
+терминальный 422: сервер формирует bounded Geoapify fallback-план.
 
 Чтобы продолжить неоднозначный поиск, повторите тот же payload и передайте
 ровно одну показанную semantic alternative вместе с подписанным token:
@@ -453,10 +458,12 @@ Geocoding, Places и Place Details проверены реальным transient
 подтверждает транспорт и одну выборку, но не полноту рынка.
 
 Geoapify остаётся единственным live-провайдером версии `0.4.0-alpha.1`.
-Автоматический
-fallback пока не реализован: timeout, `429` или `5xx` возвращаются как ошибка
-источника и не маскируются demo-данными. Черновик будущего failover находится в
-[`docs/geoapify-setup.md`](docs/geoapify-setup.md).
+Внутри него действует bounded цепочка category Places → Autocomplete для
+неизвестной категории → Forward Geocoding по исходному типу бизнеса, если
+категория не подтверждена либо Places не дал релевантных карточек. Радиус не
+увеличивается. Timeout, `429` или `5xx`, которые нельзя безопасно продолжить
+внутри этой цепочки, возвращаются как ошибка источника и не маскируются
+demo-данными; failover на другой provider не реализован.
 
 Free plan требует видимую атрибуцию Geoapify и OpenStreetMap. Она сохраняется
 на экранах live-результата и в CSV-экспорте. Использованный для локального теста ключ нужно
@@ -482,11 +489,12 @@ retrieval terms полному зафиксированному каталогу
 Категорийные arms используют Places, а unresolved name-fallback — bounded
 Forward Geocoding `type=amenity`; восемь корневых категорий fallback-плана
 остаются внутренней provenance/budget границей, а не строкой provider filter.
-Исключение — high-confidence recovery arm из исходного пользовательского
-запроса: сервер сверяет его с подписанным preview и допускает Places только
-после одного Autocomplete-запроса, подтвердившего allowlisted leaf минимум
-двумя различными same-country/in-radius наблюдениями. No-match или upstream
-ошибка завершают поиск до name geocoder, Places и Details.
+Исключение — recovery arm из исходного пользовательского запроса: сервер
+сверяет его с подписанным preview и допускает Places только после одного
+Autocomplete-запроса, подтвердившего allowlisted leaf минимум двумя различными
+same-country/in-radius наблюдениями. No-match переводит arm в bounded Forward
+Geocoding; подтверждённая широкая категория не считается evidence сама по себе,
+а нерелевантная Places-выборка также переводится в текстовый fallback.
 Если узкой категории нет, сервер использует фиксированный широкий scope из
 registry вместе с ограниченным `name`, а не исполняет категорию из текста
 модели. Каждый category ID повторно проверяется перед отправкой провайдеру.
