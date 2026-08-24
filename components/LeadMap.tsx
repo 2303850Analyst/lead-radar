@@ -1,11 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type * as Leaflet from "leaflet";
-import "leaflet/dist/leaflet.css";
 
 import type { Lead } from "@/lib/types";
 
+import {
+  loadDgisMapApi,
+  radiusBounds,
+  useDgisMapKey,
+  type DgisCircleMarker,
+  type DgisHtmlMarker,
+  type DgisMap,
+  type DgisMapApi,
+} from "./maps/DgisMapProvider";
 import styles from "./LeadMap.module.css";
 
 type LeadMapProps = {
@@ -18,8 +25,11 @@ type LeadMapProps = {
 };
 
 type MapStatus = "loading" | "ready" | "error";
+type MapObject = DgisCircleMarker | DgisHtmlMarker;
 
-const DEFAULT_CENTER: Leaflet.LatLngExpression = [55.7558, 37.6173];
+const DEFAULT_CENTER: [longitude: number, latitude: number] = [
+  37.6173, 55.7558,
+];
 
 function markerColor(score: number) {
   if (score >= 80) return "#27ae60";
@@ -28,15 +38,7 @@ function markerColor(score: number) {
 }
 
 function hasValidCoordinates(lead: Lead) {
-  const [longitude, latitude] = lead.location.coordinates;
-  return (
-    Number.isFinite(longitude) &&
-    Number.isFinite(latitude) &&
-    longitude >= -180 &&
-    longitude <= 180 &&
-    latitude >= -90 &&
-    latitude <= 90
-  );
+  return hasValidCenter(lead.location.coordinates);
 }
 
 function hasValidCenter(
@@ -54,6 +56,38 @@ function hasValidCenter(
   );
 }
 
+function coordinateBounds(
+  coordinates: Array<[longitude: number, latitude: number]>,
+) {
+  let minLongitude = coordinates[0][0];
+  let maxLongitude = coordinates[0][0];
+  let minLatitude = coordinates[0][1];
+  let maxLatitude = coordinates[0][1];
+
+  for (const [longitude, latitude] of coordinates.slice(1)) {
+    minLongitude = Math.min(minLongitude, longitude);
+    maxLongitude = Math.max(maxLongitude, longitude);
+    minLatitude = Math.min(minLatitude, latitude);
+    maxLatitude = Math.max(maxLatitude, latitude);
+  }
+
+  return {
+    southWest: [minLongitude, minLatitude],
+    northEast: [maxLongitude, maxLatitude],
+  };
+}
+
+function createTooltip(lead: Lead, score: number) {
+  const tooltip = document.createElement("div");
+  const title = document.createElement("strong");
+  const detail = document.createElement("span");
+  title.textContent = lead.name;
+  detail.textContent = `Потенциал: ${Math.round(score)} из 100`;
+  tooltip.className = styles.tooltip;
+  tooltip.append(title, detail);
+  return tooltip;
+}
+
 export default function LeadMap({
   leads,
   selectedLeadId,
@@ -62,48 +96,65 @@ export default function LeadMap({
   focusCenter,
   focusRadiusKm,
 }: LeadMapProps) {
+  const apiKey = useDgisMapKey();
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<Leaflet.Map | null>(null);
-  const markersRef = useRef<Leaflet.LayerGroup | null>(null);
-  const leafletRef = useRef<typeof Leaflet | null>(null);
+  const mapRef = useRef<DgisMap | null>(null);
+  const mapApiRef = useRef<DgisMapApi | null>(null);
+  const objectsRef = useRef<MapObject[]>([]);
   const fittedCoordinatesRef = useRef("");
+  const initialFocusCenterRef = useRef(focusCenter);
   const [status, setStatus] = useState<MapStatus>("loading");
 
   useEffect(() => {
     let disposed = false;
-    let resizeFrame: number | undefined;
+    let resizeObserver: ResizeObserver | null = null;
+    let resizeFrame: number | null = null;
+    let readyTimeout: ReturnType<typeof setTimeout> | null = null;
 
     async function initializeMap() {
       try {
-        const leaflet = await import("leaflet");
-
+        if (!apiKey) throw new Error("DGIS map key is not configured");
+        const api = await loadDgisMapApi();
         if (disposed || !containerRef.current) return;
 
-        const map = leaflet.map(containerRef.current, {
-          attributionControl: true,
-          zoomControl: true,
+        const initialCenter = hasValidCenter(initialFocusCenterRef.current)
+          ? initialFocusCenterRef.current
+          : DEFAULT_CENTER;
+        const map = new api.Map(containerRef.current, {
+          center: initialCenter,
+          copyright: "bottomRight",
+          disablePitchByUserInteraction: true,
+          disableRotationByUserInteraction: true,
+          key: apiKey,
+          lang: "ru",
+          zoom: 10,
+          zoomControl: "topLeft",
         });
 
-        leaflet
-          .tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            attribution:
-              '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-            maxZoom: 19,
-          })
-          .addTo(map);
-
-        const markers = leaflet.layerGroup().addTo(map);
-        const initialCenter = hasValidCenter(focusCenter)
-          ? ([focusCenter[1], focusCenter[0]] as Leaflet.LatLngExpression)
-          : DEFAULT_CENTER;
-        map.setView(initialCenter, 10);
-
-        leafletRef.current = leaflet;
         mapRef.current = map;
-        markersRef.current = markers;
-        setStatus("ready");
+        mapApiRef.current = api;
 
-        resizeFrame = window.requestAnimationFrame(() => map.invalidateSize());
+        map.once("styleload", () => {
+          if (disposed) return;
+          if (readyTimeout) clearTimeout(readyTimeout);
+          setStatus("ready");
+        });
+        map.once("styleloaderror", () => {
+          if (!disposed) setStatus("error");
+        });
+        readyTimeout = setTimeout(() => {
+          if (!disposed) setStatus("error");
+        }, 15_000);
+
+        if (typeof ResizeObserver !== "undefined") {
+          resizeObserver = new ResizeObserver(() => {
+            if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+            resizeFrame = window.requestAnimationFrame(() => map.invalidateSize());
+          });
+          resizeObserver.observe(containerRef.current);
+        } else {
+          resizeFrame = window.requestAnimationFrame(() => map.invalidateSize());
+        }
       } catch {
         if (!disposed) setStatus("error");
       }
@@ -113,64 +164,77 @@ export default function LeadMap({
 
     return () => {
       disposed = true;
-      if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame);
-
-      mapRef.current?.remove();
+      resizeObserver?.disconnect();
+      if (readyTimeout) clearTimeout(readyTimeout);
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+      for (const object of objectsRef.current) object.destroy();
+      objectsRef.current = [];
+      mapRef.current?.destroy();
       mapRef.current = null;
-      markersRef.current = null;
-      leafletRef.current = null;
+      mapApiRef.current = null;
       fittedCoordinatesRef.current = "";
     };
-  }, [focusCenter]);
+  }, [apiKey]);
 
   useEffect(() => {
     if (status !== "ready") return;
 
-    const leaflet = leafletRef.current;
+    const api = mapApiRef.current;
     const map = mapRef.current;
-    const markerLayer = markersRef.current;
+    if (!api || !map) return;
 
-    if (!leaflet || !map || !markerLayer) return;
-
-    markerLayer.clearLayers();
+    for (const object of objectsRef.current) object.destroy();
+    objectsRef.current = [];
 
     const mappableLeads = leads.filter(hasValidCoordinates);
-
-    const bounds = leaflet.latLngBounds([]);
+    const coordinates: Array<[number, number]> = [];
 
     for (const lead of mappableLeads) {
-      const [longitude, latitude] = lead.location.coordinates;
+      const position: [number, number] = [
+        lead.location.coordinates[0],
+        lead.location.coordinates[1],
+      ];
       const isSelected = lead.id === selectedLeadId;
       const score = lead.scores.opportunity;
-      const position: Leaflet.LatLngExpression = [latitude, longitude];
+      let tooltip: DgisHtmlMarker | null = null;
 
-      const marker = leaflet.circleMarker(position, {
-        bubblingMouseEvents: false,
-        color: isSelected ? "#1769e0" : "#ffffff",
-        fillColor: markerColor(score),
-        fillOpacity: 1,
-        opacity: 1,
-        radius: isSelected ? 11 : 8,
-        weight: isSelected ? 4 : 2,
+      const marker = new api.CircleMarker(map, {
+        color: markerColor(score),
+        coordinates: position,
+        diameter: isSelected ? 22 : 16,
+        interactive: true,
+        strokeColor: isSelected ? "#1769e0" : "#ffffff",
+        strokeWidth: isSelected ? 4 : 2,
+        userData: { leadId: lead.id },
+        zIndex: isSelected ? 30 : 20,
       });
 
-      const tooltip = document.createElement("div");
-      const title = document.createElement("strong");
-      const detail = document.createElement("span");
-      title.textContent = lead.name;
-      detail.textContent = `Потенциал: ${Math.round(score)} из 100`;
-      tooltip.className = styles.tooltip;
-      tooltip.append(title, detail);
-
-      marker.bindTooltip(tooltip, {
-        direction: "top",
-        offset: [0, -8],
-      });
       marker.on("click", () => onSelect(lead));
-      marker.addTo(markerLayer);
+      marker.on("mouseover", () => {
+        tooltip?.destroy();
+        tooltip = new api.HtmlMarker(map, {
+          anchor: [0, 14],
+          coordinates: position,
+          html: createTooltip(lead, score),
+          interactive: false,
+          labeling: { type: "none" },
+          preventMapInteractions: false,
+          zIndex: 50,
+        });
+        objectsRef.current.push(tooltip);
+      });
+      marker.on("mouseout", () => {
+        tooltip?.destroy();
+        if (tooltip) {
+          objectsRef.current = objectsRef.current.filter(
+            (object) => object !== tooltip,
+          );
+        }
+        tooltip = null;
+      });
 
-      if (isSelected) marker.bringToFront();
-      bounds.extend(position);
+      objectsRef.current.push(marker);
+      coordinates.push(position);
     }
 
     const coordinatesKey = mappableLeads
@@ -188,28 +252,28 @@ export default function LeadMap({
       fittedCoordinatesRef.current = viewportKey;
 
       if (hasValidCenter(focusCenter)) {
-        const position: Leaflet.LatLngExpression = [focusCenter[1], focusCenter[0]];
         if (Number.isFinite(focusRadiusKm) && (focusRadiusKm ?? 0) > 0) {
-          const diameterMeters = (focusRadiusKm ?? 15) * 2_000;
-          const focusBounds = leaflet.latLng(position).toBounds(diameterMeters);
-          map.fitBounds(focusBounds, {
-            animate: false,
+          map.fitBounds(radiusBounds(focusCenter, focusRadiusKm ?? 15), {
+            animation: { duration: 0 },
             maxZoom: 14,
-            padding: [40, 40],
+            padding: { top: 40, right: 40, bottom: 40, left: 40 },
           });
         } else {
-          map.setView(position, 10, { animate: false });
+          map.setCenter(focusCenter, { duration: 0 });
+          map.setZoom(10, { duration: 0 });
         }
-      } else if (mappableLeads.length === 1) {
-        map.setView(bounds.getCenter(), 13, { animate: false });
-      } else if (mappableLeads.length > 1) {
-        map.fitBounds(bounds, {
-          animate: false,
+      } else if (coordinates.length === 1) {
+        map.setCenter(coordinates[0], { duration: 0 });
+        map.setZoom(13, { duration: 0 });
+      } else if (coordinates.length > 1) {
+        map.fitBounds(coordinateBounds(coordinates), {
+          animation: { duration: 0 },
           maxZoom: 14,
-          padding: [40, 40],
+          padding: { top: 40, right: 40, bottom: 40, left: 40 },
         });
       } else {
-        map.setView(DEFAULT_CENTER, 10, { animate: false });
+        map.setCenter(DEFAULT_CENTER, { duration: 0 });
+        map.setZoom(10, { duration: 0 });
       }
     }
   }, [focusCenter, focusRadiusKm, leads, onSelect, selectedLeadId, status]);
@@ -224,19 +288,20 @@ export default function LeadMap({
       <div
         ref={containerRef}
         className={styles.map}
-        aria-label="Карта найденных лидов"
+        aria-label="Карта 2ГИС найденных лидов"
       />
 
       {status === "loading" && (
         <div className={styles.state} role="status">
           <span className={styles.spinner} aria-hidden="true" />
-          Загружаем карту…
+          Загружаем карту 2ГИС…
         </div>
       )}
 
       {status === "error" && (
         <div className={styles.state} role="alert">
-          Не удалось загрузить карту. Обновите страницу и попробуйте снова.
+          Не удалось загрузить карту 2ГИС. Проверьте доступ Map Tiles и обновите
+          страницу.
         </div>
       )}
 

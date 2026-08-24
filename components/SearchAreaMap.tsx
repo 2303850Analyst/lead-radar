@@ -1,9 +1,16 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import type * as Leaflet from "leaflet";
-import "leaflet/dist/leaflet.css";
 
+import {
+  loadDgisMapApi,
+  radiusBounds,
+  useDgisMapKey,
+  type DgisCircle,
+  type DgisHtmlMarker,
+  type DgisMap,
+  type DgisMapApi,
+} from "./maps/DgisMapProvider";
 import styles from "./SearchAreaMap.module.css";
 
 export type SearchAreaCenter = [longitude: number, latitude: number];
@@ -18,11 +25,10 @@ export type SearchAreaMapProps = {
 type MapStatus = "loading" | "ready" | "error";
 
 const DEFAULT_CENTER: SearchAreaCenter = [37.6173, 55.7558];
-const DEFAULT_RADIUS_METERS = 15_000;
+const DEFAULT_RADIUS_KM = 15;
 
 function isValidCenter(center: SearchAreaCenter) {
   const [longitude, latitude] = center;
-
   return (
     Number.isFinite(longitude) &&
     Number.isFinite(latitude) &&
@@ -37,27 +43,37 @@ function isValidRadius(radiusKm: number) {
   return Number.isFinite(radiusKm) && radiusKm > 0;
 }
 
-function toLatLng(center: SearchAreaCenter): Leaflet.LatLngExpression {
-  return [center[1], center[0]];
-}
-
 function centerKey(center: SearchAreaCenter) {
   return `${center[0].toFixed(7)}:${center[1].toFixed(7)}`;
 }
 
+function createSearchCircle(
+  api: DgisMapApi,
+  map: DgisMap,
+  center: SearchAreaCenter,
+  radiusKm: number,
+) {
+  return new api.Circle(map, {
+    coordinates: center,
+    radius: radiusKm * 1_000,
+    color: "#2c7cef1f",
+    strokeColor: "#1769e0",
+    strokeWidth: 2,
+    interactive: false,
+    zIndex: 10,
+  });
+}
+
 function fitSearchArea(
-  map: Leaflet.Map,
-  circle: Leaflet.Circle,
+  map: DgisMap,
+  center: SearchAreaCenter,
+  radiusKm: number,
   animate: boolean,
 ) {
-  const bounds = circle.getBounds();
-
-  if (!bounds.isValid()) return;
-
-  map.fitBounds(bounds, {
-    animate,
+  map.fitBounds(radiusBounds(center, radiusKm), {
+    animation: { duration: animate ? 250 : 0 },
     maxZoom: 16,
-    padding: [28, 28],
+    padding: { top: 28, right: 28, bottom: 28, left: 28 },
   });
 }
 
@@ -67,13 +83,17 @@ export default function SearchAreaMap({
   onCenterChange,
   className,
 }: SearchAreaMapProps) {
+  const apiKey = useDgisMapKey();
   const instructionsId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<Leaflet.Map | null>(null);
-  const markerRef = useRef<Leaflet.Marker | null>(null);
-  const circleRef = useRef<Leaflet.Circle | null>(null);
-  const leafletRef = useRef<typeof Leaflet | null>(null);
+  const mapRef = useRef<DgisMap | null>(null);
+  const markerRef = useRef<DgisHtmlMarker | null>(null);
+  const circleRef = useRef<DgisCircle | null>(null);
+  const mapApiRef = useRef<DgisMapApi | null>(null);
   const onCenterChangeRef = useRef(onCenterChange);
+  const radiusKmRef = useRef(radiusKm);
+  const initialCenterRef = useRef(center);
+  const initialRadiusKmRef = useRef(radiusKm);
   const interactionCenterRef = useRef<string | null>(null);
   const previousAreaRef = useRef<{ center: string; radiusKm: number } | null>(
     null,
@@ -92,107 +112,179 @@ export default function SearchAreaMap({
   }, [onCenterChange]);
 
   useEffect(() => {
+    radiusKmRef.current = radiusKm;
+  }, [radiusKm]);
+
+  useEffect(() => {
     let disposed = false;
     let resizeObserver: ResizeObserver | null = null;
     let resizeFrame: number | null = null;
+    let readyTimeout: ReturnType<typeof setTimeout> | null = null;
 
     async function initializeMap() {
       try {
-        const leaflet = await import("leaflet");
+        if (!apiKey) throw new Error("DGIS map key is not configured");
 
+        const api = await loadDgisMapApi();
         if (disposed || !containerRef.current) return;
 
-        const initialPosition = toLatLng(DEFAULT_CENTER);
-        const map = leaflet.map(containerRef.current, {
-          attributionControl: true,
-          boxZoom: true,
-          doubleClickZoom: true,
-          dragging: true,
-          keyboard: true,
-          scrollWheelZoom: true,
-          touchZoom: true,
-          zoomControl: true,
+        const initialCenter = isValidCenter(initialCenterRef.current)
+          ? initialCenterRef.current
+          : DEFAULT_CENTER;
+        const initialRadius = isValidRadius(initialRadiusKmRef.current)
+          ? initialRadiusKmRef.current
+          : DEFAULT_RADIUS_KM;
+        const map = new api.Map(containerRef.current, {
+          center: initialCenter,
+          copyright: "bottomRight",
+          disablePitchByUserInteraction: true,
+          disableRotationByUserInteraction: true,
+          key: apiKey,
+          lang: "ru",
+          scaleControl: false,
+          zoom: 10,
+          zoomControl: "topLeft",
         });
 
-        map.setView(initialPosition, 10, { animate: false });
-
-        const tiles = leaflet.tileLayer(
-          "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-          {
-            attribution:
-              '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-            maxZoom: 19,
-          },
+        const circle = createSearchCircle(
+          api,
+          map,
+          initialCenter,
+          initialRadius,
         );
-        tiles.addTo(map);
+        const pin = document.createElement("button");
+        pin.type = "button";
+        pin.className = styles.centerPin;
+        pin.setAttribute("aria-label", "Центр области поиска");
+        pin.title = "Перетащите, чтобы изменить центр поиска";
 
-        const centerIcon = leaflet.divIcon({
-          className: styles.centerIcon,
-          html: `<span class="${styles.centerPin}" aria-hidden="true"></span>`,
-          iconAnchor: [17, 34],
-          iconSize: [34, 34],
+        const marker = new api.HtmlMarker(map, {
+          anchor: [17, 34],
+          coordinates: initialCenter,
+          html: pin,
+          interactive: true,
+          labeling: { type: "none" },
+          preventMapInteractions: true,
+          zIndex: 20,
         });
 
-        const circle = leaflet.circle(initialPosition, {
-          color: "#1769e0",
-          fillColor: "#2c7cef",
-          fillOpacity: 0.12,
-          interactive: false,
-          radius: DEFAULT_RADIUS_METERS,
-          weight: 2,
-        });
-        circle.addTo(map);
+        function replaceCircle(nextCenter: SearchAreaCenter) {
+          circleRef.current?.destroy();
+          circleRef.current = createSearchCircle(
+            api,
+            map,
+            nextCenter,
+            isValidRadius(radiusKmRef.current)
+              ? radiusKmRef.current
+              : DEFAULT_RADIUS_KM,
+          );
+        }
 
-        const marker = leaflet.marker(initialPosition, {
-          alt: "Центр области поиска",
-          bubblingMouseEvents: false,
-          draggable: true,
-          icon: centerIcon,
-          keyboard: true,
-          riseOnHover: true,
-          title: "Перетащите, чтобы изменить центр поиска",
-        });
-        marker.addTo(map);
-
-        function publishCenter(latLng: Leaflet.LatLng) {
-          const nextCenter: SearchAreaCenter = [latLng.lng, latLng.lat];
+        function publishCenter(nextCenter: SearchAreaCenter) {
           interactionCenterRef.current = centerKey(nextCenter);
-          marker.setLatLng(latLng);
-          circle.setLatLng(latLng);
+          marker.setCoordinates(nextCenter);
+          replaceCircle(nextCenter);
           onCenterChangeRef.current(nextCenter);
         }
 
-        map.on("click", (event: Leaflet.LeafletMouseEvent) => {
-          publishCenter(event.latlng);
-        });
-        marker.on("drag", () => {
-          circle.setLatLng(marker.getLatLng());
-        });
-        marker.on("dragend", () => {
-          publishCenter(marker.getLatLng());
+        map.on("click", (event) => {
+          publishCenter([event.lngLat[0], event.lngLat[1]]);
         });
 
-        leafletRef.current = leaflet;
+        let dragging = false;
+        let dragOffset: [number, number] = [0, 0];
+
+        pin.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dragging = true;
+          pin.classList.add(styles.centerPinDragging);
+          pin.setPointerCapture(event.pointerId);
+          map.setOption("disableDragging", true);
+
+          const bounds = map.getContainer().getBoundingClientRect();
+          const pointer = [event.clientX - bounds.left, event.clientY - bounds.top];
+          const markerPoint = map.project(marker.getCoordinates());
+          dragOffset = [
+            markerPoint[0] - pointer[0],
+            markerPoint[1] - pointer[1],
+          ];
+        });
+
+        pin.addEventListener("pointermove", (event) => {
+          if (!dragging) return;
+          event.preventDefault();
+
+          const bounds = map.getContainer().getBoundingClientRect();
+          const nextCoordinates = map.unproject([
+            event.clientX - bounds.left + dragOffset[0],
+            event.clientY - bounds.top + dragOffset[1],
+          ]);
+          const nextCenter: SearchAreaCenter = [
+            nextCoordinates[0],
+            nextCoordinates[1],
+          ];
+          marker.setCoordinates(nextCenter);
+          replaceCircle(nextCenter);
+        });
+
+        function finishDragging(event: PointerEvent) {
+          if (!dragging) return;
+          event.preventDefault();
+          dragging = false;
+          pin.classList.remove(styles.centerPinDragging);
+          map.setOption("disableDragging", false);
+          const nextCoordinates = marker.getCoordinates();
+          publishCenter([nextCoordinates[0], nextCoordinates[1]]);
+        }
+
+        pin.addEventListener("pointerup", finishDragging);
+        pin.addEventListener("pointercancel", finishDragging);
+        pin.addEventListener("keydown", (event) => {
+          if (
+            !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
+              event.key,
+            )
+          ) {
+            return;
+          }
+
+          event.preventDefault();
+          const point = map.project(marker.getCoordinates());
+          const delta = event.shiftKey ? 50 : 18;
+          if (event.key === "ArrowLeft") point[0] -= delta;
+          if (event.key === "ArrowRight") point[0] += delta;
+          if (event.key === "ArrowUp") point[1] -= delta;
+          if (event.key === "ArrowDown") point[1] += delta;
+          const nextCoordinates = map.unproject(point);
+          publishCenter([nextCoordinates[0], nextCoordinates[1]]);
+        });
+
+        mapApiRef.current = api;
         mapRef.current = map;
         markerRef.current = marker;
         circleRef.current = circle;
 
-        map.whenReady(() => {
-          if (!disposed) setStatus("ready");
+        map.once("styleload", () => {
+          if (disposed) return;
+          if (readyTimeout) clearTimeout(readyTimeout);
+          setStatus("ready");
         });
+        map.once("styleloaderror", () => {
+          if (!disposed) setStatus("error");
+        });
+        readyTimeout = setTimeout(() => {
+          if (!disposed) setStatus("error");
+        }, 15_000);
 
         if (typeof ResizeObserver !== "undefined") {
           resizeObserver = new ResizeObserver(() => {
             if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
-            resizeFrame = window.requestAnimationFrame(() => {
-              map.invalidateSize({ pan: false });
-            });
+            resizeFrame = window.requestAnimationFrame(() => map.invalidateSize());
           });
           resizeObserver.observe(containerRef.current);
         } else {
-          resizeFrame = window.requestAnimationFrame(() => {
-            map.invalidateSize({ pan: false });
-          });
+          resizeFrame = window.requestAnimationFrame(() => map.invalidateSize());
         }
       } catch {
         if (!disposed) setStatus("error");
@@ -204,33 +296,33 @@ export default function SearchAreaMap({
     return () => {
       disposed = true;
       resizeObserver?.disconnect();
-
+      if (readyTimeout) clearTimeout(readyTimeout);
       if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
       if (fitFrameRef.current !== null) {
         window.cancelAnimationFrame(fitFrameRef.current);
         fitFrameRef.current = null;
       }
 
-      mapRef.current?.remove();
+      markerRef.current?.destroy();
+      circleRef.current?.destroy();
+      mapRef.current?.destroy();
       mapRef.current = null;
       markerRef.current = null;
       circleRef.current = null;
-      leafletRef.current = null;
+      mapApiRef.current = null;
       interactionCenterRef.current = null;
       previousAreaRef.current = null;
     };
-  }, []);
+  }, [apiKey]);
 
   useEffect(() => {
     if (status !== "ready" || inputError) return;
 
+    const api = mapApiRef.current;
     const map = mapRef.current;
     const marker = markerRef.current;
-    const circle = circleRef.current;
+    if (!api || !map || !marker) return;
 
-    if (!map || !marker || !circle) return;
-
-    const nextPosition = toLatLng(center);
     const nextCenterKey = centerKey(center);
     const previousArea = previousAreaRef.current;
     const centerChanged = previousArea?.center !== nextCenterKey;
@@ -238,20 +330,15 @@ export default function SearchAreaMap({
     const followsMapInteraction =
       centerChanged && interactionCenterRef.current === nextCenterKey;
 
-    marker.setLatLng(nextPosition);
-    circle.setLatLng(nextPosition);
-    circle.setRadius(radiusKm * 1_000);
+    marker.setCoordinates(center);
+    circleRef.current?.destroy();
+    circleRef.current = createSearchCircle(api, map, center, radiusKm);
     previousAreaRef.current = { center: nextCenterKey, radiusKm };
 
     if (!centerChanged && !radiusChanged) return;
 
     if (followsMapInteraction) {
       interactionCenterRef.current = null;
-      const innerBounds = map.getBounds().pad(-0.15);
-
-      if (!innerBounds.contains(nextPosition)) {
-        map.panTo(nextPosition, { animate: true, duration: 0.25 });
-      }
       return;
     }
 
@@ -259,17 +346,15 @@ export default function SearchAreaMap({
       window.cancelAnimationFrame(fitFrameRef.current);
     }
     fitFrameRef.current = window.requestAnimationFrame(() => {
-      fitSearchArea(map, circle, previousArea !== null);
+      fitSearchArea(map, center, radiusKm, previousArea !== null);
       fitFrameRef.current = null;
     });
   }, [center, inputError, radiusKm, status]);
 
   function handleFitArea() {
     const map = mapRef.current;
-    const circle = circleRef.current;
-
-    if (!map || !circle) return;
-    fitSearchArea(map, circle, true);
+    if (!map || inputError) return;
+    fitSearchArea(map, center, radiusKm, true);
     map.getContainer().focus({ preventScroll: true });
   }
 
@@ -284,12 +369,12 @@ export default function SearchAreaMap({
         className={styles.map}
         role="application"
         aria-describedby={instructionsId}
-        aria-label="Интерактивная карта области поиска"
+        aria-label="Интерактивная карта 2ГИС области поиска"
       />
 
       <p id={instructionsId} className={styles.visuallyHidden}>
-        Перемещайте карту мышью, касанием или клавишами со стрелками. Нажмите на
-        карту или перетащите маркер, чтобы выбрать новый центр поиска.
+        Перемещайте карту мышью или касанием. Нажмите на карту, перетащите маркер
+        или используйте клавиши со стрелками на маркере, чтобы выбрать центр.
       </p>
 
       {status === "ready" && !inputError && (
@@ -309,14 +394,14 @@ export default function SearchAreaMap({
       {status === "loading" && (
         <div className={styles.state} role="status" aria-live="polite">
           <span className={styles.spinner} aria-hidden="true" />
-          Загружаем интерактивную карту…
+          Загружаем карту 2ГИС…
         </div>
       )}
 
       {(status === "error" || inputError) && (
         <div className={styles.state} role="alert">
           {inputError ??
-            "Не удалось загрузить карту. Проверьте подключение и обновите страницу."}
+            "Не удалось загрузить карту 2ГИС. Проверьте доступ Map Tiles и обновите страницу."}
         </div>
       )}
     </div>

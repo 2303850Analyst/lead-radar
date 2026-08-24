@@ -118,22 +118,18 @@
   animation: spin 0.7s linear infinite;
 }
 
-.centerIcon {
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border: 0;
-  filter: drop-shadow(0 5px 5px rgba(23, 63, 119, 0.28));
-}
-
 .centerPin {
   position: relative;
   width: 27px;
   height: 27px;
   display: block;
+  padding: 0;
   border: 4px solid #fff;
   border-radius: 50% 50% 50% 12%;
   background: #1769e0;
+  box-shadow: 0 5px 5px rgba(23, 63, 119, 0.28);
+  cursor: grab;
+  touch-action: none;
   transform: rotate(-45deg);
 }
 
@@ -149,6 +145,15 @@
   transform: translate(-50%, -50%);
 }
 
+.centerPin:focus-visible {
+  outline: 3px solid rgba(23, 105, 224, 0.36);
+  outline-offset: 4px;
+}
+
+.centerPinDragging {
+  cursor: grabbing;
+}
+
 .visuallyHidden {
   position: absolute;
   width: 1px;
@@ -159,28 +164,6 @@
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-.frame :global(.leaflet-control-zoom) {
-  overflow: hidden;
-  border: 1px solid #d9e1eb;
-  border-radius: 9px;
-  box-shadow: 0 3px 12px rgba(26, 40, 64, 0.12);
-}
-
-.frame :global(.leaflet-control-zoom a) {
-  color: #344054;
-}
-
-.frame :global(.leaflet-control-zoom a:focus-visible) {
-  outline: 3px solid rgba(23, 105, 224, 0.24);
-  outline-offset: -3px;
-}
-
-.frame :global(.leaflet-control-attribution) {
-  color: #717d8f;
-  background: rgba(255, 255, 255, 0.84);
-  font-size: 9px;
 }
 
 @keyframes spin {

@@ -1,8 +1,10 @@
-# Подключение 2GIS Places API
+# Подключение 2GIS Places API и MapGL
 
-2GIS подключается как серверный источник организаций. Ключ не передаётся в
-браузер, не входит в поисковый payload и не должен попадать в Git, логи или
-скриншоты.
+2GIS подключается как серверный источник организаций и как движок встроенных
+карт. Ключ Places остаётся серверным. MapGL по своей природе получает ключ в
+браузере, поэтому для production нужен отдельный ключ с доступом только к Map
+Tiles и ограничением разрешённых доменов. Ни один ключ не должен попадать в Git,
+логи или скриншоты.
 
 ## 1. Настройка ключа
 
@@ -10,12 +12,17 @@
 
 ```env
 DGIS_API_KEY=ваш_серверный_ключ
+DGIS_MAP_KEY=ваш_ограниченный_ключ_map_tiles
 DGIS_DEMO_MODE=true
 DGIS_CONTACTS_ENABLED=false
 SEARCH_PROVIDER=2gis
 ```
 
 - `DGIS_DEMO_MODE=true` включает ограничения demo-подписки.
+- `DGIS_MAP_KEY` используется двумя встроенными картами 2GIS MapGL. Для
+  локальной проверки при пустом значении приложение использует
+  `DGIS_API_KEY`, однако этот fallback делает ключ видимым браузеру и не
+  подходит для внешнего deployment.
 - `DGIS_CONTACTS_ENABLED=false` фиксирует, что отдельное право на контактные
   поля не подтверждено: адаптер не запрашивает `contact_groups`, а отсутствие
   телефона или сайта не считает цифровым разрывом. Меняйте значение на `true`
@@ -37,7 +44,8 @@ npm run start
 
 Официальные страницы: [Platform Manager](https://platform.2gis.ru/),
 [тарифы и demo](https://docs.2gis.com/en/platform-manager/subscription/pricing),
-[Places API](https://docs.2gis.com/en/api/search/places/overview).
+[Places API](https://docs.2gis.com/en/api/search/places/overview),
+[MapGL](https://docs.2gis.com/en/mapgl/start/first-steps).
 
 ## 2. Цепочка поиска
 
@@ -91,6 +99,8 @@ npm run start
    2GIS и вернуть результат либо честный `success_empty`, но не
    `NO_SUPPORTED_CONCEPT`.
 
-Если сервер сообщает об ошибке авторизации, проверьте имя `DGIS_API_KEY`,
-доступ Places API у ключа и перезапуск процесса после изменения `.env.local`.
-Не вставляйте ключ в клиентский код и не добавляйте префикс `NEXT_PUBLIC_`.
+Если сервер сообщает об ошибке авторизации поиска, проверьте `DGIS_API_KEY` и
+доступ Places API. Если не загружается карта, проверьте `DGIS_MAP_KEY`, доступ
+Map Tiles и разрешённый origin. После изменения `.env.local` полностью
+перезапустите процесс. Не вставляйте ключ непосредственно в компоненты и не
+добавляйте префикс `NEXT_PUBLIC_`: ключ передаётся MapGL из server-render.
