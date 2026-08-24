@@ -1012,6 +1012,7 @@ export async function GET() {
         maxResultsPerPage:
           process.env.DGIS_DEMO_MODE !== "false" ? 10 : 50,
         contactsEnabled: process.env.DGIS_CONTACTS_ENABLED === "true",
+        csvExportEnabled: process.env.DGIS_EXPORT_ENABLED === "true",
         geocodingSource: "Geoapify / OpenStreetMap",
         rawResponsesStored: false,
       },
@@ -1413,6 +1414,7 @@ const searchOrchestrator = createSearchOrchestrator({
               contactsEnabled:
                 process.env.DGIS_CONTACTS_ENABLED === "true",
               demoMode: process.env.DGIS_DEMO_MODE !== "false",
+              exportEnabled: process.env.DGIS_EXPORT_ENABLED === "true",
             }).search(centeredPayload, {
               onProgress,
               signal,

@@ -88,6 +88,7 @@ test("2GIS sends bounded free-text requests, deduplicates cards and preserves ex
   const provider = new TwoGisProvider("test-key", {
     fetch,
     contactsEnabled: true,
+    exportEnabled: true,
   });
   const intent = semanticIntent({
     includeSignals: ["первый или цокольный этаж", "в жилом доме"],
@@ -106,6 +107,11 @@ test("2GIS sends bounded free-text requests, deduplicates cards and preserves ex
 
   assert.equal(result.outcome, "success_with_results");
   assert.equal(result.mode, "2gis");
+  assert.deepEqual(result.provider.policy.capabilities, {
+    mapDisplay: true,
+    csvExport: true,
+    localPersistence: false,
+  });
   assert.equal(result.leads.length, 1);
   assert.equal(result.leads[0].relevance.status, "matched");
   assert.equal(result.leads[0].phone, "+7 495 000-00-00");

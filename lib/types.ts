@@ -39,12 +39,23 @@ export type ProviderPersistencePolicy =
   | "allowed_with_attribution"
   | "contract_required";
 
+export type ProviderDataCapabilities = {
+  /** Provider data may be rendered on the configured in-app map. */
+  mapDisplay: boolean;
+  /** Normalized lead rows may be downloaded by the user as CSV. */
+  csvExport: boolean;
+  /** Normalized provider results may be retained in browser localStorage. */
+  localPersistence: boolean;
+};
+
 export type SearchProviderMetadata = {
   id: SearchProviderId;
   label: string;
   queriedAt: string;
   policy: {
     persistence: ProviderPersistencePolicy;
+    /** Explicit rights override the legacy coarse persistence policy. */
+    capabilities?: ProviderDataCapabilities;
     attributionRequired: boolean;
     attribution: string[];
     /** LeadRadar never persists complete upstream responses. */

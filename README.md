@@ -78,6 +78,7 @@ DGIS_API_KEY=новый_серверный_ключ_2gis
 DGIS_MAP_KEY=отдельный_браузерный_ключ_2gis_map_tiles
 DGIS_DEMO_MODE=true
 DGIS_CONTACTS_ENABLED=false
+DGIS_EXPORT_ENABLED=false
 SEARCH_PROVIDER=2gis
 ```
 
@@ -472,12 +473,13 @@ Geoapify Geocoding всё ещё определяет координаты вв�
 `DGIS_API_KEY`, но этот fallback раскрывает ключ браузеру и предназначен только
 для локальной проверки.
 
-Demo-ответы 2GIS имеют policy `contract_required`: интерфейс показывает
-атрибуцию, но не сохраняет их в `localStorage` и не разрешает CSV-экспорт.
-Наличие API-ключа или личный исследовательский сценарий сами по себе не меняют
-эту policy; снять ограничение можно только после подтверждения прав на
-хранение, переработку и экспорт. Настройка описана в
-[`docs/2gis-setup.md`](docs/2gis-setup.md).
+Demo-ответы 2GIS имеют базовую policy `contract_required`: интерфейс показывает
+атрибуцию, но не сохраняет их в `localStorage`. CSV управляется отдельной
+серверной capability: `DGIS_EXPORT_ENABLED=true` разрешает выгрузку
+нормализованных строк только при подтверждённом договорном праве и не включает
+localStorage либо сохранение raw-ответов. Наличие API-ключа или личный
+исследовательский сценарий сами по себе это право не подтверждают. Настройка
+описана в [`docs/2gis-setup.md`](docs/2gis-setup.md).
 
 ## Live-поиск Geoapify
 

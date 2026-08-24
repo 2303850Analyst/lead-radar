@@ -75,6 +75,11 @@ type ProviderMetadata = {
   queriedAt: string;
   policy: {
     persistence: "synthetic" | "allowed_with_attribution" | "contract_required";
+    capabilities?: {
+      mapDisplay: boolean;
+      csvExport: boolean;
+      localPersistence: boolean;
+    };
     attributionRequired: boolean;
     attribution: string[];
     rawResponsesStored: boolean;
@@ -253,11 +258,28 @@ function providerMetadata(response: SearchResponse): ProviderMetadata {
 }
 
 function canPersist(response: SearchResponse) {
-  return providerMetadata(response).policy.persistence !== "contract_required";
+  const policy = providerMetadata(response).policy;
+  return (
+    policy.capabilities?.localPersistence ??
+    policy.persistence !== "contract_required"
+  );
 }
 
-function hasProviderRestrictions(response: SearchResponse) {
-  return providerMetadata(response).policy.persistence === "contract_required";
+function canExport(response: SearchResponse) {
+  const policy = providerMetadata(response).policy;
+  return (
+    policy.capabilities?.csvExport ??
+    policy.persistence !== "contract_required"
+  );
+}
+
+function canDisplayOnMap(response: SearchResponse) {
+  const metadata = providerMetadata(response);
+  return (
+    metadata.policy.capabilities?.mapDisplay ??
+    (metadata.id === "2gis" ||
+      metadata.policy.persistence !== "contract_required")
+  );
 }
 
 function discoverySourceLabel(lead: Lead, response: SearchResponse) {
@@ -1046,8 +1068,8 @@ export default function LeadRadarApp() {
   };
 
   const exportCsv = () => {
-    if (!response || !canPersist(response)) {
-      setNotice("Экспорт отключён: для этого источника сначала нужны договорные права на хранение данных.");
+    if (!response || !canExport(response)) {
+      setNotice("Экспорт отключён: серверная лицензия источника не разрешает CSV.");
       return;
     }
     const provider = providerMetadata(response);
@@ -1092,8 +1114,8 @@ export default function LeadRadarApp() {
 
   const navigate = (next: Screen) => {
     if ((next === "results" || next === "map") && !response) return;
-    if (next === "map" && response && hasProviderRestrictions(response)) {
-      setNotice("Сторонняя карта для live-данных отключена до подтверждения условий источника.");
+    if (next === "map" && response && !canDisplayOnMap(response)) {
+      setNotice("Карта отключена условиями выбранного источника.");
       return;
     }
     setScreen(next);
@@ -1150,8 +1172,8 @@ export default function LeadRadarApp() {
             onPage={setPage}
             onOpenLead={openLead}
             onMap={() => {
-              if (hasProviderRestrictions(response)) {
-                setNotice("Сторонняя карта для live-данных отключена до подтверждения условий источника.");
+              if (!canDisplayOnMap(response)) {
+                setNotice("Карта отключена условиями выбранного источника.");
                 return;
               }
               setScreen("map");
@@ -1357,6 +1379,7 @@ function ResultsScreen({
 }) {
   const s = response.summary;
   const persistenceAllowed = canPersist(response);
+  const exportAllowed = canExport(response);
   const relevanceSummary = s.relevance ?? response.leads.reduce(
     (counts, lead) => {
       const status = relevanceStatus(lead);
@@ -1377,7 +1400,7 @@ function ResultsScreen({
     <section className="screen results-screen">
       <header className="screen-header">
         <div><p className="eyebrow">Готовая выборка</p><h1>Результаты поиска</h1><p>«{response.query.primaryQuery}» · {response.query.radiusKm} км от {response.query.location} · {new Date(response.generatedAt).toLocaleString("ru-RU")}</p></div>
-        <div className="header-actions"><button className="button" onClick={onExport} disabled={!persistenceAllowed}><Download size={16} /> Экспорт CSV</button><button className="button" disabled={!persistenceAllowed} title={persistenceAllowed ? "Выборка сохранена в этом браузере" : "Хранение отключено условиями источника"}><Save size={16} /> {persistenceAllowed ? "Сохранено локально" : "Хранение отключено"}</button></div>
+        <div className="header-actions"><button className="button" onClick={onExport} disabled={!exportAllowed} title={exportAllowed ? "Скачать отфильтрованную выборку в CSV" : "CSV отключён лицензией источника"}><Download size={16} /> Экспорт CSV</button><button className="button" disabled={!persistenceAllowed} title={persistenceAllowed ? "Выборка сохранена в этом браузере" : "Хранение отключено условиями источника"}><Save size={16} /> {persistenceAllowed ? "Сохранено локально" : "Хранение отключено"}</button></div>
       </header>
       <ProviderAttribution response={response} />
       <div className="stats-grid">

@@ -45,6 +45,7 @@ export type TwoGisProviderOptions = {
   requestTimeoutMs?: number;
   contactsEnabled?: boolean;
   demoMode?: boolean;
+  exportEnabled?: boolean;
 };
 
 type TwoGisPoint = {
@@ -808,6 +809,7 @@ export class TwoGisProvider implements SearchProvider {
   private readonly endpoint: string;
   private readonly requestTimeoutMs: number;
   private readonly contactsEnabled: boolean;
+  private readonly exportEnabled: boolean;
   private readonly pageSize: number;
 
   constructor(apiKey: string, options: TwoGisProviderOptions = {}) {
@@ -821,6 +823,7 @@ export class TwoGisProvider implements SearchProvider {
     this.fetchImpl = options.fetch ?? fetch;
     this.endpoint = options.endpoint ?? DGIS_ENDPOINT;
     this.contactsEnabled = options.contactsEnabled ?? false;
+    this.exportEnabled = options.exportEnabled ?? false;
     this.pageSize = options.demoMode === false ? 50 : DEMO_PAGE_SIZE;
     this.requestTimeoutMs = Math.max(
       1,
@@ -1083,6 +1086,11 @@ export class TwoGisProvider implements SearchProvider {
         queriedAt: observedAt,
         policy: {
           persistence: "contract_required",
+          capabilities: {
+            mapDisplay: true,
+            csvExport: this.exportEnabled,
+            localPersistence: false,
+          },
           attributionRequired: true,
           attribution: ["2GIS"],
           rawResponsesStored: false,
