@@ -7,8 +7,12 @@ import {
   fetchGeoapifyMetroStationDirectory,
   findGeoapifyMetroStations,
   searchGeoapifyMetroStations,
-  type GeoapifyMetroStationDirectory,
 } from "@/lib/providers/geoapify";
+import {
+  fetchTwoGisMetroStationDirectory,
+  findTwoGisMetroStations,
+  searchTwoGisMetroStations,
+} from "@/lib/providers/2gis-location";
 import { SearchProviderError } from "@/lib/providers/types";
 
 const DIRECTORY_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -18,14 +22,19 @@ const REQUEST_DEADLINE_MS = 30_000;
 const RATE_WINDOW_MS = 60_000;
 const DIRECTORY_REQUESTS_PER_WINDOW = 30;
 const FALLBACK_REQUESTS_PER_WINDOW = 6;
-const ATTRIBUTION = ["Geoapify", "OpenStreetMap contributors"] as const;
+type MetroProvider = "2gis" | "geoapify";
+type MetroStationDirectory = {
+  systemId: RussianMetroSystemId;
+  stations: import("@/lib/metro").MetroStation[];
+  fetchedAt: string;
+};
 
 type CachedDirectory = {
-  directory: GeoapifyMetroStationDirectory;
+  directory: MetroStationDirectory;
   expiresAtMs: number;
 };
 
-const directoryCache = new Map<RussianMetroSystemId, CachedDirectory>();
+const directoryCache = new Map<string, CachedDirectory>();
 const directoryRateWindows = new Map<string, number[]>();
 const fallbackRateWindows = new Map<string, number[]>();
 const GLOBAL_RATE_KEY = "__global__";
@@ -39,12 +48,14 @@ function normalizeQuery(value: string | null): string {
 }
 
 async function metroDirectory(
+  provider: MetroProvider,
   system: RussianMetroSystem,
   apiKey: string,
   signal: AbortSignal,
-): Promise<{ directory: GeoapifyMetroStationDirectory; cached: boolean }> {
+): Promise<{ directory: MetroStationDirectory; cached: boolean }> {
   const nowMs = Date.now();
-  const cached = directoryCache.get(system.id);
+  const cacheKey = `${provider}:${system.id}`;
+  const cached = directoryCache.get(cacheKey);
   if (cached && cached.expiresAtMs > nowMs) {
     return { directory: cached.directory, cached: true };
   }
@@ -54,12 +65,13 @@ async function metroDirectory(
     // Each caller owns its cancellation signal. This deliberately avoids
     // sharing an abortable promise between clients: one disconnected request
     // must never cancel a healthy concurrent request.
-    const directory = await fetchGeoapifyMetroStationDirectory(
-      system,
-      apiKey,
-      signal,
-    );
-    directoryCache.set(system.id, {
+    const directory = provider === "2gis"
+      ? await fetchTwoGisMetroStationDirectory(system, apiKey, {
+          signal,
+          demoMode: process.env.DGIS_DEMO_MODE !== "false",
+        })
+      : await fetchGeoapifyMetroStationDirectory(system, apiKey, signal);
+    directoryCache.set(cacheKey, {
       directory,
       expiresAtMs: Date.now() + DIRECTORY_CACHE_TTL_MS,
     });
@@ -73,10 +85,10 @@ async function metroDirectory(
 }
 
 function providerErrorStatus(code: string): number {
-  if (code === "GEOAPIFY_NOT_CONFIGURED") return 503;
-  if (code === "GEOAPIFY_FORBIDDEN") return 503;
-  if (code === "GEOAPIFY_RATE_LIMIT") return 503;
-  if (code === "GEOAPIFY_TIMEOUT") return 504;
+  if (code === "GEOAPIFY_NOT_CONFIGURED" || code === "DGIS_NOT_CONFIGURED") return 503;
+  if (code === "GEOAPIFY_FORBIDDEN" || code === "DGIS_AUTH_FAILED") return 503;
+  if (code === "GEOAPIFY_RATE_LIMIT" || code === "DGIS_RATE_LIMIT") return 503;
+  if (code === "GEOAPIFY_TIMEOUT" || code === "DGIS_TIMEOUT") return 504;
   if (code === "SEARCH_ABORTED") return 499;
   return 502;
 }
@@ -209,12 +221,18 @@ export async function GET(request: Request) {
     );
   }
 
-  const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+  const provider: MetroProvider =
+    process.env.SEARCH_PROVIDER?.trim().toLocaleLowerCase("en-US") === "2gis"
+      ? "2gis"
+      : "geoapify";
+  const apiKey = provider === "2gis"
+    ? process.env.DGIS_API_KEY?.trim()
+    : process.env.GEOAPIFY_API_KEY?.trim();
   if (!apiKey) {
     return json(
       {
-        error: "Серверный ключ Geoapify не настроен",
-        code: "GEOAPIFY_NOT_CONFIGURED",
+        error: `Серверный ключ ${provider === "2gis" ? "2GIS" : "Geoapify"} не настроен`,
+        code: provider === "2gis" ? "DGIS_NOT_CONFIGURED" : "GEOAPIFY_NOT_CONFIGURED",
       },
       503,
     );
@@ -231,11 +249,14 @@ export async function GET(request: Request) {
 
   try {
     const { directory, cached } = await metroDirectory(
+      provider,
       system,
       apiKey,
       controller.signal,
     );
-    let stations = searchGeoapifyMetroStations(directory.stations, query);
+    let stations = provider === "2gis"
+      ? searchTwoGisMetroStations(directory.stations, query)
+      : searchGeoapifyMetroStations(directory.stations, query);
     if (query && stations.length === 0) {
       const fallbackRetryAfter = consumeScopedRateWindow(
         fallbackRateWindows,
@@ -253,18 +274,20 @@ export async function GET(request: Request) {
           { "Retry-After": String(fallbackRetryAfter) },
         );
       }
-      stations = await findGeoapifyMetroStations(
-        system,
-        query,
-        apiKey,
-        controller.signal,
-      );
+      stations = provider === "2gis"
+        ? await findTwoGisMetroStations(system, query, apiKey, {
+            signal: controller.signal,
+            demoMode: process.env.DGIS_DEMO_MODE !== "false",
+          })
+        : await findGeoapifyMetroStations(system, query, apiKey, controller.signal);
     }
     return json({
       system: { id: system.id, city: system.city },
       stations,
-      provider: "geoapify",
-      attribution: [...ATTRIBUTION],
+      provider,
+      attribution: provider === "2gis"
+        ? ["2GIS"]
+        : ["Geoapify", "OpenStreetMap contributors"],
       queriedAt: new Date().toISOString(),
       cached,
       ...(query ? { query } : {}),
@@ -284,7 +307,7 @@ export async function GET(request: Request) {
         ? error
         : new SearchProviderError(
             "Не удалось загрузить станции метро",
-            "GEOAPIFY_UNKNOWN_ERROR",
+            provider === "2gis" ? "DGIS_UNKNOWN_ERROR" : "GEOAPIFY_UNKNOWN_ERROR",
           );
     return json(
       { error: providerError.message, code: providerError.code },

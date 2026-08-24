@@ -59,7 +59,7 @@ npm run start
 
 Откройте [http://localhost:3000](http://localhost:3000). Dev-сервер по умолчанию
 привязан только к `127.0.0.1`, чтобы другие устройства в сети не расходовали
-квоту Geoapify через локальный API.
+квоту выбранного внешнего провайдера через локальный API.
 
 `npm run dev` остаётся режимом разработки с горячей перезагрузкой. На Windows
 плагин Cloudflare иногда завершается внутри `workerd`; проверенный путь для
@@ -69,11 +69,10 @@ npm run start
 детерминированное понимание категорий. Реальный Kimi не обязателен для знакомых
 таксономии запросов.
 
-Для поиска организаций через 2GIS создайте `.env.local`. Geoapify пока
-используется для серверной геокодировки введённого адреса:
+Для поиска организаций, геокодирования и справочника метро через 2GIS создайте
+`.env.local`:
 
 ```env
-GEOAPIFY_API_KEY=новый_серверный_ключ
 DGIS_API_KEY=новый_серверный_ключ_2gis
 DGIS_MAP_KEY=отдельный_браузерный_ключ_2gis_map_tiles
 DGIS_DEMO_MODE=true
@@ -231,10 +230,10 @@ only tuning, но сам ещё не доказывает необходимос
   "status": "ok",
   "service": "LeadRadar Search API",
   "version": "0.4.0-alpha.1",
-  "mode": "geoapify",
-  "searchProvider": "geoapify",
-  "geoapifyConfigured": true,
-  "geoapifyKeyConfigured": true,
+  "mode": "2gis",
+  "searchProvider": "2gis",
+  "dgisConfigured": true,
+  "dgisKeyConfigured": true,
   "capabilities": {
     "queryIntelligence": {
       "configured": true,
@@ -242,19 +241,13 @@ only tuning, но сам ещё не доказывает необходимос
       "model": "kimi-k3",
       "strictStructuredOutput": true
     },
-    "geoapifyPlaces": {
+    "twoGisPlaces": {
       "configured": true,
-      "placesLimit": 100,
-      "detailsLimit": 20,
-      "retrievalLimits": {
-        "maxArms": 4,
-        "maxUpstreamRequests": 4,
-        "maxCards": 200,
-        "maxDetails": 50
-      },
+      "freeTextSearch": true,
+      "providerCategoryIdRequired": false,
       "strictRadius": true,
-      "countryFilter": "ru",
-      "supportedCountryCodes": ["RU", "BY", "KZ"],
+      "maxResultsPerPage": 10,
+      "geocodingSource": "2GIS Geocoder API",
       "rawResponsesStored": false
     },
     "metroStations": {
@@ -263,22 +256,23 @@ only tuning, но сам ещё не доказывает необходимос
         { "id": "moscow", "city": "Москва" },
         { "id": "saint-petersburg", "city": "Санкт-Петербург" }
       ],
-      "source": "Geoapify / OpenStreetMap",
-      "typedGeocodeFallback": true,
+      "source": "2GIS Places API",
+      "typedGeocodeFallback": false,
       "rawResponsesStored": false
     }
   }
 }
 ```
 
-`countryFilter: "ru"` сохраняет прежний default для старого payload;
-`supportedCountryCodes` описывает новый явный контракт. В alpha за один поиск
-разрешена ровно одна страна.
+Провайдерный health отражает фактический маршрут: для 2GIS поле
+`typedGeocodeFallback` равно `false`, потому что уточняющий поиск станции также
+идёт через 2GIS Places. В alpha за один поиск разрешена ровно одна страна.
 
 ### `POST /api/geocode`
 
-Определяет координаты города, района или адреса через серверный Geoapify
-Geocoding API. Ключ остаётся на сервере.
+Определяет координаты города, района или адреса через серверный геокодер
+выбранного провайдера: 2GIS Geocoder при `SEARCH_PROVIDER=2gis` либо Geoapify
+Geocoding при `SEARCH_PROVIDER=geoapify`. Ключ остаётся на сервере.
 
 ```json
 {
@@ -302,15 +296,17 @@ GET /api/metro-stations?city=samara&q=Гагаринская
 ```
 
 Поддержанные ID: `moscow`, `saint-petersburg`, `novosibirsk`,
-`nizhny-novgorod`, `samara`, `yekaterinburg`, `kazan`. Без `q` endpoint
-возвращает обнаруженный каталог Geoapify/OpenStreetMap; с `q` сначала фильтрует
-его, а при нулевом результате использует точный Geocoding + Place Details
-fallback. Ответ содержит только нормализованные названия, координаты, цвета
-линий и provider IDs, но не API-ключ и не полный upstream response. Каталог
+`nizhny-novgorod`, `samara`, `yekaterinburg`, `kazan`. Источник соответствует
+`SEARCH_PROVIDER`: в режиме 2GIS каталог и уточняющий запрос выполняются через
+Places с `type=station.metro`; в режиме Geoapify сохраняется прежняя цепочка
+Places → Geocoding → Place Details. Ответ содержит только нормализованные
+названия, координаты, цвета линий и provider IDs, но не API-ключ и не полный
+upstream response. Каталог
 кэшируется в памяти процесса на 24 часа и может быть отдан из устаревшего кэша
 при временной ошибке провайдера. Уточняющий поиск принимает минимум два символа,
 имеет отдельные клиентский и глобальный минутные лимиты, общий deadline 30
-секунд и проверяет не более трёх кандидатов через Place Details.
+секунд. Перед поиском выбранная станция повторно сверяется с карточкой текущего
+провайдера.
 
 Пример выбора метро в поисковом payload:
 
@@ -320,7 +316,7 @@ fallback. Ответ содержит только нормализованны�
   "locationMode": "metro",
   "metro": {
     "systemId": "moscow",
-    "stationId": "geoapify:<place-id>",
+    "stationId": "2gis:<place-id>",
     "stationName": "Белорусская"
   },
   "center": [37.58515, 55.77595],
@@ -331,14 +327,14 @@ fallback. Ответ содержит только нормализованны�
 Для `locationMode: "metro"` станция и `center` обязательны, страна/локаль должны
 быть `RU`/`ru-RU`, радиус ограничен диапазоном 0,5–10 км, а координаты обязаны
 попадать в область выбранного метрополитена. Перед поиском сервер повторно
-проверяет provider ID, название и координаты через Place Details и использует
-канонические координаты источника; подтверждение кэшируется на 24 часа. Старые
-клиенты без `locationMode` сохраняют прежнее поведение кругового радиуса.
+проверяет provider ID, название и координаты через карточку текущего источника и
+использует его канонические координаты. Старые клиенты без `locationMode`
+сохраняют прежнее поведение кругового радиуса.
 
 ### `POST /api/search/plan`
 
-Интерпретирует запрос и не обращается к Geoapify. Вход совпадает с поисковым
-заданием; дополнительно поддерживаются `locale` и одна страна:
+Интерпретирует запрос и не обращается к поисковому провайдеру. Вход совпадает с
+поисковым заданием; дополнительно поддерживаются `locale` и одна страна:
 
 ```json
 {

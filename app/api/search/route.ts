@@ -1,12 +1,15 @@
 import { createDemoResponse } from "@/lib/demo-data";
 import {
   GeoapifyProvider,
-  geocodeGeoapifyLocation,
   geoapifyDetailsLimit,
   geoapifyPlacesLimit,
   verifyGeoapifyMetroStationSelection,
 } from "@/lib/providers/geoapify";
 import { TwoGisProvider } from "@/lib/providers/2gis";
+import {
+  geocodeTwoGisLocation,
+  verifyTwoGisMetroStationSelection,
+} from "@/lib/providers/2gis-location";
 import {
   SearchProviderError,
   type CompiledGeoapifyPlan,
@@ -1013,14 +1016,18 @@ export async function GET() {
           process.env.DGIS_DEMO_MODE !== "false" ? 10 : 50,
         contactsEnabled: process.env.DGIS_CONTACTS_ENABLED === "true",
         csvExportEnabled: process.env.DGIS_EXPORT_ENABLED === "true",
-        geocodingSource: "Geoapify / OpenStreetMap",
+        geocodingSource: "2GIS Geocoder API",
         rawResponsesStored: false,
       },
       metroStations: {
-        configured: geoapifyKeyConfigured,
+        configured: providerSetting === "2gis"
+          ? dgisKeyConfigured
+          : geoapifyKeyConfigured,
         systems: RUSSIAN_METRO_SYSTEMS.map(({ id, city }) => ({ id, city })),
-        source: "Geoapify / OpenStreetMap",
-        typedGeocodeFallback: true,
+        source: providerSetting === "2gis"
+          ? "2GIS Places API"
+          : "Geoapify / OpenStreetMap",
+        typedGeocodeFallback: providerSetting !== "2gis",
         rawResponsesStored: false,
       },
       yandexGeosearch: {
@@ -1148,7 +1155,7 @@ async function withTwoGisSearchCenter(
     status: "started",
     message: payload.center
       ? "Используем точку, выбранную на карте"
-      : "Определяем координаты указанной географии через Geoapify",
+      : "Определяем координаты указанной географии через 2GIS",
   });
   if (payload.center) {
     await emitProgress(onProgress, {
@@ -1159,11 +1166,11 @@ async function withTwoGisSearchCenter(
     return payload;
   }
 
-  const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+  const apiKey = process.env.DGIS_API_KEY?.trim();
   if (!apiKey) {
     throw new SearchProviderError(
-      "Для определения центра поиска не настроен GEOAPIFY_API_KEY",
-      "GEOAPIFY_NOT_CONFIGURED",
+      "Для определения центра поиска не настроен DGIS_API_KEY",
+      "DGIS_NOT_CONFIGURED",
     );
   }
   const timeoutMs = runtime?.stageTimeoutMs(
@@ -1177,20 +1184,11 @@ async function withTwoGisSearchCenter(
       "Общий лимит времени поиска исчерпан до геокодирования",
     );
   }
-  const language =
-    plan.intent.locale === "be-BY"
-      ? "be"
-      : plan.intent.locale === "kk-KZ"
-        ? "kk"
-        : "ru";
-  const center = await geocodeGeoapifyLocation(
-    payload.location,
-    apiKey,
+  const center = await geocodeTwoGisLocation(payload.location, apiKey, {
     signal,
-    plan.intent.countryCodes[0],
-    language,
+    locale: plan.intent.locale,
     timeoutMs,
-  );
+  });
   await emitProgress(onProgress, {
     stage: "geocoding",
     status: "completed",
@@ -1211,23 +1209,25 @@ const searchOrchestrator = createSearchOrchestrator({
     }
 
     const system = getRussianMetroSystem(payload.metro.systemId);
-    const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+    const useTwoGis =
+      process.env.SEARCH_PROVIDER?.trim().toLocaleLowerCase("en-US") === "2gis";
+    const apiKey = useTwoGis
+      ? process.env.DGIS_API_KEY?.trim()
+      : process.env.GEOAPIFY_API_KEY?.trim();
     if (!system || !apiKey) {
       throw new SearchProviderError(
         "Справочник метро временно недоступен",
-        "GEOAPIFY_NOT_CONFIGURED",
+        useTwoGis ? "DGIS_NOT_CONFIGURED" : "GEOAPIFY_NOT_CONFIGURED",
       );
     }
-    const station = await verifyGeoapifyMetroStationSelection(
-      system,
-      {
-        stationId: payload.metro.stationId,
-        stationName: payload.metro.stationName,
-        coordinates: payload.center,
-      },
-      apiKey,
-      signal,
-    );
+    const selection = {
+      stationId: payload.metro.stationId,
+      stationName: payload.metro.stationName,
+      coordinates: payload.center,
+    };
+    const station = useTwoGis
+      ? await verifyTwoGisMetroStationSelection(system, selection, apiKey, { signal })
+      : await verifyGeoapifyMetroStationSelection(system, selection, apiKey, signal);
     return {
       ...payload,
       location: `Метро «${station.name}», ${system.city}`,

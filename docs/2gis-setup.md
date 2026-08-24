@@ -34,10 +34,12 @@ SEARCH_PROVIDER=2gis
 - `SEARCH_PROVIDER=2gis` выбирает 2GIS для поиска организаций. Значения
   `geoapify` и `demo` сохраняются для явного переключения источника.
 
-Текущая alpha-интеграция переиспользует Geoapify Geocoding для преобразования
-введённого адреса в координаты, поэтому оставьте настроенный
-`GEOAPIFY_API_KEY`. Если пользователь выбрал точку непосредственно на карте,
-поиск 2GIS получает уже готовый центр.
+При `SEARCH_PROVIDER=2gis` введённый адрес преобразуется в координаты через
+`https://catalog.api.2gis.com/3.0/items/geocode`, а справочник метро использует
+`https://catalog.api.2gis.com/3.0/items` с `type=station.metro`. Выбранная
+станция повторно проверяется через `/3.0/items/byid`. `GEOAPIFY_API_KEY` для
+этого режима не требуется. Если пользователь выбрал точку непосредственно на
+карте, поиск получает уже готовый центр и пропускает геокодирование.
 
 После изменения окружения полностью перезапустите сервер:
 
@@ -49,6 +51,7 @@ npm run start
 Официальные страницы: [Platform Manager](https://platform.2gis.ru/),
 [тарифы и demo](https://docs.2gis.com/en/platform-manager/subscription/pricing),
 [Places API](https://docs.2gis.com/en/api/search/places/overview),
+[Geocoder API](https://docs.2gis.com/en/api/search/geocoder/overview),
 [MapGL](https://docs.2gis.com/en/mapgl/start/first-steps).
 
 ## 2. Цепочка поиска
@@ -63,9 +66,11 @@ npm run start
    `https://catalog.api.2gis.com/3.0/items` по основному типу и синонимам. Каждый
    запрос получает `type=branch`, `q`, `point`/`location`, радиус не более
    50 км и в demo-режиме `page_size` не более 10.
-4. Карточки нормализуются в общий контракт LeadRadar, дедуплицируются и
+4. Кнопка внешней карты в карточке открывает `/firm/<provider-id>` на 2GIS, а
+   не координаты в OpenStreetMap.
+5. Карточки нормализуются в общий контракт LeadRadar, дедуплицируются и
    проверяются на соответствие исходному типу бизнеса.
-5. Пустой валидный ответ становится `success_empty`; ошибка ключа, лимита или
+6. Пустой валидный ответ становится `success_empty`; ошибка ключа, лимита или
    транспорта остаётся контролируемой технической ошибкой.
 
 Свободный `q` не требует заранее добавленного alias или `rubric_id`. Широкая

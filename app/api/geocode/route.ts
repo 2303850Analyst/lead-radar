@@ -1,10 +1,12 @@
 import { geocodeGeoapifyLocation } from "@/lib/providers/geoapify";
+import { geocodeTwoGisLocation } from "@/lib/providers/2gis-location";
 import { SearchProviderError } from "@/lib/providers/types";
 
 function errorStatus(code: string) {
-  if (code === "GEOAPIFY_INVALID_LOCATION") return 400;
-  if (code === "GEOAPIFY_LOCATION_NOT_FOUND") return 404;
-  if (code === "GEOAPIFY_NOT_CONFIGURED") return 503;
+  if (code === "GEOAPIFY_INVALID_LOCATION" || code === "DGIS_INVALID_LOCATION") return 400;
+  if (code === "GEOAPIFY_LOCATION_NOT_FOUND" || code === "DGIS_LOCATION_NOT_FOUND") return 404;
+  if (code === "GEOAPIFY_NOT_CONFIGURED" || code === "DGIS_NOT_CONFIGURED") return 503;
+  if (code === "GEOAPIFY_TIMEOUT" || code === "DGIS_TIMEOUT") return 504;
   return 502;
 }
 
@@ -36,32 +38,35 @@ export async function POST(request: Request) {
     );
   }
 
-  const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+  const provider = process.env.SEARCH_PROVIDER?.trim().toLocaleLowerCase("en-US") === "2gis"
+    ? "2gis"
+    : "geoapify";
+  const apiKey = provider === "2gis"
+    ? process.env.DGIS_API_KEY?.trim()
+    : process.env.GEOAPIFY_API_KEY?.trim();
   if (!apiKey) {
     return Response.json(
-      { error: "Серверный ключ Geoapify не настроен" },
+      { error: `Серверный ключ ${provider === "2gis" ? "2GIS" : "Geoapify"} не настроен` },
       { status: 503 },
     );
   }
 
   try {
-    const coordinates = await geocodeGeoapifyLocation(
-      location,
-      apiKey,
-      request.signal,
-    );
+    const coordinates = provider === "2gis"
+      ? await geocodeTwoGisLocation(location, apiKey, { signal: request.signal })
+      : await geocodeGeoapifyLocation(location, apiKey, request.signal);
     return Response.json({
       coordinates,
       location,
-      provider: "geoapify",
+      provider,
     });
   } catch (error) {
     const providerError =
       error instanceof SearchProviderError
         ? error
         : new SearchProviderError(
-            "Не удалось определить точку на карте",
-            "GEOAPIFY_UNKNOWN_ERROR",
+          "Не удалось определить точку на карте",
+            provider === "2gis" ? "DGIS_UNKNOWN_ERROR" : "GEOAPIFY_UNKNOWN_ERROR",
           );
     return Response.json(
       { error: providerError.message, code: providerError.code },

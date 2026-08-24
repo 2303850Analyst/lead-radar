@@ -52,6 +52,7 @@ import type {
   SearchProviderId,
   SearchResponse,
 } from "@/lib/types";
+import { externalMapTarget } from "@/lib/provider-links";
 import type {
   SearchPlan,
   SearchPlanAlternative,
@@ -1516,16 +1517,18 @@ function DetailScreen({
   onCopy: (value: string, label: string) => void;
 }) {
   const provider = providerMetadata(response);
-  const [longitude, latitude] = lead.location.coordinates;
-  const isYandex = String(lead.discovery.source) === "yandex" || provider.id === "yandex";
-  const externalMapUrl = isYandex
-    ? `https://yandex.ru/maps/?pt=${longitude},${latitude}&z=16&l=map`
-    : `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=16/${latitude}/${longitude}`;
-  const externalMapLabel = isYandex ? "Открыть в Яндекс Картах" : "Открыть в OpenStreetMap";
+  const externalMap = externalMapTarget({
+    providerId: provider.id,
+    discoverySource: String(lead.discovery.source),
+    name: lead.name,
+    address: lead.location.address,
+    coordinates: lead.location.coordinates,
+    sources: (lead as LeadWithSources).sources,
+  });
   return (
     <section className="screen detail-screen">
       <button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Назад к результатам</button>
-      <header className="detail-header"><div><div className="title-row"><h1>{lead.name}</h1><span className={`status-pill ${statusTone(lead.status)}`}>{lead.status}</span></div><div className="tag-row"><span>{lead.category}</span>{lead.tags.map((tag) => <span key={tag}>{tag}</span>)}</div><p><MapPin size={15} /> {lead.location.address}{lead.possibleBranches.length > 0 && <button>{lead.possibleBranches.length} возможных филиала</button>}</p></div><div className="header-actions"><select className={`status-select detail-status ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select>{lead.phone && <a className="button button-primary" href={`tel:${lead.phone.replace(/[^+\d]/g, "")}`}><Phone size={16} /> Связаться</a>}<a className="button" href={externalMapUrl} target="_blank" rel="noreferrer"><MapPin size={16} /> {externalMapLabel}</a></div></header>
+      <header className="detail-header"><div><div className="title-row"><h1>{lead.name}</h1><span className={`status-pill ${statusTone(lead.status)}`}>{lead.status}</span></div><div className="tag-row"><span>{lead.category}</span>{lead.tags.map((tag) => <span key={tag}>{tag}</span>)}</div><p><MapPin size={15} /> {lead.location.address}{lead.possibleBranches.length > 0 && <button>{lead.possibleBranches.length} возможных филиала</button>}</p></div><div className="header-actions"><select className={`status-select detail-status ${statusTone(lead.status)}`} value={lead.status} onChange={(event) => onStatus(event.target.value as LeadStatus)}>{STATUSES.map((status) => <option key={status}>{status}</option>)}</select>{lead.phone && <a className="button button-primary" href={`tel:${lead.phone.replace(/[^+\d]/g, "")}`}><Phone size={16} /> Связаться</a>}<a className="button" href={externalMap.href} target="_blank" rel="noreferrer"><MapPin size={16} /> {externalMap.label}</a></div></header>
       <ProviderAttribution response={response} />
       <div className="detail-tabs"><button className="active">Обзор</button><button>Источники</button><button>Проблемы</button><button>Оценки</button><button>История</button></div>
       <div className="detail-grid">

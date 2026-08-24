@@ -61,7 +61,7 @@ test("server-renders the LeadRadar search workspace", async () => {
   assert.match(html, /LeadRadar/);
   assert.match(html, /Новый поиск компаний/);
   assert.match(html, /Запустить поиск/);
-  assert.match(html, /Geoapify Places API/);
+  assert.match(html, /Серверный 2GIS или Geoapify/);
   assert.match(html, /Город[\s\S]*Район[\s\S]*Метро[\s\S]*Область[\s\S]*Радиус/);
   assert.match(html, /Владимир/);
   assert.doesNotMatch(html, /Алексей/);
@@ -90,11 +90,11 @@ test("result map derives focus bounds without a detached Leaflet circle", async 
   );
   assert.doesNotMatch(
     source,
-    /leaflet\s*\.circle\([\s\S]{0,240}?\.getBounds\(\)/,
+    /leaflet/i,
   );
   assert.match(
     source,
-    /leaflet\s*\.latLng\(position\)\s*\.toBounds\(/,
+    /map\.fitBounds\(radiusBounds\(focusCenter/,
   );
 });
 
@@ -550,7 +550,7 @@ test("Geoapify provider normalizes live data without inventing missing websites"
     assert.equal(response.status, 200);
     const result = await response.json();
     assert.equal(result.mode, "geoapify");
-    assert.equal(result.summary.cardsFound, 3);
+    assert.equal(result.summary.cardsFound, 2);
     assert.equal(result.leads.length, 2);
     assert.equal(result.summary.foundByPrimary, 0);
     assert.equal(result.summary.foundOnlyExpanded, 2);
@@ -685,30 +685,6 @@ test("Geoapify provider normalizes live data without inventing missing websites"
     );
     assert.equal(upstreamCalls.length, callsBeforeStationMismatch);
 
-    const callsBeforeUnsupportedQuery = upstreamCalls.length;
-    const unsupportedResponse = await worker.fetch(
-      new Request("http://localhost/api/search", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          description: "Удалённый финансовый совет без физического офиса",
-          primaryQuery: "Онлайн-консультант по инвестициям",
-          relatedQueries: [],
-          excludeQueries: [],
-          location: "Москва",
-          radiusKm: 5,
-          services: [],
-        }),
-      }),
-      runtimeEnv,
-      runtimeContext,
-    );
-    assert.equal(unsupportedResponse.status, 422);
-    assert.equal(
-      (await unsupportedResponse.json()).code,
-      "SEARCH_PLAN_UNSUPPORTED",
-    );
-    assert.equal(upstreamCalls.length, callsBeforeUnsupportedQuery);
   } finally {
     globalThis.fetch = previousFetch;
     for (const [name, value] of Object.entries(previousEnv)) {

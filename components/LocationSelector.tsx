@@ -77,7 +77,7 @@ const LOCATION_MODES: Array<{
 type MetroDirectoryResponse = {
   system: { id: RussianMetroSystemId; city: string };
   stations: MetroStation[];
-  provider: "geoapify";
+  provider: "2gis" | "geoapify";
   attribution: string[];
   queriedAt: string;
   cached?: boolean;
@@ -122,6 +122,7 @@ export default function LocationSelector({
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState("");
   const [metroStations, setMetroStations] = useState<MetroStation[]>([]);
+  const [metroSource, setMetroSource] = useState<MetroDirectoryResponse["provider"] | null>(null);
   const [stationText, setStationText] = useState(query.metro?.stationName ?? "");
   const [metroLoading, setMetroLoading] = useState(locationMode === "metro");
   const [metroError, setMetroError] = useState("");
@@ -151,10 +152,14 @@ export default function LocationSelector({
         if (!response.ok) throw new Error(payload.error || "Не удалось загрузить станции метро");
         return payload;
       })
-      .then((payload) => setMetroStations(uniqueStations(payload.stations)))
+      .then((payload) => {
+        setMetroStations(uniqueStations(payload.stations));
+        setMetroSource(payload.provider);
+      })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         setMetroStations([]);
+        setMetroSource(null);
         setMetroError(error instanceof Error ? error.message : "Не удалось загрузить станции метро");
       })
       .finally(() => {
@@ -178,6 +183,7 @@ export default function LocationSelector({
     setMetroError("");
     setMetroMatchMessage("");
     setMetroCandidates([]);
+    setMetroSource(null);
     setStationText("");
     setQuery((current) => ({
       ...current,
@@ -261,6 +267,7 @@ export default function LocationSelector({
     setMetroMatchMessage("");
     setMetroCandidates([]);
     setMetroStations([]);
+    setMetroSource(null);
     setStationText("");
     setQuery((current) => ({
       ...current,
@@ -362,6 +369,7 @@ export default function LocationSelector({
       const payload = (await response.json()) as MetroDirectoryResponse;
       if (!response.ok) throw new Error(payload.error || "Не удалось найти станцию");
       if (controller.signal.aborted || payload.system.id !== requestedSystemId) return;
+      setMetroSource(payload.provider);
       const candidates = uniqueStations(payload.stations);
       if (!candidates.length) {
         throw new Error("Станция не найдена. Проверьте город и написание.");
@@ -598,9 +606,18 @@ export default function LocationSelector({
       </div>
       {locationMode === "metro" && (
         <div className="metro-attribution">
-          Станции: <a href="https://www.geoapify.com/" target="_blank" rel="noreferrer">Geoapify</a>
-          <span>·</span>
-          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap</a>
+          Станции:{" "}
+          {metroSource === "2gis" ? (
+            <a href="https://2gis.ru/" target="_blank" rel="noreferrer">2GIS</a>
+          ) : metroSource === "geoapify" ? (
+            <>
+              <a href="https://www.geoapify.com/" target="_blank" rel="noreferrer">Geoapify</a>
+              <span>·</span>
+              <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap</a>
+            </>
+          ) : (
+            <span>источник загружается</span>
+          )}
         </div>
       )}
     </>
