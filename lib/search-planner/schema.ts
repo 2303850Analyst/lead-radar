@@ -295,7 +295,10 @@ export function parseKimiSemanticIntentWire(
   });
 }
 
-export function validateKimiSemanticIntent(value: unknown): SemanticIntentV2 {
+function validateSemanticIntent(
+  value: unknown,
+  options: { requireEnglishRetrievalTerm: boolean },
+): SemanticIntentV2 {
   assertSemanticIntentEnvelope(value);
   if (!validateSemanticIntentArtifact(value)) {
     throw new KimiSchemaValidationError(
@@ -351,6 +354,7 @@ export function validateKimiSemanticIntent(value: unknown): SemanticIntentV2 {
     );
   }
   if (
+    options.requireEnglishRetrievalTerm &&
     !permitsEmptyPositiveTerms &&
     ![
       ...intent.retrievalTerms.precision,
@@ -368,13 +372,22 @@ export function validateKimiSemanticIntent(value: unknown): SemanticIntentV2 {
   return intent;
 }
 
+export function validateKimiSemanticIntent(value: unknown): SemanticIntentV2 {
+  return validateSemanticIntent(value, { requireEnglishRetrievalTerm: true });
+}
+
 /**
  * Provider-neutral admission rule for free-text place search. Validation stays
  * here so the API orchestrator and client presentation cannot drift apart.
  */
 export function isUnambiguousPhysicalSemanticIntent(value: unknown): boolean {
   try {
-    const intent = validateKimiSemanticIntent(value);
+    // Deterministic fallback plans are allowed to keep localized retrieval
+    // terms. The English-equivalent invariant belongs to Kimi output
+    // validation, not to provider-neutral free-text admission.
+    const intent = validateSemanticIntent(value, {
+      requireEnglishRetrievalTerm: false,
+    });
     return (
       !intent.ambiguity.isAmbiguous &&
       intent.physicalLocationRequirement === "required" &&

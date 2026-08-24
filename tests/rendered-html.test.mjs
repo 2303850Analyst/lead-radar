@@ -109,6 +109,10 @@ test("planner outage UI never presents an infrastructure failure as an unsupport
   );
   assert.match(
     source,
+    /failure\.plan\?\.status === "unsupported" \? "" : failure\.message/,
+  );
+  assert.match(
+    source,
     /providerId === "2gis"[\s\S]*?canTryProviderNeutralSearch/,
     "only the active free-text provider may bypass a missing category preview",
   );

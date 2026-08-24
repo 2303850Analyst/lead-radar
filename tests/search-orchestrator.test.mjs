@@ -36,8 +36,8 @@ const PHYSICAL_SEMANTIC_INTENT = {
   includeSignals: ["custom keyboard workshop"],
   excludeSignals: [],
   retrievalTerms: {
-    precision: ["custom keyboard workshop"],
-    recall: ["mechanical keyboard workshop"],
+    precision: ["мастерская кастомных клавиатур"],
+    recall: ["сборка механических клавиатур"],
     exclude: [],
   },
   brandSearch: "include",

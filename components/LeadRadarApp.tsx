@@ -714,12 +714,14 @@ export default function LeadRadarApp() {
         failure.code === "SEARCH_PLAN_CONFIRMATION_REQUIRED" ||
         failure.status === 409
       ) {
-        setError(failure.plan ? "" : failure.message);
+        setError(
+          failure.plan?.status === "needs_confirmation" ? "" : failure.message,
+        );
         return;
       }
 
       if (failure.code === "SEARCH_PLAN_UNSUPPORTED" || failure.status === 422) {
-        setError(failure.plan ? "" : failure.message);
+        setError(failure.plan?.status === "unsupported" ? "" : failure.message);
         return;
       }
 
