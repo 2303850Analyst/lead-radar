@@ -1,10 +1,12 @@
 import { createDemoResponse } from "@/lib/demo-data";
 import {
   GeoapifyProvider,
+  geocodeGeoapifyLocation,
   geoapifyDetailsLimit,
   geoapifyPlacesLimit,
   verifyGeoapifyMetroStationSelection,
 } from "@/lib/providers/geoapify";
+import { TwoGisProvider } from "@/lib/providers/2gis";
 import {
   SearchProviderError,
   type CompiledGeoapifyPlan,
@@ -55,12 +57,14 @@ import {
 import {
   SearchPlanOutcomeError,
   createSearchOrchestrator,
+  type SearchExecutionProvider,
 } from "@/lib/search-orchestrator";
 import {
   SearchRuntimeError,
   createProgressHeartbeat,
   createSearchRuntime,
   searchDeadlineMsFromEnv,
+  type SearchRuntimeContext,
 } from "@/lib/search-runtime";
 import packageMetadata from "@/package.json";
 
@@ -81,13 +85,17 @@ function requiresGeoapifyNativeRecovery(plan: SearchPlan): boolean {
   );
 }
 
-function selectedProvider(): "demo" | "geoapify" | "yandex" {
+function selectedProvider(): SearchExecutionProvider {
   const configuredName = process.env.SEARCH_PROVIDER?.trim().toLocaleLowerCase("en-US");
   const geoapifyConfigured = Boolean(process.env.GEOAPIFY_API_KEY?.trim());
+  const twoGisConfigured = Boolean(process.env.DGIS_API_KEY?.trim());
   const yandexConfigured =
     Boolean(process.env.YANDEX_MAPS_API_KEY?.trim()) &&
     process.env.YANDEX_LIVE_UI_ENABLED === "true";
 
+  if (configuredName === "2gis") {
+    return twoGisConfigured ? "2gis" : "demo";
+  }
   if (configuredName === "geoapify") {
     return geoapifyConfigured ? "geoapify" : "demo";
   }
@@ -938,6 +946,8 @@ export async function GET() {
   const geoapifyKeyConfigured = Boolean(process.env.GEOAPIFY_API_KEY?.trim());
   const geoapifyConfigured =
     providerSetting === "geoapify" && geoapifyKeyConfigured;
+  const dgisKeyConfigured = Boolean(process.env.DGIS_API_KEY?.trim());
+  const dgisConfigured = providerSetting === "2gis" && dgisKeyConfigured;
   const yandexKeyConfigured = Boolean(process.env.YANDEX_MAPS_API_KEY?.trim());
   const yandexLiveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
   const yandexConfigured = yandexKeyConfigured && yandexLiveUiEnabled;
@@ -953,6 +963,8 @@ export async function GET() {
     searchProvider: providerSetting,
     geoapifyConfigured,
     geoapifyKeyConfigured,
+    dgisConfigured,
+    dgisKeyConfigured,
     yandexConfigured,
     yandexKeyConfigured,
     yandexLiveUiEnabled,
@@ -992,6 +1004,17 @@ export async function GET() {
         supportedCountryCodes: SUPPORTED_COUNTRY_CODES,
         rawResponsesStored: false,
       },
+      twoGisPlaces: {
+        configured: dgisConfigured,
+        freeTextSearch: true,
+        providerCategoryIdRequired: false,
+        strictRadius: true,
+        maxResultsPerPage:
+          process.env.DGIS_DEMO_MODE !== "false" ? 10 : 50,
+        contactsEnabled: process.env.DGIS_CONTACTS_ENABLED === "true",
+        geocodingSource: "Geoapify / OpenStreetMap",
+        rawResponsesStored: false,
+      },
       metroStations: {
         configured: geoapifyKeyConfigured,
         systems: RUSSIAN_METRO_SYSTEMS.map(({ id, city }) => ({ id, city })),
@@ -1017,7 +1040,9 @@ export async function GET() {
       },
     },
     notice:
-      providerSetting === "geoapify" && !geoapifyKeyConfigured
+      providerSetting === "2gis" && !dgisKeyConfigured
+        ? "Выбран 2GIS, но серверный DGIS_API_KEY не настроен. Используется demo-режим."
+        : providerSetting === "geoapify" && !geoapifyKeyConfigured
         ? "Выбран Geoapify, но серверный GEOAPIFY_API_KEY не настроен. Используется demo-режим."
         : yandexKeyConfigured && !yandexLiveUiEnabled
         ? "Ключ обнаружен, но live UI заблокирован до подтверждения лицензионных условий. Используется demo-режим."
@@ -1108,6 +1133,69 @@ async function demoSearch(
     message: `Поиск завершён: ${response.leads.length} лидов`,
   });
   return response;
+}
+
+async function withTwoGisSearchCenter(
+  payload: SearchPayload,
+  plan: SearchPlan,
+  onProgress?: SearchProgressCallback,
+  signal?: AbortSignal,
+  runtime?: SearchRuntimeContext,
+): Promise<SearchPayload> {
+  await emitProgress(onProgress, {
+    stage: "geocoding",
+    status: "started",
+    message: payload.center
+      ? "Используем точку, выбранную на карте"
+      : "Определяем координаты указанной географии через Geoapify",
+  });
+  if (payload.center) {
+    await emitProgress(onProgress, {
+      stage: "geocoding",
+      status: "completed",
+      message: "География поиска определена",
+    });
+    return payload;
+  }
+
+  const apiKey = process.env.GEOAPIFY_API_KEY?.trim();
+  if (!apiKey) {
+    throw new SearchProviderError(
+      "Для определения центра поиска не настроен GEOAPIFY_API_KEY",
+      "GEOAPIFY_NOT_CONFIGURED",
+    );
+  }
+  const timeoutMs = runtime?.stageTimeoutMs(
+    GEOCODING_STAGE_BUDGET_MS,
+    1_000,
+  ) ?? GEOCODING_STAGE_BUDGET_MS;
+  if (timeoutMs < 1) {
+    runtime?.throwIfAborted();
+    throw new SearchRuntimeError(
+      "SEARCH_DEADLINE_EXCEEDED",
+      "Общий лимит времени поиска исчерпан до геокодирования",
+    );
+  }
+  const language =
+    plan.intent.locale === "be-BY"
+      ? "be"
+      : plan.intent.locale === "kk-KZ"
+        ? "kk"
+        : "ru";
+  const center = await geocodeGeoapifyLocation(
+    payload.location,
+    apiKey,
+    signal,
+    plan.intent.countryCodes[0],
+    language,
+    timeoutMs,
+  );
+  await emitProgress(onProgress, {
+    stage: "geocoding",
+    status: "completed",
+    message: "География поиска определена",
+  });
+  return { ...payload, center };
 }
 
 const searchOrchestrator = createSearchOrchestrator({
@@ -1301,6 +1389,40 @@ const searchOrchestrator = createSearchOrchestrator({
         };
       },
     },
+    "2gis": {
+      preparationMessage: "Готовим свободнотекстовый поиск 2GIS",
+      async prepare(plan) {
+        return {
+          completedMessage: "Свободнотекстовый поиск 2GIS готов",
+          async execute(payload, { onProgress, signal, runtime }) {
+            const apiKey = process.env.DGIS_API_KEY?.trim();
+            if (!apiKey) {
+              throw new SearchProviderError(
+                "Серверный ключ 2GIS не настроен",
+                "DGIS_NOT_CONFIGURED",
+              );
+            }
+            const centeredPayload = await withTwoGisSearchCenter(
+              payload,
+              plan,
+              onProgress,
+              signal,
+              runtime,
+            );
+            return new TwoGisProvider(apiKey, {
+              contactsEnabled:
+                process.env.DGIS_CONTACTS_ENABLED === "true",
+              demoMode: process.env.DGIS_DEMO_MODE !== "false",
+            }).search(centeredPayload, {
+              onProgress,
+              signal,
+              runtime,
+              semanticIntent: plan.semanticIntent,
+            });
+          },
+        };
+      },
+    },
     yandex: {
       preparationMessage: "Источник yandex не требует категорий Geoapify",
       async prepare() {
@@ -1350,14 +1472,27 @@ function publicSearchError(error: unknown): PublicSearchError {
       error: error.message,
       code: error.code,
       status:
-        error.code === "SEARCH_DEADLINE_EXCEEDED"
+        error.code === "SEARCH_DEADLINE_EXCEEDED" ||
+        error.code === "DGIS_TIMEOUT"
           ? 504
-          : error.code === "METRO_STATION_MISMATCH"
+          : error.code === "SEARCH_CANCELLED"
+            ? 408
+          : [
+              "METRO_STATION_MISMATCH",
+              "DGIS_CENTER_REQUIRED",
+              "DGIS_QUERY_REQUIRED",
+              "DGIS_INVALID_REQUEST",
+              "DGIS_RADIUS_TOO_LARGE",
+            ].includes(error.code)
           ? 400
           : error.code === "GEOAPIFY_UNSUPPORTED_CATEGORY"
             ? 422
-            : error.code === "GEOAPIFY_NOT_CONFIGURED"
+            : ["GEOAPIFY_NOT_CONFIGURED", "DGIS_NOT_CONFIGURED"].includes(
+                error.code,
+              )
               ? 503
+              : error.code === "DGIS_RATE_LIMIT"
+                ? 429
               : 502,
       retryable: [
         "GEOAPIFY_NOT_CONFIGURED",
@@ -1365,6 +1500,11 @@ function publicSearchError(error: unknown): PublicSearchError {
         "GEOAPIFY_TIMEOUT",
         "GEOAPIFY_NETWORK_ERROR",
         "GEOAPIFY_UPSTREAM_ERROR",
+        "DGIS_NOT_CONFIGURED",
+        "DGIS_RATE_LIMIT",
+        "DGIS_TIMEOUT",
+        "DGIS_NETWORK_ERROR",
+        "DGIS_UPSTREAM_UNAVAILABLE",
         "SEARCH_DEADLINE_EXCEEDED",
       ].includes(error.code),
     };

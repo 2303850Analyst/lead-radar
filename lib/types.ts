@@ -20,7 +20,7 @@ export type WebsiteVerifiedStatus =
   | "unavailable"
   | "not_checked";
 
-export type SearchProviderId = "demo" | "yandex" | "geoapify";
+export type SearchProviderId = "demo" | "yandex" | "geoapify" | "2gis";
 
 export type SearchOutcome =
   | "success_with_results"

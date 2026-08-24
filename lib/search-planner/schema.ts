@@ -368,6 +368,25 @@ export function validateKimiSemanticIntent(value: unknown): SemanticIntentV2 {
   return intent;
 }
 
+/**
+ * Provider-neutral admission rule for free-text place search. Validation stays
+ * here so the API orchestrator and client presentation cannot drift apart.
+ */
+export function isUnambiguousPhysicalSemanticIntent(value: unknown): boolean {
+  try {
+    const intent = validateKimiSemanticIntent(value);
+    return (
+      !intent.ambiguity.isAmbiguous &&
+      intent.physicalLocationRequirement === "required" &&
+      ["physical_business", "service_location", "mixed"].includes(
+        intent.entityKind,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 function formatAjvErrors(errors: readonly ErrorObject[] | null | undefined): string[] {
   return (errors ?? []).map(
     (error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`,

@@ -16,6 +16,7 @@ import type {
   SearchPlan,
   SearchPlanAlternative,
 } from "@/lib/search-planner/types";
+import { isUnambiguousPhysicalSemanticIntent } from "@/lib/search-planner/schema";
 
 import styles from "./SearchIntentPanel.module.css";
 
@@ -47,7 +48,23 @@ const STATUS_COPY: Record<
   },
 };
 
-function statusCopyForPlan(plan: SearchPlan) {
+function statusCopyForPlan(
+  plan: SearchPlan,
+  providerNeutralSearchEnabled: boolean,
+) {
+  if (
+    providerNeutralSearchEnabled &&
+    plan.status === "unsupported" &&
+    plan.resolution.reasonCodes.includes("PROVIDER_COVERAGE_GAP") &&
+    isUnambiguousPhysicalSemanticIntent(plan.semanticIntent)
+  ) {
+    return {
+      label: "Свободный поиск готов",
+      title: "Тип бизнеса понятен",
+      description:
+        "Для этого типа не нужна заранее известная категория: сервер отправит проверенные текстовые формулировки поисковому источнику.",
+    };
+  }
   if (
     plan.status === "unsupported" &&
     plan.resolution.reasonCodes.includes("PHYSICAL_PLACE_UNCLEAR")
@@ -103,11 +120,13 @@ function retrievalArmLabel(
 export default function SearchIntentPanel({
   plan,
   busy,
+  providerNeutralSearchEnabled,
   onConfirm,
   onRevise,
 }: {
   plan: SearchPlan;
   busy: boolean;
+  providerNeutralSearchEnabled: boolean;
   onConfirm: (
     alternative: SearchPlanAlternative,
     confirmationToken: string,
@@ -115,7 +134,7 @@ export default function SearchIntentPanel({
   onRevise: () => void;
 }) {
   const [selectedAlternativeId, setSelectedAlternativeId] = useState("");
-  const statusCopy = statusCopyForPlan(plan);
+  const statusCopy = statusCopyForPlan(plan, providerNeutralSearchEnabled);
 
   const alternatives = plan.resolution.alternatives.slice(0, 3);
   const selectedAlternative = alternatives.find(
@@ -123,17 +142,23 @@ export default function SearchIntentPanel({
   );
   const confirmationToken = plan.confirmation?.token ?? null;
   const canConfirm = Boolean(selectedAlternative && confirmationToken && !busy);
+  const providerNeutralSearchReady =
+    providerNeutralSearchEnabled &&
+    plan.status === "unsupported" &&
+    plan.resolution.reasonCodes.includes("PROVIDER_COVERAGE_GAP") &&
+    isUnambiguousPhysicalSemanticIntent(plan.semanticIntent);
+  const visualStatus = providerNeutralSearchReady ? "ready" : plan.status;
 
   return (
     <section
-      className={`${styles.panel} ${styles[plan.status]}`}
+      className={`${styles.panel} ${styles[visualStatus]}`}
       aria-labelledby="intent-panel-title"
     >
       <div className={styles.heading}>
         <span className={styles.icon} aria-hidden="true">
-          {plan.status === "unsupported" ? (
+          {plan.status === "unsupported" && !providerNeutralSearchReady ? (
             <AlertTriangle size={19} />
-          ) : plan.status === "ready" ? (
+          ) : plan.status === "ready" || providerNeutralSearchReady ? (
             <Check size={19} />
           ) : (
             <BrainCircuit size={19} />
@@ -265,7 +290,7 @@ export default function SearchIntentPanel({
           <button type="button" className="button" onClick={onRevise} disabled={busy}>
             Уточнить запрос
           </button>
-        ) : plan.status === "unsupported" ? (
+        ) : plan.status === "unsupported" && !providerNeutralSearchReady ? (
           <button type="button" className="button" onClick={onRevise} disabled={busy}>
             Изменить запрос
           </button>

@@ -1,13 +1,15 @@
 import type { SearchProgressCallback } from "./providers/types";
 import type { SearchRuntimeContext } from "./search-runtime";
+import { isUnambiguousPhysicalSemanticIntent } from "./search-planner/schema";
 import type { SearchPlan } from "./search-planner/types";
 import type {
   SearchPayload,
   SearchProgressEvent,
+  SearchProviderId,
   SearchResponse,
 } from "./types";
 
-export type SearchExecutionProvider = "demo" | "geoapify" | "yandex";
+export type SearchExecutionProvider = SearchProviderId;
 
 export type SearchExecutionOptions = {
   onProgress?: SearchProgressCallback;
@@ -76,6 +78,7 @@ async function emitProgress(
 function ensureExecutablePlan(
   plan: SearchPlan,
   isPlannerInfrastructureFailure: (plan: SearchPlan) => boolean,
+  providerId: SearchExecutionProvider,
 ) {
   if (isPlannerInfrastructureFailure(plan)) {
     throw new SearchPlanOutcomeError(
@@ -85,7 +88,10 @@ function ensureExecutablePlan(
       plan,
     );
   }
-  if (plan.status === "needs_confirmation") {
+  if (
+    plan.status === "needs_confirmation" ||
+    plan.semanticIntent?.ambiguity?.isAmbiguous === true
+  ) {
     throw new SearchPlanOutcomeError(
       "Нужно подтвердить категорию до обращения к карте",
       "SEARCH_PLAN_CONFIRMATION_REQUIRED",
@@ -93,13 +99,28 @@ function ensureExecutablePlan(
       plan,
     );
   }
-  if (plan.status === "unsupported") {
+  const providerNeutralRecoveryAllowed =
+    providerId === "2gis" &&
+    plan.resolution.reasonCodes?.includes("PROVIDER_COVERAGE_GAP") === true &&
+    isUnambiguousPhysicalSemanticIntent(plan.semanticIntent);
+  if (plan.status === "unsupported" && !providerNeutralRecoveryAllowed) {
     throw new SearchPlanOutcomeError(
-      "Смысл запроса понятен, но исполняемая стратегия источника пока не готова",
+      "Запрос не описывает однозначный физический бизнес для поиска на карте",
       "SEARCH_PLAN_UNSUPPORTED",
       422,
       plan,
     );
+  }
+  if (providerId === "2gis") {
+    if (!isUnambiguousPhysicalSemanticIntent(plan.semanticIntent)) {
+      throw new SearchPlanOutcomeError(
+        "Не удалось безопасно подготовить свободнотекстовый поиск",
+        "SEARCH_PLAN_UNSUPPORTED",
+        422,
+        plan,
+      );
+    }
+    return;
   }
   if (!plan.executionPreview || plan.executionPreview.batches < 1) {
     throw new SearchPlanOutcomeError(
@@ -143,6 +164,7 @@ export function createSearchOrchestrator(
         : await dependencies.createPlan(initialPayload, signal);
 
       runtime?.throwIfAborted();
+      const providerId = dependencies.selectProvider();
 
       await emitProgress(onProgress, {
         stage: "intent_resolution",
@@ -154,10 +176,17 @@ export function createSearchOrchestrator(
               ? "Используем безопасную локальную трактовку"
               : plan.status === "needs_confirmation"
                 ? "Требуется выбор трактовки"
-                : "Смысл понятен, но исполняемая стратегия пока не готова",
+                : providerId === "2gis" &&
+                    isUnambiguousPhysicalSemanticIntent(plan.semanticIntent)
+                  ? "Смысл запроса определён; источник выполнит свободнотекстовый поиск"
+                  : "Запрос не описывает исполнимый физический бизнес",
       });
 
-      ensureExecutablePlan(plan, dependencies.isPlannerInfrastructureFailure);
+      ensureExecutablePlan(
+        plan,
+        dependencies.isPlannerInfrastructureFailure,
+        providerId,
+      );
 
       // Semantic acceptance is deliberately completed before any provider-backed
       // geography lookup. Ambiguous or tampered requests must not consume map
@@ -165,7 +194,6 @@ export function createSearchOrchestrator(
       const payload = await dependencies.verifyGeography(initialPayload, signal);
       runtime?.throwIfAborted();
 
-      const providerId = dependencies.selectProvider();
       const provider = dependencies.providers[providerId];
       await emitProgress(onProgress, {
         stage: "provider_compilation",

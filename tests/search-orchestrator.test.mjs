@@ -23,6 +23,32 @@ const BASE_PAYLOAD = {
   countryCodes: ["RU"],
 };
 
+const PHYSICAL_SEMANTIC_INTENT = {
+  schemaVersion: "2.2",
+  normalizedGoal: "найти мастерские кастомных клавиатур",
+  entityKind: "physical_business",
+  physicalLocationRequirement: "required",
+  industries: ["electronics"],
+  coreBusinessTypes: ["мастерская кастомных клавиатур"],
+  adjacentBusinessTypes: [],
+  excludedBusinessTypes: [],
+  productsAndServices: ["сборка клавиатур"],
+  includeSignals: ["custom keyboard workshop"],
+  excludeSignals: [],
+  retrievalTerms: {
+    precision: ["custom keyboard workshop"],
+    recall: ["mechanical keyboard workshop"],
+    exclude: [],
+  },
+  brandSearch: "include",
+  confidence: "high",
+  ambiguity: {
+    isAmbiguous: false,
+    reason: null,
+    clarificationQuestion: null,
+  },
+};
+
 function unusedProviderAdapter() {
   return {
     preparationMessage: "Не должен запускаться",
@@ -102,6 +128,7 @@ test("search orchestrator prepares and executes only the selected provider adapt
       demo: selectedAdapter,
       geoapify: unusedAdapter,
       yandex: unusedAdapter,
+      "2gis": unusedAdapter,
     },
   });
 
@@ -126,6 +153,117 @@ test("search orchestrator prepares and executes only the selected provider adapt
   );
 });
 
+test("search orchestrator admits free-text 2GIS plans but preserves the Geoapify preview gate", async () => {
+  const calls = [];
+  const plan = {
+    status: "unsupported",
+    semanticIntent: PHYSICAL_SEMANTIC_INTENT,
+    resolution: {
+      selectedConceptIds: [],
+      reasonCodes: ["PROVIDER_COVERAGE_GAP"],
+    },
+    executionPreview: null,
+  };
+  const response = {
+    outcome: "success_empty",
+    mode: "2gis",
+    provider: {
+      id: "2gis",
+      label: "2GIS Places API",
+      queriedAt: "2026-08-24T00:00:00.000Z",
+      policy: {
+        persistence: "contract_required",
+        attributionRequired: true,
+        attribution: ["2GIS"],
+        rawResponsesStored: false,
+      },
+    },
+    query: BASE_PAYLOAD,
+    summary: {
+      cardsFound: 0,
+      uniqueLocations: 0,
+      assumedBusinesses: 0,
+      foundByPrimary: 0,
+      foundOnlyExpanded: 0,
+      digitalGapCandidates: 0,
+      manualReviewCandidates: 0,
+    },
+    leads: [],
+    notice: "2GIS returned no candidates",
+    generatedAt: "2026-08-24T00:00:00.000Z",
+  };
+  const unusedAdapter = unusedProviderAdapter();
+  const twoGisAdapter = {
+    preparationMessage: "Готовим свободнотекстовый поиск 2GIS",
+    async prepare(receivedPlan) {
+      calls.push(["prepare", receivedPlan]);
+      return {
+        completedMessage: "Свободнотекстовый поиск 2GIS готов",
+        async execute(receivedPayload) {
+          calls.push(["execute", receivedPayload]);
+          return response;
+        },
+      };
+    },
+  };
+  const orchestrator = createSearchOrchestrator({
+    verifyGeography: async (payload) => payload,
+    createPlan: async () => plan,
+    confirmPlan: async () => plan,
+    isPlannerInfrastructureFailure: () => false,
+    selectProvider: () => "2gis",
+    providers: {
+      demo: unusedAdapter,
+      geoapify: unusedAdapter,
+      yandex: unusedAdapter,
+      "2gis": twoGisAdapter,
+    },
+  });
+
+  const result = await orchestrator.search(BASE_PAYLOAD);
+
+  assert.equal(result.outcome, "success_empty");
+  assert.equal(result.mode, "2gis");
+  assert.equal(result.plan, plan);
+  assert.deepEqual(calls, [
+    ["prepare", plan],
+    ["execute", BASE_PAYLOAD],
+  ]);
+
+  let geographyCalls = 0;
+  const geoapifyPlan = {
+    status: "ready",
+    semanticIntent: PHYSICAL_SEMANTIC_INTENT,
+    resolution: {
+      selectedConceptIds: [],
+      reasonCodes: ["PROVIDER_COVERAGE_GAP"],
+    },
+    executionPreview: null,
+  };
+  const geoapifyOrchestrator = createSearchOrchestrator({
+    async verifyGeography(payload) {
+      geographyCalls += 1;
+      return payload;
+    },
+    createPlan: async () => geoapifyPlan,
+    confirmPlan: async () => geoapifyPlan,
+    isPlannerInfrastructureFailure: () => false,
+    selectProvider: () => "geoapify",
+    providers: {
+      demo: unusedAdapter,
+      geoapify: unusedAdapter,
+      yandex: unusedAdapter,
+      "2gis": unusedAdapter,
+    },
+  });
+
+  await assert.rejects(
+    geoapifyOrchestrator.search(BASE_PAYLOAD),
+    (error) => error?.code === "SEARCH_PLAN_UNSUPPORTED",
+  );
+  assert.equal(geographyCalls, 0);
+});
+
 test("search orchestrator rejects ambiguity before provider-backed geography verification", async () => {
   let geographyCalls = 0;
   const ambiguousPlan = {
@@ -147,6 +285,7 @@ test("search orchestrator rejects ambiguity before provider-backed geography ver
       demo: unusedAdapter,
       geoapify: unusedAdapter,
       yandex: unusedAdapter,
+      "2gis": unusedAdapter,
     },
   });
 
@@ -181,6 +320,7 @@ test("search orchestrator validates a confirmation before provider-backed geogra
       demo: unusedAdapter,
       geoapify: unusedAdapter,
       yandex: unusedAdapter,
+      "2gis": unusedAdapter,
     },
   });
 
@@ -270,7 +410,7 @@ test("search orchestrator threads one runtime budget and AbortSignal through eve
     confirmPlan: async () => plan,
     isPlannerInfrastructureFailure: () => false,
     selectProvider: () => "demo",
-    providers: { demo: adapter, geoapify: adapter, yandex: adapter },
+    providers: { demo: adapter, geoapify: adapter, yandex: adapter, "2gis": adapter },
   });
 
   await orchestrator.search(BASE_PAYLOAD, { runtime });
@@ -318,7 +458,7 @@ test("client cancellation reaches a running provider through the shared AbortSig
     confirmPlan: async () => plan,
     isPlannerInfrastructureFailure: () => false,
     selectProvider: () => "demo",
-    providers: { demo: adapter, geoapify: adapter, yandex: adapter },
+    providers: { demo: adapter, geoapify: adapter, yandex: adapter, "2gis": adapter },
   });
   const pending = orchestrator.search(BASE_PAYLOAD, {
     signal: controller.signal,

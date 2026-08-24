@@ -49,6 +49,7 @@ import type {
   LeadStatus,
   RelevanceStatus,
   SearchPayload,
+  SearchProviderId,
   SearchResponse,
 } from "@/lib/types";
 import type {
@@ -59,6 +60,7 @@ import type {
 import LeadMap from "./LeadMap";
 import LocationSelector from "./LocationSelector";
 import { isSearchPlan } from "@/lib/search-planner/guards";
+import { isUnambiguousPhysicalSemanticIntent } from "@/lib/search-planner/schema";
 
 import SearchIntentPanel from "./SearchIntentPanel";
 import SearchProgressPanel, {
@@ -128,6 +130,20 @@ const STORAGE_KEY = "leadradar:last-search:v2";
 const TEMPLATE_KEY = "leadradar:template";
 const DEFAULT_SEARCH_CENTER: [number, number] = [37.6173, 55.7558];
 const SEARCH_CLIENT_TIMEOUT_MS = 62_000;
+const SEARCH_PROVIDER_IDS = new Set<SearchProviderId>([
+  "demo",
+  "yandex",
+  "geoapify",
+  "2gis",
+]);
+
+function providerIdFromHealth(value: unknown): SearchProviderId | null {
+  if (!value || typeof value !== "object") return null;
+  const mode = (value as { mode?: unknown }).mode;
+  return typeof mode === "string" && SEARCH_PROVIDER_IDS.has(mode as SearchProviderId)
+    ? mode as SearchProviderId
+    : null;
+}
 
 async function readSearchFailure(response: Response): Promise<SearchWorkflowError> {
   const contentType = response.headers.get("content-type") ?? "";
@@ -195,6 +211,20 @@ function providerMetadata(response: SearchResponse): ProviderMetadata {
     };
   }
 
+  if (mode === "2gis") {
+    return {
+      id: "2gis",
+      label: "2GIS Places API",
+      queriedAt: response.generatedAt,
+      policy: {
+        persistence: "contract_required",
+        attributionRequired: true,
+        attribution: ["2GIS"],
+        rawResponsesStored: false,
+      },
+    };
+  }
+
   if (mode === "geoapify") {
     return {
       id: "geoapify",
@@ -232,6 +262,7 @@ function hasProviderRestrictions(response: SearchResponse) {
 
 function discoverySourceLabel(lead: Lead, response: SearchResponse) {
   const source = String(lead.discovery.source);
+  if (source === "2gis") return "2GIS Places API";
   if (source === "geoapify") return "Geoapify Places API";
   if (source === "yandex") return "Яндекс Search API";
   if (source === "demo") return "Демонстрационная запись";
@@ -240,6 +271,9 @@ function discoverySourceLabel(lead: Lead, response: SearchResponse) {
 
 function attributionLink(attribution: string) {
   const normalized = attribution.toLocaleLowerCase("en");
+  if (normalized.includes("2gis") || normalized.includes("2гис")) {
+    return { href: "https://2gis.ru/", label: "Данные 2GIS" };
+  }
   if (normalized.includes("geoapify")) {
     return { href: "https://www.geoapify.com/", label: "Powered by Geoapify" };
   }
@@ -543,6 +577,8 @@ export default function LeadRadarApp() {
   const [loading, setLoading] = useState(false);
   const [searchProgress, setSearchProgress] = useState<SearchProgressPanelEvent[]>([]);
   const [searchPlan, setSearchPlan] = useState<SearchPlan | null>(null);
+  const [activeSearchProvider, setActiveSearchProvider] =
+    useState<SearchProviderId | null>(null);
   const [searchPhase, setSearchPhase] = useState<SearchPhase>("idle");
   const [searchStartedAt, setSearchStartedAt] = useState<number>();
   const [error, setError] = useState("");
@@ -807,6 +843,7 @@ export default function LeadRadarApp() {
     setSearchPhase("planning");
     setSearchStartedAt(Date.now());
     setSearchPlan(null);
+    setActiveSearchProvider(null);
     setError("");
     setNotice("");
     setSearchProgress([
@@ -826,12 +863,25 @@ export default function LeadRadarApp() {
     };
 
     try {
-      const planResult = await fetch("/api/search/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(queryWithLocale),
-        signal: controller.signal,
-      });
+      const [planResult, healthResult] = await Promise.all([
+        fetch("/api/search/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(queryWithLocale),
+          signal: controller.signal,
+        }),
+        fetch("/api/search", {
+          method: "GET",
+          signal: controller.signal,
+        }).catch(() => null),
+      ]);
+      let providerId: SearchProviderId | null = null;
+      if (healthResult?.ok) {
+        providerId = providerIdFromHealth(
+          await healthResult.json().catch(() => null),
+        );
+      }
+      setActiveSearchProvider(providerId);
 
       // v0.3 compatibility: until the planner route is deployed, known/demo
       // searches keep using the existing endpoint without losing functionality.
@@ -867,16 +917,28 @@ export default function LeadRadarApp() {
           message:
             planPayload.status === "needs_confirmation"
               ? "Найдены несколько возможных трактовок"
-              : planPayload.status === "unsupported"
-                ? "Смысл понятен, но стратегия источника пока не готова"
+              : providerId === "2gis" &&
+                  planPayload.status === "unsupported" &&
+                  planPayload.resolution.reasonCodes.includes(
+                    "PROVIDER_COVERAGE_GAP",
+                  ) &&
+                  isUnambiguousPhysicalSemanticIntent(planPayload.semanticIntent)
+                ? "Тип бизнеса понятен; запускаем свободнотекстовый поиск"
+                : planPayload.status === "unsupported"
+                  ? "Запрос нельзя безопасно отправить источнику"
                 : "Трактовка запроса готова",
           timestamp: new Date().toISOString(),
         },
       ]);
 
+      const canTryProviderNeutralSearch =
+        providerId === "2gis" &&
+        planPayload.status === "unsupported" &&
+        planPayload.resolution.reasonCodes.includes("PROVIDER_COVERAGE_GAP") &&
+        isUnambiguousPhysicalSemanticIntent(planPayload.semanticIntent);
       if (
         planPayload.status === "needs_confirmation" ||
-        planPayload.status === "unsupported"
+        (planPayload.status === "unsupported" && !canTryProviderNeutralSearch)
       ) {
         return;
       }
@@ -1056,6 +1118,7 @@ export default function LeadRadarApp() {
             loading={loading}
             searchPhase={searchPhase}
             searchPlan={searchPlan}
+            activeSearchProvider={activeSearchProvider}
             searchStartedAt={searchStartedAt}
             progress={searchProgress}
             error={error}
@@ -1149,6 +1212,7 @@ function SearchScreen({
   loading,
   searchPhase,
   searchPlan,
+  activeSearchProvider,
   searchStartedAt,
   progress,
   error,
@@ -1161,6 +1225,7 @@ function SearchScreen({
   loading: boolean;
   searchPhase: SearchPhase;
   searchPlan: SearchPlan | null;
+  activeSearchProvider: SearchProviderId | null;
   searchStartedAt?: number;
   progress: SearchProgressPanelEvent[];
   error: string;
@@ -1192,6 +1257,7 @@ function SearchScreen({
         <SearchIntentPanel
           key={searchPlan.planHash}
           plan={searchPlan}
+          providerNeutralSearchEnabled={activeSearchProvider === "2gis"}
           busy={loading}
           onConfirm={onConfirm}
           onRevise={() => {
@@ -1235,7 +1301,7 @@ function SearchScreen({
             <h3>Что предлагаем</h3><p>Это влияет на рекомендуемый заход, но не на поиск и скоринг лидов.</p>
             <div className="service-grid">{services.map((service) => <label className="check-card" key={service}><input type="checkbox" checked={query.services.includes(service)} onChange={() => setQuery({ ...query, services: query.services.includes(service) ? query.services.filter((item) => item !== service) : [...query.services, service] })} /><span><Check size={13} /></span>{service}</label>)}</div>
           </div>
-          <div className="source-note"><ShieldCheck size={18} /><span><strong>Источник организаций</strong>Geoapify Places API при наличии серверного ключа; иначе детерминированная демо-выборка.</span></div>
+          <div className="source-note"><ShieldCheck size={18} /><span><strong>Источник организаций</strong>Серверный 2GIS или Geoapify — согласно настройке владельца; без ключа используется детерминированная демо-выборка.</span></div>
         </section>
       </form>
     </section>

@@ -35,13 +35,15 @@ LeadRadar — **discovery-система, а не полный реестр ры
 - серверные `GET/POST /api/search`, `POST /api/geocode` и
   `GET /api/metro-stations`;
 - живой прогресс поиска через NDJSON без изменения обычного JSON-контракта;
-- отдельный `POST /api/search/plan`, который не расходует квоту Geoapify;
+- отдельный `POST /api/search/plan`, который не расходует квоту поискового
+  провайдера;
 - детерминированный demo-режим без ключа;
+- live-поиск организаций по свободному тексту через 2GIS Places API;
 - live-поиск через Geoapify Geocoding, Autocomplete, Places и Place Details API;
 - серверное хранение API-ключа без передачи в браузер;
 - provider-метаданные, происхождение каждой карточки и обязательная атрибуция;
-- подготовленный контракт для будущих поставщиков данных без реализованного
-  автоматического fallback;
+- явный выбор между 2GIS, Geoapify и demo без автоматического смешивания
+  источников;
 - экспериментальный адаптер Яндекса, выключенный до лицензионного подтверждения.
 
 ## Быстрый запуск
@@ -66,20 +68,22 @@ npm run start
 детерминированное понимание категорий. Реальный Kimi не обязателен для знакомых
 таксономии запросов.
 
-Для live-поиска создайте `.env.local`:
+Для поиска организаций через 2GIS создайте `.env.local`. Geoapify пока
+используется для серверной геокодировки введённого адреса:
 
 ```env
 GEOAPIFY_API_KEY=новый_серверный_ключ
-SEARCH_PROVIDER=geoapify
-GEOAPIFY_PLACES_LIMIT=100
-GEOAPIFY_DETAILS_LIMIT=20
-GEOAPIFY_CATEGORY_HINTS_ENABLED=false
+DGIS_API_KEY=новый_серверный_ключ_2gis
+DGIS_DEMO_MODE=true
+DGIS_CONTACTS_ENABLED=false
+SEARCH_PROVIDER=2gis
 ```
 
 Перед внешним deployment отзовите использованный dev-ключ, если он когда-либо
 публиковался в чате, логе или скриншоте, и выпустите новый. Инструкция находится в
-[`docs/geoapify-setup.md`](docs/geoapify-setup.md). После изменения окружения
-перезапустите сервер.
+[`docs/2gis-setup.md`](docs/2gis-setup.md). Настройка прежнего Geoapify-поиска
+описана в [`docs/geoapify-setup.md`](docs/geoapify-setup.md). После изменения
+окружения перезапустите сервер.
 
 Для Kimi planner положите ключ во внешний, не входящий в проект файл
 `C:\Users\<пользователь>\.sa-trainer-secrets\kimi.env`:
@@ -213,8 +217,9 @@ only tuning, но сам ещё не доказывает необходимос
 Возвращает health, версию `0.4.0-alpha.1`, активный режим и безопасные признаки
 конфигурации провайдеров. Значения API-ключей, upstream URL с ключом и полные
 ответы внешнего источника в health не возвращаются. При
-`SEARCH_PROVIDER=geoapify` и рабочем `GEOAPIFY_API_KEY` активным режимом является
-`geoapify`; при явном `SEARCH_PROVIDER=demo` используется синтетическая выборка.
+`SEARCH_PROVIDER=2gis` и рабочем `DGIS_API_KEY` активным режимом является
+`2gis`; `SEARCH_PROVIDER=geoapify` выбирает прежний Geoapify-поиск, а при явном
+`SEARCH_PROVIDER=demo` используется синтетическая выборка.
 
 Сокращённый health-ответ настроенного live-режима:
 
@@ -444,6 +449,26 @@ npm run smoke:stream
 Default smoke использует zero-overlap формулировку и при Kimi-режиме проверяет
 всю цепочку до Geoapify. Запрос можно заменить через `SMOKE_SEARCH_QUERY`.
 
+## Live-поиск 2GIS
+
+При `SEARCH_PROVIDER=2gis` LeadRadar отправляет в 2GIS Places API свободный
+текст типа бизнеса, координаты центра и радиус. Заранее известный `rubric_id`
+не требуется: сервер выполняет до трёх bounded-запросов по основному типу и
+синонимам, затем локально дедуплицирует и проверяет evidence релевантности.
+В demo-режиме один запрос получает не более 10 карточек, а радиус ограничен
+50 км. Пустой ответ источника возвращается как `success_empty`.
+
+2GIS выбран явно и не смешивается с Geoapify в одной выдаче. В текущей alpha
+Geoapify Geocoding всё ещё определяет координаты введённого города или адреса;
+сам поиск организаций после этого выполняет 2GIS.
+
+Demo-ответы 2GIS имеют policy `contract_required`: интерфейс показывает
+атрибуцию, но не сохраняет их в `localStorage` и не разрешает CSV-экспорт.
+Наличие API-ключа или личный исследовательский сценарий сами по себе не меняют
+эту policy; снять ограничение можно только после подтверждения прав на
+хранение, переработку и экспорт. Настройка описана в
+[`docs/2gis-setup.md`](docs/2gis-setup.md).
+
 ## Live-поиск Geoapify
 
 LeadRadar серверно геокодирует город или адрес, затем ищет организации через
@@ -457,8 +482,8 @@ Geocoding, Places и Place Details проверены реальным transient
 стабильный README не превращался в хронологический журнал. Такая проверка
 подтверждает транспорт и одну выборку, но не полноту рынка.
 
-Geoapify остаётся единственным live-провайдером версии `0.4.0-alpha.1`.
-Внутри него действует bounded цепочка category Places → Autocomplete для
+Geoapify остаётся отдельным доступным live-провайдером версии
+`0.4.0-alpha.1`. Внутри него действует bounded цепочка category Places → Autocomplete для
 неизвестной категории → Forward Geocoding по исходному типу бизнеса, если
 категория не подтверждена, Autocomplete временно недоступен либо Places не дал
 релевантных карточек. Радиус не увеличивается. Timeout, `429` или `5xx`, которые
@@ -590,6 +615,8 @@ scoring, CSV или отображения поверх сторонней ка�
 
 - [`ROADMAP.md`](ROADMAP.md) — этапы развития и критерии готовности.
 - [`changes_log.md`](changes_log.md) — журнал бизнес-логики и существенных решений.
+- [`docs/2gis-setup.md`](docs/2gis-setup.md) — серверный ключ, demo-policy,
+  цепочка поиска и короткая проверка 2GIS.
 - [`docs/geoapify-setup.md`](docs/geoapify-setup.md) — настройка, тариф,
   атрибуция, live test и черновик fallback.
 - [`docs/yandex-live-test.md`](docs/yandex-live-test.md) — изолированная проверка
@@ -619,6 +646,8 @@ README имеет стабильную структуру и не использ
 
 ## Официальные материалы
 
+- [2GIS Places API](https://docs.2gis.com/en/api/search/places/overview)
+- [2GIS Platform Manager pricing](https://docs.2gis.com/en/platform-manager/subscription/pricing)
 - [Geoapify Places API](https://apidocs.geoapify.com/docs/places/)
 - [Geoapify Pricing](https://www.geoapify.com/pricing/)
 - [Geoapify Pricing Details](https://www.geoapify.com/pricing-details/)

@@ -107,6 +107,11 @@ test("planner outage UI never presents an infrastructure failure as an unsupport
     source,
     /failure\.code === "SEARCH_PLANNER_UNAVAILABLE"[\s\S]*?setSearchPlan\(null\)[\s\S]*?повторите поиск/i,
   );
+  assert.match(
+    source,
+    /providerId === "2gis"[\s\S]*?canTryProviderNeutralSearch/,
+    "only the active free-text provider may bypass a missing category preview",
+  );
   const panelSource = await readFile(
     new URL("../components/SearchIntentPanel.tsx", import.meta.url),
     "utf8",
@@ -115,6 +120,7 @@ test("planner outage UI never presents an infrastructure failure as an unsupport
   assert.match(panelSource, /Основные типы/);
   assert.match(panelSource, /Смежные типы/);
   assert.match(panelSource, /Исключаем/);
+  assert.match(panelSource, /providerNeutralSearchEnabled/);
   assert.doesNotMatch(panelSource, /Для этой ниши пока нет безопасной категории/);
 
   const panelCss = await readFile(
@@ -156,6 +162,8 @@ test("search API exposes health and deterministic demo results", async () => {
   assert.equal(health.mode, "demo");
   assert.equal(health.geoapifyConfigured, false);
   assert.equal(health.geoapifyKeyConfigured, false);
+  assert.equal(health.dgisConfigured, false);
+  assert.equal(health.dgisKeyConfigured, false);
   assert.equal(health.yandexConfigured, false);
   assert.equal(health.yandexLiveUiEnabled, false);
   const packageMetadata = JSON.parse(
@@ -176,6 +184,15 @@ test("search API exposes health and deterministic demo results", async () => {
     maxCards: 200,
     maxDetails: 50,
   });
+  assert.equal(health.capabilities.twoGisPlaces.configured, false);
+  assert.equal(health.capabilities.twoGisPlaces.freeTextSearch, true);
+  assert.equal(
+    health.capabilities.twoGisPlaces.providerCategoryIdRequired,
+    false,
+  );
+  assert.equal(health.capabilities.twoGisPlaces.maxResultsPerPage, 10);
+  assert.equal(health.capabilities.twoGisPlaces.contactsEnabled, false);
+  assert.equal(health.capabilities.twoGisPlaces.rawResponsesStored, false);
   assert.equal(health.capabilities.metroStations.systems.length, 7);
   assert.equal(health.capabilities.metroStations.typedGeocodeFallback, true);
   assert.equal(health.capabilities.yandexGeosearch.strictRadius, true);
