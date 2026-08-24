@@ -195,6 +195,8 @@ test("search API exposes health and deterministic demo results", async () => {
     false,
   );
   assert.equal(health.capabilities.twoGisPlaces.maxResultsPerPage, 10);
+  assert.equal(health.capabilities.twoGisPlaces.maxPagesPerArm, 5);
+  assert.equal(health.capabilities.twoGisPlaces.maxResultsPerArm, 50);
   assert.equal(health.capabilities.twoGisPlaces.contactsEnabled, false);
   assert.equal(health.capabilities.twoGisPlaces.rawResponsesStored, false);
   assert.equal(health.capabilities.metroStations.systems.length, 7);

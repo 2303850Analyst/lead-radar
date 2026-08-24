@@ -5,7 +5,10 @@ import {
   geoapifyPlacesLimit,
   verifyGeoapifyMetroStationSelection,
 } from "@/lib/providers/geoapify";
-import { TwoGisProvider } from "@/lib/providers/2gis";
+import {
+  TwoGisProvider,
+  twoGisPaginationLimits,
+} from "@/lib/providers/2gis";
 import {
   geocodeTwoGisLocation,
   verifyTwoGisMetroStationSelection,
@@ -108,6 +111,17 @@ function selectedProvider(): SearchExecutionProvider {
   // Preserve the legacy Yandex opt-in only when no provider was selected.
   if (!configuredName && yandexConfigured) return "yandex";
   return "demo";
+}
+
+function configuredTwoGisPagination() {
+  const rawMaxPages = Number(process.env.DGIS_MAX_PAGES);
+  return twoGisPaginationLimits({
+    demoMode: process.env.DGIS_DEMO_MODE !== "false",
+    maxPages:
+      Number.isInteger(rawMaxPages) && rawMaxPages > 0
+        ? rawMaxPages
+        : undefined,
+  });
 }
 
 type PayloadResult =
@@ -951,6 +965,7 @@ export async function GET() {
     providerSetting === "geoapify" && geoapifyKeyConfigured;
   const dgisKeyConfigured = Boolean(process.env.DGIS_API_KEY?.trim());
   const dgisConfigured = providerSetting === "2gis" && dgisKeyConfigured;
+  const dgisPagination = configuredTwoGisPagination();
   const yandexKeyConfigured = Boolean(process.env.YANDEX_MAPS_API_KEY?.trim());
   const yandexLiveUiEnabled = process.env.YANDEX_LIVE_UI_ENABLED === "true";
   const yandexConfigured = yandexKeyConfigured && yandexLiveUiEnabled;
@@ -1012,8 +1027,9 @@ export async function GET() {
         freeTextSearch: true,
         providerCategoryIdRequired: false,
         strictRadius: true,
-        maxResultsPerPage:
-          process.env.DGIS_DEMO_MODE !== "false" ? 10 : 50,
+        maxResultsPerPage: dgisPagination.pageSize,
+        maxPagesPerArm: dgisPagination.maxPages,
+        maxResultsPerArm: dgisPagination.maxResultsPerArm,
         contactsEnabled: process.env.DGIS_CONTACTS_ENABLED === "true",
         csvExportEnabled: process.env.DGIS_EXPORT_ENABLED === "true",
         geocodingSource: "2GIS Geocoder API",
@@ -1414,6 +1430,7 @@ const searchOrchestrator = createSearchOrchestrator({
               contactsEnabled:
                 process.env.DGIS_CONTACTS_ENABLED === "true",
               demoMode: process.env.DGIS_DEMO_MODE !== "false",
+              maxPages: configuredTwoGisPagination().maxPages,
               exportEnabled: process.env.DGIS_EXPORT_ENABLED === "true",
             }).search(centeredPayload, {
               onProgress,

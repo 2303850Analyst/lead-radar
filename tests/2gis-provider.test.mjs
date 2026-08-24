@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   TwoGisProvider,
   compileTwoGisTextArms,
+  twoGisPaginationLimits,
 } from "../lib/providers/2gis.ts";
 
 function payload(overrides = {}) {
@@ -143,6 +144,63 @@ test("2GIS sends bounded free-text requests, deduplicates cards and preserves ex
     (error) => error?.code === "DGIS_RADIUS_TOO_LARGE",
   );
   assert.equal(urls.length, 3, "invalid radius must fail before an upstream call");
+});
+
+test("2GIS follows result pages until the reported total is collected", async () => {
+  assert.deepEqual(twoGisPaginationLimits(), {
+    pageSize: 10,
+    maxPages: 5,
+    maxResultsPerArm: 50,
+  });
+  assert.deepEqual(twoGisPaginationLimits({ demoMode: false }), {
+    pageSize: 50,
+    maxPages: 20,
+    maxResultsPerArm: 1_000,
+  });
+
+  const pages = [];
+  const total = 25;
+  const fetch = async (input) => {
+    const url = new URL(String(input));
+    const page = Number(url.searchParams.get("page"));
+    const pageSize = Number(url.searchParams.get("page_size"));
+    pages.push(page);
+    const offset = (page - 1) * pageSize;
+    const count = Math.max(0, Math.min(pageSize, total - offset));
+    return jsonResponse({
+      meta: { code: 200 },
+      result: {
+        total,
+        items: Array.from({ length: count }, (_, index) => {
+          const id = offset + index + 1;
+          return {
+            id: `floating-${id}`,
+            type: "branch",
+            name: `Флоатинг-студия ${id}`,
+            full_address_name: `Москва, Тестовая улица, ${id}`,
+            point: { lon: 37.6 + id / 10_000, lat: 55.7 + id / 10_000 },
+            rubrics: [{ id: "floating", name: "Флоатинг" }],
+          };
+        }),
+      },
+    });
+  };
+  const provider = new TwoGisProvider("test-key", { fetch });
+  const intent = semanticIntent({
+    coreBusinessTypes: ["студия флоатинга"],
+    retrievalTerms: { precision: [], recall: [], exclude: [] },
+  });
+
+  const result = await provider.search(
+    payload({ primaryQuery: "студия флоатинга" }),
+    { semanticIntent: intent },
+  );
+
+  assert.deepEqual(pages, [1, 2, 3]);
+  assert.equal(result.outcome, "success_with_results");
+  assert.equal(result.leads.length, total);
+  assert.equal(result.summary.cardsFound, total);
+  assert.equal(result.provider.coverage.upstreamRequests, 3);
 });
 
 test("2GIS does not confirm hookah bar from a broad bar rubric alone", async () => {

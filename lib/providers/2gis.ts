@@ -16,6 +16,10 @@ import {
 const DGIS_ENDPOINT = "https://catalog.api.2gis.com/3.0/items";
 const MAX_ARMS = 3;
 const DEMO_PAGE_SIZE = 10;
+const DEMO_MAX_PAGES = 5;
+const PRODUCTION_PAGE_SIZE = 50;
+const DEFAULT_PRODUCTION_MAX_PAGES = 20;
+const ABSOLUTE_PRODUCTION_MAX_PAGES = 100;
 const MAX_RADIUS_METERS = 50_000;
 const MAX_RESPONSE_BYTES = 1_000_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
@@ -45,7 +49,14 @@ export type TwoGisProviderOptions = {
   requestTimeoutMs?: number;
   contactsEnabled?: boolean;
   demoMode?: boolean;
+  maxPages?: number;
   exportEnabled?: boolean;
+};
+
+export type TwoGisPaginationLimits = {
+  pageSize: number;
+  maxPages: number;
+  maxResultsPerArm: number;
 };
 
 type TwoGisPoint = {
@@ -118,7 +129,33 @@ type ObservedItem = {
 type RequestResult = {
   items: TwoGisItem[];
   requests: number;
+  total: number | null;
 };
+
+function boundedPositiveInteger(
+  value: number | undefined,
+  fallback: number,
+  maximum: number,
+): number {
+  return Number.isInteger(value) && value !== undefined && value > 0
+    ? Math.min(value, maximum)
+    : fallback;
+}
+
+export function twoGisPaginationLimits(
+  options: Pick<TwoGisProviderOptions, "demoMode" | "maxPages"> = {},
+): TwoGisPaginationLimits {
+  const demoMode = options.demoMode !== false;
+  const pageSize = demoMode ? DEMO_PAGE_SIZE : PRODUCTION_PAGE_SIZE;
+  const maxPages = demoMode
+    ? boundedPositiveInteger(options.maxPages, DEMO_MAX_PAGES, DEMO_MAX_PAGES)
+    : boundedPositiveInteger(
+        options.maxPages,
+        DEFAULT_PRODUCTION_MAX_PAGES,
+        ABSOLUTE_PRODUCTION_MAX_PAGES,
+      );
+  return { pageSize, maxPages, maxResultsPerArm: pageSize * maxPages };
+}
 
 const LOCALES: Record<string, string> = {
   "ru-RU": "ru_RU",
@@ -811,6 +848,7 @@ export class TwoGisProvider implements SearchProvider {
   private readonly contactsEnabled: boolean;
   private readonly exportEnabled: boolean;
   private readonly pageSize: number;
+  private readonly maxPages: number;
 
   constructor(apiKey: string, options: TwoGisProviderOptions = {}) {
     this.apiKey = apiKey.trim();
@@ -824,7 +862,9 @@ export class TwoGisProvider implements SearchProvider {
     this.endpoint = options.endpoint ?? DGIS_ENDPOINT;
     this.contactsEnabled = options.contactsEnabled ?? false;
     this.exportEnabled = options.exportEnabled ?? false;
-    this.pageSize = options.demoMode === false ? 50 : DEMO_PAGE_SIZE;
+    const pagination = twoGisPaginationLimits(options);
+    this.pageSize = pagination.pageSize;
+    this.maxPages = pagination.maxPages;
     this.requestTimeoutMs = Math.max(
       1,
       Math.min(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, 60_000),
@@ -836,6 +876,7 @@ export class TwoGisProvider implements SearchProvider {
     center: [number, number],
     radiusKm: number,
     locale: string | undefined,
+    page: number,
   ): URL {
     if (!Number.isFinite(radiusKm) || radiusKm < 0) {
       throw new SearchProviderError(
@@ -860,7 +901,7 @@ export class TwoGisProvider implements SearchProvider {
     url.searchParams.set("sort", "relevance");
     url.searchParams.set("locale", LOCALES[locale ?? "ru-RU"] ?? "ru_RU");
     url.searchParams.set("page_size", String(this.pageSize));
-    url.searchParams.set("page", "1");
+    url.searchParams.set("page", String(page));
     url.searchParams.set("search_is_query_text_complete", "true");
     url.searchParams.set("search_input_method", "software_generated");
     url.searchParams.set(
@@ -897,7 +938,7 @@ export class TwoGisProvider implements SearchProvider {
         );
       }
 
-      if (response.status === 404) return { items: [], requests };
+      if (response.status === 404) return { items: [], requests, total: 0 };
       if (!response.ok) {
         if (retryableStatus(response.status) && attempt + 1 < MAX_ATTEMPTS) continue;
         throw errorForStatus(response.status);
@@ -928,14 +969,14 @@ export class TwoGisProvider implements SearchProvider {
         );
       }
       const metaCode = responseCode(data);
-      if (metaCode === 404) return { items: [], requests };
+      if (metaCode === 404) return { items: [], requests, total: 0 };
       if (metaCode !== null && metaCode !== 200) {
         if (retryableStatus(metaCode) && attempt + 1 < MAX_ATTEMPTS) continue;
         throw errorForStatus(metaCode);
       }
       const rawItems = data.result?.items;
       if (!Array.isArray(rawItems)) {
-        if (data.result?.total === 0) return { items: [], requests };
+        if (data.result?.total === 0) return { items: [], requests, total: 0 };
         throw new SearchProviderError(
           "2ГИС вернул ответ неизвестного формата",
           "DGIS_INVALID_RESPONSE",
@@ -946,6 +987,12 @@ export class TwoGisProvider implements SearchProvider {
           (item): item is TwoGisItem => Boolean(item) && typeof item === "object",
         ),
         requests,
+        total:
+          typeof data.result?.total === "number" &&
+          Number.isInteger(data.result.total) &&
+          data.result.total >= 0
+            ? data.result.total
+            : null,
       };
     }
     throw new SearchProviderError("2ГИС временно недоступен", "DGIS_UPSTREAM_UNAVAILABLE");
@@ -997,33 +1044,57 @@ export class TwoGisProvider implements SearchProvider {
       total: arms.length,
     });
 
-    for (const arm of arms) {
+    armLoop: for (const arm of arms) {
+      let armStarted = false;
       try {
-        const result = await this.request(
-          this.requestUrl(arm.query, payload.center, payload.radiusKm, payload.locale),
-          options,
-        );
-        upstreamRequests += result.requests;
-        cardsFound += result.items.length;
+        for (let page = 1; page <= this.maxPages; page += 1) {
+          const result = await this.request(
+            this.requestUrl(
+              arm.query,
+              payload.center,
+              payload.radiusKm,
+              payload.locale,
+              page,
+            ),
+            options,
+          );
+          upstreamRequests += result.requests;
+          cardsFound += result.items.length;
+          if (!armStarted) {
+            armStarted = true;
+            executedArms.push({
+              id: arm.id,
+              planArmId: arm.id,
+              type: arm.type,
+              role: arm.role,
+            });
+          }
+          for (const item of result.items) mergeObservedItem(observations, item, arm);
+          await reportProgress({
+            stage: "places",
+            status: "running",
+            message: `2ГИС: «${arm.query}», страница ${page}, кандидатов ${observations.size}`,
+            completed: completedRetrievalArms,
+            total: arms.length,
+          });
+
+          const reportedTotalReached =
+            result.total !== null && page * this.pageSize >= result.total;
+          const lastAvailablePage = result.items.length < this.pageSize;
+          if (reportedTotalReached || lastAvailablePage) break;
+        }
         completedRetrievalArms += 1;
-        executedArms.push({
-          id: arm.id,
-          planArmId: arm.id,
-          type: arm.type,
-          role: arm.role,
-        });
-        for (const item of result.items) mergeObservedItem(observations, item, arm);
         await reportProgress({
           stage: "places",
           status: "running",
-          message: `2ГИС: выполнено запросов ${completedRetrievalArms} из ${arms.length}`,
+          message: `2ГИС: выполнено формулировок ${completedRetrievalArms} из ${arms.length}`,
           completed: completedRetrievalArms,
           total: arms.length,
         });
       } catch (error) {
         if (error instanceof SearchProviderError && observations.size > 0) {
           degraded = true;
-          break;
+          break armLoop;
         }
         throw error;
       }

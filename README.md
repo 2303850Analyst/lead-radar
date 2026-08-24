@@ -76,10 +76,16 @@ npm run start
 DGIS_API_KEY=новый_серверный_ключ_2gis
 DGIS_MAP_KEY=отдельный_браузерный_ключ_2gis_map_tiles
 DGIS_DEMO_MODE=true
+DGIS_MAX_PAGES=20
 DGIS_CONTACTS_ENABLED=false
 DGIS_EXPORT_ENABLED=false
 SEARCH_PROVIDER=2gis
 ```
+
+Поиск организаций обходит страницы 2GIS до заявленного `total`: demo-ключ
+разрешает до 5 страниц по 10 карточек, production использует страницы по 50 и
+по умолчанию до 20 страниц на поисковую формулировку. `DGIS_MAX_PAGES` можно
+увеличить до 100; каждая страница расходует отдельный запрос Places API.
 
 Перед внешним deployment отзовите использованный dev-ключ, если он когда-либо
 публиковался в чате, логе или скриншоте, и выпустите новый. Инструкция находится в
