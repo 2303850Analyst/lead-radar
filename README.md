@@ -1,55 +1,46 @@
 # LeadRadar
 
-Текущая версия: **0.4.0-alpha.1**
+Current version: **0.4.0-alpha.1**
 
-LeadRadar — локальный MVP для обнаружения потенциальных B2B-клиентов среди
-малозаметных и слабо оцифрованных компаний. Пользователь задаёт основной и
-смежные запросы, географию и свои услуги, а приложение формирует объяснимую
-выборку организаций.
+LeadRadar is a local MVP for discovering potential B2B customers among
+low-visibility and weakly digitized companies. Users describe a target business,
+related queries, geography, and their own services; the application returns an
+explainable set of organizations.
 
-LeadRadar — **discovery-система, а не полный реестр рынка**. Поисковый источник
-возвращает релевантную выборку и не гарантирует, что найдены все компании.
+LeadRadar is a **discovery system, not a complete market registry**. Search
+providers return relevant samples and do not guarantee exhaustive coverage.
 
-## Возможности текущей alpha-сборки
+## Current alpha capabilities
 
-- создание поискового задания на русском языке;
-- основной запрос, смежные запросы и исключения;
-- предварительное понимание свободного запроса через open-vocabulary
-  `SemanticIntentV2`: Kimi формулирует цель, основные, смежные и исключаемые
-  типы бизнеса, услуги, сигналы и retrieval terms без списка готовых ниш;
-- strict Structured Output с локальной проверкой размера, формы, смысловых
-  инвариантов и запретом URL, координат и исполняемых provider-параметров;
-- показ трактовки до обращения к картам и подтверждение неоднозначных запросов;
-- пилотные locale/country-контракты для RU, BY и KZ;
-- четыре представления: поиск, таблица, карта и карточка лида;
-- интерактивная карта 2GIS MapGL для выбора точного центра и радиуса поиска;
-- карта результатов открывается на выбранной области, по умолчанию — на Москве;
-- пять кликабельных режимов географии: город, район, метро, область и ручной
-  радиус;
-- выбор конкретной станции во всех семи городах России с действующим метро,
-  поиском по названию и переносом центра карты на станцию;
-- серверное определение центра по городу, району, региону или адресу;
-- фильтрация, сортировка, пагинация и CSV для разрешённых данных;
-- кликабельные ссылки на сайты в таблице и карточке лида;
-- статусы, заметки и локальное сохранение результатов разрешённых источников;
-- серверные `GET/POST /api/search`, `POST /api/geocode` и
-  `GET /api/metro-stations`;
-- живой прогресс поиска через NDJSON без изменения обычного JSON-контракта;
-- отдельный `POST /api/search/plan`, который не расходует квоту поискового
-  провайдера;
-- детерминированный demo-режим без ключа;
-- live-поиск организаций по свободному тексту через 2GIS Places API;
-- live-поиск через Geoapify Geocoding, Autocomplete, Places и Place Details API;
-- серверное хранение поисковых API-ключей; отдельный ограниченный ключ MapGL
-  передаётся браузеру только для отрисовки карты;
-- provider-метаданные, происхождение каждой карточки и обязательная атрибуция;
-- явный выбор между 2GIS, Geoapify и demo без автоматического смешивания
-  источников;
-- экспериментальный адаптер Яндекса, выключенный до лицензионного подтверждения.
+- Russian-language search tasks with primary, related, and excluded queries;
+- open-vocabulary interpretation through `SemanticIntentV2`: Kimi identifies the
+  goal, core, adjacent, and excluded business types, services, signals, and
+  retrieval terms without a fixed niche list;
+- strict Structured Output with local validation of size, shape, semantic
+  invariants, and a ban on executable URLs, coordinates, and provider parameters;
+- interpretation preview and confirmation of ambiguous requests before map access;
+- pilot locale/country contracts for RU, BY, and KZ;
+- search, table, map, and lead-card views;
+- interactive 2GIS MapGL maps for selecting a center and radius and displaying results;
+- city, district, metro, region, and manual-radius geography modes;
+- metro search for all seven Russian cities with an active metro system;
+- server-side city, district, region, and address geocoding;
+- filtering, sorting, pagination, and CSV export where licensing permits;
+- website links, statuses, notes, and permitted local persistence;
+- `GET/POST /api/search`, `POST /api/geocode`, and `GET /api/metro-stations`;
+- live NDJSON progress without changing the regular JSON API contract;
+- a separate `POST /api/search/plan` that consumes no search-provider quota;
+- deterministic demo mode without API keys;
+- free-text organization search through 2GIS Places;
+- Geoapify Geocoding, Autocomplete, Places, and Place Details support;
+- server-side API keys and a separate browser-restricted MapGL key;
+- provider metadata, per-card provenance, and mandatory attribution;
+- explicit 2GIS, Geoapify, or demo selection without automatic source mixing;
+- an experimental Yandex adapter, disabled pending written license confirmation.
 
-## Быстрый запуск
+## Quick start
 
-Требования: Node.js `>=22.13.0` и npm.
+Requirements: Node.js `>=22.13.0` and npm.
 
 ```powershell
 npm install
@@ -57,24 +48,22 @@ npm run build
 npm run start
 ```
 
-Откройте [http://localhost:3000](http://localhost:3000). Dev-сервер по умолчанию
-привязан только к `127.0.0.1`, чтобы другие устройства в сети не расходовали
-квоту выбранного внешнего провайдера через локальный API.
+Open [http://localhost:3000](http://localhost:3000). The server binds to
+`127.0.0.1` by default so other LAN devices cannot consume provider quota through
+the local API. `npm run dev` remains available for hot reload. On Windows, the
+verified MVP path is a production build followed by `npm run start` because the
+Cloudflare plugin may terminate inside `workerd` during development.
 
-`npm run dev` остаётся режимом разработки с горячей перезагрузкой. На Windows
-плагин Cloudflare иногда завершается внутри `workerd`; проверенный путь для
-локального использования MVP — production build и `npm run start`.
+Without extra configuration, LeadRadar uses synthetic demo data and deterministic
+category interpretation. Live Kimi is not required for known taxonomy queries.
 
-Без дополнительных настроек приложение использует синтетические demo-данные и
-детерминированное понимание категорий. Реальный Kimi не обязателен для знакомых
-таксономии запросов.
+### 2GIS configuration
 
-Для поиска организаций, геокодирования и справочника метро через 2GIS создайте
-`.env.local`:
+Create `.env.local`:
 
 ```env
-DGIS_API_KEY=новый_серверный_ключ_2gis
-DGIS_MAP_KEY=отдельный_браузерный_ключ_2gis_map_tiles
+DGIS_API_KEY=new_2gis_server_key
+DGIS_MAP_KEY=separate_browser_2gis_map_tiles_key
 DGIS_DEMO_MODE=true
 DGIS_MAX_PAGES=20
 DGIS_CONTACTS_ENABLED=false
@@ -82,96 +71,82 @@ DGIS_EXPORT_ENABLED=false
 SEARCH_PROVIDER=2gis
 ```
 
-Поиск организаций обходит страницы 2GIS до заявленного `total`: demo-ключ
-разрешает до 5 страниц по 10 карточек, production использует страницы по 50 и
-по умолчанию до 20 страниц на поисковую формулировку. `DGIS_MAX_PAGES` можно
-увеличить до 100; каждая страница расходует отдельный запрос Places API.
+2GIS search follows pages up to the reported `total`. A demo key permits up to
+five pages of ten cards; production uses pages of 50 and defaults to 20 pages per
+phrase. `DGIS_MAX_PAGES` may be raised to 100, with every page consuming one
+Places API request.
 
-Перед внешним deployment отзовите использованный dev-ключ, если он когда-либо
-публиковался в чате, логе или скриншоте, и выпустите новый. Инструкция находится в
-[`docs/2gis-setup.md`](docs/2gis-setup.md). Настройка прежнего Geoapify-поиска
-описана в [`docs/geoapify-setup.md`](docs/geoapify-setup.md). После изменения
-окружения перезапустите сервер.
+Before external deployment, revoke any development key that appeared in a chat,
+log, or screenshot. See [`docs/2gis-setup.md`](docs/2gis-setup.md) and
+[`docs/geoapify-setup.md`](docs/geoapify-setup.md). Restart the server after an
+environment change.
 
-Для Kimi planner положите ключ во внешний, не входящий в проект файл
-`C:\Users\<пользователь>\.sa-trainer-secrets\kimi.env`:
+### Kimi configuration
 
-```env
-KIMI_API_KEY=ваш_ключ_Moonshot
+Store the Kimi key outside the project in:
+
+```text
+C:\Users\<user>\.sa-trainer-secrets\kimi.env
 ```
 
-Затем запускайте production build через wrapper:
+```env
+KIMI_API_KEY=your_Moonshot_key
+```
+
+Run through the wrapper:
 
 ```powershell
 npm run build
 .\scripts\run-with-kimi-secret.ps1 -NpmScript start
 ```
 
-Wrapper передаёт ключ только дочернему процессу, включает
-`QUERY_INTELLIGENCE_MODE=kimi` и при необходимости создаёт временный signing
-secret. Другой путь можно передать через server-side переменную
-`KIMI_SECRET_FILE`; без `-NpmScript start` wrapper запускает `dev`. После
-перезапуска выданные ранее confirmation tokens станут
-недействительными. Для постоянной среды задайте отдельный стабильный
-`SEARCH_PLAN_SIGNING_SECRET` длиной не менее 32 байт в secret storage.
-`KIMI_LEAD_CLASSIFICATION_ENABLED` оставляйте `false`: текущий alpha выполняет
-relevance локально и не отправляет найденные карточки модели.
+The wrapper exposes the key only to the child process, enables
+`QUERY_INTELLIGENCE_MODE=kimi`, and creates a temporary signing secret when
+needed. Override the file path with server-side `KIMI_SECRET_FILE`. Persistent
+environments should provide a stable `SEARCH_PLAN_SIGNING_SECRET` of at least 32
+bytes through secret storage. Keep `KIMI_LEAD_CLASSIFICATION_ENABLED=false`:
+the current alpha evaluates relevance locally and does not send company cards to Kimi.
 
-### Локальный запуск в Docker
+### Local Docker run
 
-Docker-сборка запускает тот же production build на
-[http://127.0.0.1:3000](http://127.0.0.1:3000) и не открывает API другим
-устройствам в локальной сети. Контейнер ограничен `0,5 CPU`, `256 МБ` памяти,
-Node.js heap `160 МБ` и `64` процессами; корневая файловая система доступна
-только для чтения. Секреты не попадают в образ и подаются лишь при запуске из
-локальных env-файлов.
-
-Чтобы подключить существующий Kimi-ключ и Geoapify-конфигурацию:
+Docker runs the production build at
+[http://127.0.0.1:3000](http://127.0.0.1:3000). The container is limited to 0.5
+CPU, 256 MB RAM, a 160 MB Node.js heap, and 64 processes; its root filesystem is
+read-only. Secrets are supplied only at runtime.
 
 ```powershell
-$env:KIMI_SECRET_FILE="C:/Users/<пользователь>/.sa-trainer-secrets/kimi.env"
+$env:KIMI_SECRET_FILE="C:/Users/<user>/.sa-trainer-secrets/kimi.env"
 npm run docker:up
-```
-
-Compose автоматически прочитает игнорируемый Git файл `.env.local`, если он
-существует. Без ключей сервис запустится в demo/deterministic режиме. Проверка и
-остановка:
-
-```powershell
 docker compose ps
 npm run docker:down
 Remove-Item Env:KIMI_SECRET_FILE -ErrorAction SilentlyContinue
 ```
 
-Лимиты относятся к работающему контейнеру; во время первой сборки Docker может
-кратковременно использовать больше CPU и памяти. Если реальный поиск стабильно
-завершается по OOM, увеличьте только `mem_limit` в `compose.yaml` до `320m`.
+Compose reads the Git-ignored `.env.local` automatically. Without keys, the
+service starts in demo/deterministic mode. If live search consistently exits
+because of OOM, increase only `mem_limit` in `compose.yaml` to `320m`.
 
-## Проверка проекта
+## Verification
 
 ```powershell
 npm run quality
 ```
 
-`npm run quality` запускает ESLint, строгий TypeScript, production build,
-автотесты и offline evaluation. Реальный Kimi не вызывается обычными тестами.
-Open-world gate можно воспроизвести отдельно:
+This runs ESLint, strict TypeScript, a production build, automated tests, and
+offline evaluation. Regular tests do not call live Kimi.
 
 ```powershell
 npm run eval:open-world
 npm run eval:relevance
 ```
 
-Первая команда проверяет 500 замороженных CIS intent-сценариев через mock Kimi
-и реальный planner/compiler. Вторая — 600 явно размеченных синтетических
-candidate-evidence сценариев по 150 provider targets через фактический
-deterministic relevance runtime. Retrieval-контекст хранится отдельно от
-golden label, а prompt-injection равномерно покрывает все четыре статуса. В
-stdout попадают
-только агрегаты, версии и checksum; запросы, лиды и ответы провайдеров не
-записываются.
+The first command evaluates 500 frozen CIS intent scenarios through mock Kimi and
+the real planner/compiler. The second evaluates 600 labeled synthetic
+candidate-evidence scenarios across 150 provider targets through the real
+deterministic relevance runtime. Only aggregates, versions, and checksums are
+printed; queries, leads, and provider responses are not stored.
 
-Опциональный live canary запускается явно, чтобы случайно не расходовать квоту:
+Optional live Kimi canary:
 
 ```powershell
 $env:RUN_KIMI_LIVE_EVAL="1"
@@ -179,13 +154,10 @@ $env:RUN_KIMI_LIVE_EVAL="1"
 Remove-Item Env:RUN_KIMI_LIVE_EVAL
 ```
 
-Скрипт записывает в игнорируемый `work/evaluations/` только canonical IDs,
-статусы, latency и token usage. Prompt, ключ, reasoning и карточки компаний не
-сохраняются.
+It stores only canonical IDs, statuses, latency, and token usage in the ignored
+`work/evaluations/` directory. Prompts, keys, reasoning, and cards are not persisted.
 
-Сквозной canary фактического production-orchestrator с Kimi, Geoapify и
-консервативной ручной оценкой запускается отдельно. Он расходует квоты обоих сервисов и
-требует настроенный `GEOAPIFY_API_KEY`:
+End-to-end search canary:
 
 ```powershell
 $env:RUN_SEARCH_LIVE_CANARY="1"
@@ -193,43 +165,22 @@ npm run canary:search:live
 Remove-Item Env:RUN_SEARCH_LIVE_CANARY
 ```
 
-Canary намеренно включает category hints только внутри своего процесса для
-измерения. Рабочий default остаётся `GEOAPIFY_CATEGORY_HINTS_ENABLED=false`.
-Флаг управляет только optional fail-soft refinement. Подписанный recovery-план
-всегда выполняет один обязательный fail-closed Autocomplete resolver до Places.
-Production worker собирается до загрузки Kimi key, а SHA-256 фактически
-запущенного bundle и canary harness входят в агрегатный отчёт. После сбора
-выдачи команда печатает transient URL: откройте его, примените
-показанный rubric и в течение 45 минут отправьте в `/submit` номера релевантных
-позиций из semantic production pool (до 50 на кейс) и отдельного literal
-baseline top-10. Метки frozen semantic top-10 выводятся из той же pool-разметки
-автоматически. Полный intent, позиции, карточки и session-salted identities
-доступны только в памяти этого запуска и не записываются в итоговый файл.
-Versioned aggregate дополнительно показывает `attainable@10` и conditional
-ranker recall без новых provider-вызовов. Это потолок только уже выполненных
-retrieval arms, а не полный recall Geoapify или рынка; он не меняет release
-hard gates и итоговый canary verdict. Provider counters различают planned и
-completed arms и включают retrieval, Details и category-resolution запросы.
-И отчёт, и финальная console-сводка явно классифицируют measured gap:
-невалидное измерение, retrieval/source gap, ranking/fusion gap либо достижение
-порога fixed-k Precision@10. Низкий executed-arm ceiling останавливает ranker-
-only tuning, но сам ещё не доказывает необходимость второго источника: для
-этого нужен отдельный Geoapify-only union ceiling и письменное license-решение.
-Опубликованный результат находится в
+This canary consumes Kimi and Geoapify quota and requires `GEOAPIFY_API_KEY`.
+Category hints are enabled only inside the canary; production keeps
+`GEOAPIFY_CATEGORY_HINTS_ENABLED=false`. Full intents, positions, company cards,
+and session-salted identities stay in memory. The aggregate reports
+`attainable@10`, conditional ranker recall, provider-arm counters, Details, and
+category resolution. These metrics cover executed retrieval arms rather than the
+whole market. Published results are in
 [`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md).
 
-## API приложения
+## API
 
 ### `GET /api/search`
 
-Возвращает health, версию `0.4.0-alpha.1`, активный режим и безопасные признаки
-конфигурации провайдеров. Значения API-ключей, upstream URL с ключом и полные
-ответы внешнего источника в health не возвращаются. При
-`SEARCH_PROVIDER=2gis` и рабочем `DGIS_API_KEY` активным режимом является
-`2gis`; `SEARCH_PROVIDER=geoapify` выбирает прежний Geoapify-поиск, а при явном
-`SEARCH_PROVIDER=demo` используется синтетическая выборка.
-
-Сокращённый health-ответ настроенного live-режима:
+Returns health, version, active mode, and safe provider configuration flags. It
+never returns keys, keyed upstream URLs, or complete provider responses.
+`SEARCH_PROVIDER` selects `2gis`, `geoapify`, or explicit synthetic `demo` mode.
 
 ```json
 {
@@ -255,426 +206,239 @@ only tuning, но сам ещё не доказывает необходимос
       "maxResultsPerPage": 10,
       "geocodingSource": "2GIS Geocoder API",
       "rawResponsesStored": false
-    },
-    "metroStations": {
-      "configured": true,
-      "systems": [
-        { "id": "moscow", "city": "Москва" },
-        { "id": "saint-petersburg", "city": "Санкт-Петербург" }
-      ],
-      "source": "2GIS Places API",
-      "typedGeocodeFallback": false,
-      "rawResponsesStored": false
     }
   }
 }
 ```
 
-Провайдерный health отражает фактический маршрут: для 2GIS поле
-`typedGeocodeFallback` равно `false`, потому что уточняющий поиск станции также
-идёт через 2GIS Places. В alpha за один поиск разрешена ровно одна страна.
-
 ### `POST /api/geocode`
 
-Определяет координаты города, района или адреса через серверный геокодер
-выбранного провайдера: 2GIS Geocoder при `SEARCH_PROVIDER=2gis` либо Geoapify
-Geocoding при `SEARCH_PROVIDER=geoapify`. Ключ остаётся на сервере.
+Resolves a city, district, or address through 2GIS Geocoder or Geoapify
+Geocoding, according to `SEARCH_PROVIDER`. The key remains server-side.
 
 ```json
-{
-  "location": "Москва, ул. Лесная, 7"
-}
+{ "location": "Moscow, 7 Lesnaya Street" }
 ```
 
-Успешный ответ содержит `coordinates` в порядке `[долгота, широта]`, исходный
-`location` и `provider`. Интерфейс использует этот endpoint, чтобы поставить
-маркер на карте; пользователь затем может перенести маркер или выбрать другую
-точку кликом.
+A successful response contains `coordinates` in `[longitude, latitude]` order,
+the original `location`, and `provider`.
 
 ### `GET /api/metro-stations`
 
-Возвращает нормализованные станции одного из семи действующих метрополитенов
-России. Город задаётся стабильным ID:
+Returns normalized stations for `moscow`, `saint-petersburg`, `novosibirsk`,
+`nizhny-novgorod`, `samara`, `yekaterinburg`, or `kazan`.
 
 ```text
 GET /api/metro-stations?city=moscow
-GET /api/metro-stations?city=samara&q=Гагаринская
+GET /api/metro-stations?city=samara&q=Gagarinskaya
 ```
 
-Поддержанные ID: `moscow`, `saint-petersburg`, `novosibirsk`,
-`nizhny-novgorod`, `samara`, `yekaterinburg`, `kazan`. Источник соответствует
-`SEARCH_PROVIDER`: в режиме 2GIS каталог и уточняющий запрос выполняются через
-Places с `type=station.metro`; в режиме Geoapify сохраняется прежняя цепочка
-Places → Geocoding → Place Details. Ответ содержит только нормализованные
-названия, координаты, цвета линий и provider IDs, но не API-ключ и не полный
-upstream response. Каталог
-кэшируется в памяти процесса на 24 часа и может быть отдан из устаревшего кэша
-при временной ошибке провайдера. Уточняющий поиск принимает минимум два символа,
-имеет отдельные клиентский и глобальный минутные лимиты, общий deadline 30
-секунд. Перед поиском выбранная станция повторно сверяется с карточкой текущего
-провайдера.
-
-Пример выбора метро в поисковом payload:
-
-```json
-{
-  "location": "Метро «Белорусская», Москва",
-  "locationMode": "metro",
-  "metro": {
-    "systemId": "moscow",
-    "stationId": "2gis:<place-id>",
-    "stationName": "Белорусская"
-  },
-  "center": [37.58515, 55.77595],
-  "radiusKm": 1.5
-}
-```
-
-Для `locationMode: "metro"` станция и `center` обязательны, страна/локаль должны
-быть `RU`/`ru-RU`, радиус ограничен диапазоном 0,5–10 км, а координаты обязаны
-попадать в область выбранного метрополитена. Перед поиском сервер повторно
-проверяет provider ID, название и координаты через карточку текущего источника и
-использует его канонические координаты. Старые клиенты без `locationMode`
-сохраняют прежнее поведение кругового радиуса.
+2GIS mode uses Places with `type=station.metro`; Geoapify mode uses Places →
+Geocoding → Place Details. Responses contain normalized names, coordinates, line
+colors, and provider IDs, never keys or complete upstream responses. The catalog
+is cached in process for 24 hours. Refinement requires two characters and has a
+30-second total deadline. Selected stations are revalidated with the provider.
 
 ### `POST /api/search/plan`
 
-Интерпретирует запрос и не обращается к поисковому провайдеру. Вход совпадает с
-поисковым заданием; дополнительно поддерживаются `locale` и одна страна:
+Interprets a request without calling a search provider:
 
 ```json
 {
-  "description": "Место, где стригут мужчин",
-  "primaryQuery": "мужская стрижка",
+  "description": "A place where men get haircuts",
+  "primaryQuery": "men's haircut",
   "relatedQueries": [],
-  "excludeQueries": ["груминг животных"],
+  "excludeQueries": ["pet grooming"],
   "locale": "ru-RU",
   "countryCodes": ["RU"]
 }
 ```
 
-Ответ содержит `SearchPlan` версии `2.2` со статусом `ready`,
-`needs_confirmation`, `unsupported` или `degraded`, объектом
-`semanticIntent`, отдельной уверенностью в смысле запроса и покрытии источника,
-версиями prompt/schema, usage, latency и проверяемыми hash. Вложенный
-`SemanticIntentV2` сохраняет собственную schema `2.2`. Во время миграции
-legacy canonical IDs для уже поддерживаемых ниш могут отдельно присутствовать
-в `SearchPlan.resolution.selectedConceptIds`; они вычисляются сервером после
-Kimi и не передаются модели. `needs_confirmation`
-на этом endpoint является обычным HTTP 200: UI должен показать трактовку и не
-запускать карты до подтверждения.
+It returns `SearchPlan` version `2.2` with status `ready`, `needs_confirmation`,
+`unsupported`, or `degraded`; `semanticIntent`; separate meaning and provider
+coverage confidence; versions, usage, latency, and hashes. Legacy canonical IDs
+may appear in `resolution.selectedConceptIds`; the server derives them after Kimi
+and never sends them to the model. `needs_confirmation` is HTTP 200 and prevents
+map search until confirmed.
 
 ### `POST /api/search`
 
-Обязателен `primaryQuery`; географию задаёт текстовый `location` или координаты
-`center`. Радиус по умолчанию — 15 км.
+`primaryQuery` is required. Geography is supplied through `location` or `center`;
+the default radius is 15 km.
 
 ```json
 {
-  "description": "Компании, которые оказывают услуги фулфилмента",
-  "primaryQuery": "Фулфилмент",
-  "relatedQueries": [
-    "Ответственное хранение",
-    "Складские услуги",
-    "Комплектация заказов"
-  ],
-  "excludeQueries": ["Камеры хранения", "Аренда гаражей"],
-  "location": "Москва",
+  "description": "Companies providing fulfillment services",
+  "primaryQuery": "Fulfillment",
+  "relatedQueries": ["Warehousing", "Storage services", "Order picking"],
+  "excludeQueries": ["Luggage storage", "Garage rental"],
+  "location": "Moscow",
   "center": [37.6173, 55.7558],
   "radiusKm": 15,
-  "offer": "Оцифровка обработки заявок и внедрение CRM",
-  "services": ["Создание сайта", "CRM", "Автоматизация"],
+  "offer": "Digitizing request processing and implementing CRM",
+  "services": ["Website development", "CRM", "Automation"],
   "locale": "ru-RU",
   "countryCodes": ["RU"]
 }
 ```
 
-Поле `center` необязательно. Если оно передано, поиск использует выбранную точку
-без повторного геокодирования `location`. Старые клиенты могут по-прежнему
-передавать только текстовую географию.
-
-Обычный endpoint возвращает JSON с параметрами запроса, provider-метаданными,
-сводкой, массивом `leads` и явным `outcome`. Непустой ответ имеет
-`success_with_results`, пустая выборка источника — `success_empty` и HTTP 200.
-У каждого лида есть массив `sources` с provider ID, внешним ID и временем
-наблюдения; дополнительные условия помещения возвращаются в `requirements` со
-статусом `confirmed_match`, `confirmed_mismatch`, `unknown` или `conflicting`.
-Отсутствие данных не считается совпадением и даёт `unknown`. Неоднозначный
-intent возвращает HTTP 409 с `outcome=clarification_required` и
-`SEARCH_PLAN_CONFIRMATION_REQUIRED`. Ошибки валидации и инфраструктуры имеют
-`outcome=technical_failure`; ошибка live-провайдера не подменяется демоданными.
-Однозначный физический intent без локального concept ID не получает
-терминальный 422: сервер формирует bounded Geoapify fallback-план.
-
-Чтобы продолжить неоднозначный поиск, повторите тот же payload и передайте
-ровно одну показанную semantic alternative вместе с подписанным token:
-
-```json
-{
-  "confirmedAlternative": {
-    "alternativeId": "alt-из-SearchPlan",
-    "alternativeHash": "hash_из_SearchPlan",
-    "semanticIntent": "полный semanticIntent выбранной alternative без изменений"
-  },
-  "confirmationToken": "token_из_SearchPlan"
-}
-```
-
-Token действует 10 минут и подписывает исходные request/plan hash, допустимые
-alternative hash и версии semantic/compiler contracts. Сервер заново валидирует
-и хэширует выбранный `SemanticIntentV2`; V1 token с canonical IDs не исполняется
-и требует безопасно сформировать новый план.
+When `center` is present, no repeated geocoding occurs. The response contains
+request parameters, provider metadata, summary, `leads`, and explicit `outcome`.
+Non-empty output is `success_with_results`; empty provider output is
+`success_empty` with HTTP 200. Lead requirements use `confirmed_match`,
+`confirmed_mismatch`, `unknown`, or `conflicting`; missing data is `unknown`, not
+a match. Ambiguity returns HTTP 409 `clarification_required`. Validation and
+infrastructure failures use `technical_failure`; live provider failures are not
+replaced by demo data. An unambiguous physical intent without a local concept ID
+does not receive terminal 422: a bounded fallback plan is compiled.
 
 ### `POST /api/search?stream=1`
 
-Возвращает `application/x-ndjson`: отдельные JSON-строки показывают этапы
-`validation`, `intent_resolution`, optional `geocoding`,
-`provider_compilation`, `places`, `relevance_classification`, `details`,
-`normalizing` и `complete`.
-Последняя строка содержит либо итоговый `{ "type": "result", "data": ... }`,
-либо структурированную ошибку `{ "type": "error", ... }`. Веб-интерфейс
-использует этот режим для живого индикатора, а JSON-вариант `/api/search`
-остаётся доступным для существующих интеграций.
-
-В local Tier-0 profile весь запрос, включая ожидание Kimi admission, ограничен
-60 секундами. Progress heartbeat отправляется не реже одного раза в 2 секунды,
-пока стадия выполняется. На исчерпании общего бюджета JSON возвращает HTTP 504
-с `SEARCH_DEADLINE_EXCEEDED`, а NDJSON — ровно одну terminal error-строку.
-Client disconnect отменяет общий `AbortSignal`, Kimi SSE, запросы провайдера,
-ожидания и enrichment. Если времени не хватает только на optional classifier
-или Details, базовые карточки сохраняются, а
-`provider.coverage.degradedStages` явно указывает пропущенную стадию.
-
-Для уже запущенного локального сервера есть обезличенный end-to-end smoke:
+Returns `application/x-ndjson` events for validation, intent resolution,
+geocoding, provider compilation, places, relevance, details, normalization, and
+completion. The final line contains either a result or one structured error. The
+local Tier-0 profile has a 60-second end-to-end deadline and emits a heartbeat at
+least every two seconds. Client disconnect cancels all remaining work. Optional
+stages that cannot fit the budget are listed in `provider.coverage.degradedStages`.
 
 ```powershell
 npm run smoke:stream
 ```
 
-Default smoke использует zero-overlap формулировку и при Kimi-режиме проверяет
-всю цепочку до Geoapify. Запрос можно заменить через `SMOKE_SEARCH_QUERY`.
+## Live 2GIS search
 
-## Live-поиск 2GIS
+LeadRadar sends free-text business type, center, and radius to 2GIS Places. A
+known `rubric_id` is unnecessary. The server runs up to three bounded searches
+for the core type and synonyms, then deduplicates and evaluates relevance locally.
+Empty output is `success_empty`.
 
-При `SEARCH_PROVIDER=2gis` LeadRadar отправляет в 2GIS Places API свободный
-текст типа бизнеса, координаты центра и радиус. Заранее известный `rubric_id`
-не требуется: сервер выполняет до трёх bounded-запросов по основному типу и
-синонимам, затем локально дедуплицирует и проверяет evidence релевантности.
-В demo-режиме один запрос получает не более 10 карточек, а радиус ограничен
-50 км. Пустой ответ источника возвращается как `success_empty`.
+2GIS is selected explicitly and is not mixed with Geoapify in one result set.
+Both embedded maps use 2GIS MapGL. Production should use a separate
+domain-restricted `DGIS_MAP_KEY`. Falling back to `DGIS_API_KEY` exposes that key
+to the browser and is intended only for local verification.
 
-2GIS выбран явно и не смешивается с Geoapify в одной выдаче. В текущей alpha
-Geoapify Geocoding всё ещё определяет координаты введённого города или адреса;
-сам поиск организаций после этого выполняет 2GIS.
+2GIS demo results use `contract_required`: attribution is displayed, but records
+are not stored in `localStorage`. `DGIS_EXPORT_ENABLED=true` permits normalized
+CSV only when contractual rights are confirmed and never stores raw responses.
+An API key or personal research purpose alone does not establish those rights.
 
-Обе встроенные карты работают через 2GIS MapGL: поисковая карта сохраняет
-выбор центра, перетаскивание метки и окружность радиуса, а карта результата —
-масштабирование по области и кликабельные маркеры лидов. Для production задайте
-отдельный `DGIS_MAP_KEY`, ограниченный Map Tiles и разрешёнными доменами. При
-пустом `DGIS_MAP_KEY` локальный server-render может использовать
-`DGIS_API_KEY`, но этот fallback раскрывает ключ браузеру и предназначен только
-для локальной проверки.
+## Live Geoapify search
 
-Demo-ответы 2GIS имеют базовую policy `contract_required`: интерфейс показывает
-атрибуцию, но не сохраняет их в `localStorage`. CSV управляется отдельной
-серверной capability: `DGIS_EXPORT_ENABLED=true` разрешает выгрузку
-нормализованных строк только при подтверждённом договорном праве и не включает
-localStorage либо сохранение raw-ответов. Наличие API-ключа или личный
-исследовательский сценарий сами по себе это право не подтверждают. Настройка
-описана в [`docs/2gis-setup.md`](docs/2gis-setup.md).
+Geoapify remains a separate provider. Its bounded chain is category Places →
+Autocomplete for unknown categories → Forward Geocoding with the original
+business type when category resolution fails or Places yields no relevant cards.
+Radius is not increased. Unrecoverable timeouts, `429`, and `5xx` become provider
+errors and are not replaced with demo data. Cross-provider failover is absent.
 
-## Live-поиск Geoapify
+The free plan requires visible Geoapify and OpenStreetMap attribution. Replace
+any test key exposed outside server-side storage before deployment.
 
-LeadRadar серверно геокодирует город или адрес, затем ищет организации через
-Geoapify Places API. Основной запрос для фулфилмента использует категории
-`office.logistics` и `rental.storage`. Более широкая `building.industrial`
-намеренно исключена из live-поиска MVP: в контрольной выборке она возвращала
-преимущественно безымянные промышленные объекты и вытесняла карточки организаций.
+## Query Intelligence and Kimi
 
-Geocoding, Places и Place Details проверены реальным transient smoke test.
-Конкретные агрегаты и дата находятся в [`changes_log.md`](changes_log.md), чтобы
-стабильный README не превращался в хронологический журнал. Такая проверка
-подтверждает транспорт и одну выборку, но не полноту рынка.
+Kimi receives only normalized user category, locale, and country fields—not
+canonical candidates, company cards, contacts, coordinates, or provider
+categories. It returns open-vocabulary `SemanticIntentV2`; the server validates
+its strict schema and prevents executable model output.
 
-Geoapify остаётся отдельным доступным live-провайдером версии
-`0.4.0-alpha.1`. Внутри него действует bounded цепочка category Places → Autocomplete для
-неизвестной категории → Forward Geocoding по исходному типу бизнеса, если
-категория не подтверждена, Autocomplete временно недоступен либо Places не дал
-релевантных карточек. Радиус не увеличивается. Timeout, `429` или `5xx`, которые
-нельзя безопасно продолжить внутри этой цепочки, возвращаются как ошибка
-источника и не маскируются
-demo-данными; failover на другой provider не реализован.
+Provider-neutral English terms are mapped to a pinned catalog of 813 Geoapify
+categories. The compiler creates up to four retrieval arms: exact, broad,
+adjacent, and safe name search, with at most four provider calls and 200 observed
+cards. Category arms use Places; unresolved name arms use bounded Forward
+Geocoding. Model text never becomes an unchecked provider category.
 
-Free plan требует видимую атрибуцию Geoapify и OpenStreetMap. Она сохраняется
-на экранах live-результата и в CSV-экспорте. Использованный для локального теста ключ нужно
-заменить перед внешним deployment, поскольку он ранее появился вне server-side
-окружения.
+A recovery arm may use Places only after Autocomplete confirms an allowlisted
+leaf with at least two distinct in-country, in-radius observations. No match
+falls back to text geocoding. Broad categories are not evidence by themselves.
+Category IDs are revalidated before provider calls; the old 40-niche dictionary
+exists only for backward compatibility.
 
-## Query Intelligence и Kimi
+The compiler accepts exact normalized registry matches, never partial word
+overlap. Name fallback uses the user's language and is skipped after at least ten
+`matched + maybe` results. Provider-native hints are optional, cannot modify the
+signed plan, and are disabled by default.
 
-В режиме Kimi planner передаёт модели только нормализованные пользовательские
-поля категории, locale и страну. Модель не получает список canonical
-кандидатов, карточки организаций, контакты, географические координаты или
-категории Geoapify. Она возвращает `SemanticIntentV2` с открытой отраслевой
-лексикой; сервер проверяет strict JSON Schema, лимиты, смысловые инварианты и
-отсутствие исполняемых URL/filters.
+Cards are deduplicated before Details and retain all discovery reasons.
+Exclusions are applied to name, provider categories, and short description before
+Details quota is spent. The UI recommends `matched + maybe` by default while
+keeping `rejected` and `not_checked` accessible.
 
-После semantic encoding сервер сопоставляет provider-neutral английские
-retrieval terms полному зафиксированному каталогу Geoapify: 813 категорий из
-официальной документации, версия и SHA-256 checksum доступны в health API.
-Компилятор формирует до четырёх независимых retrieval arms: точный, расширенный,
-смежный и безопасный поиск по названию. У каждого есть стабильный ID,
-приоритет, происхождение из `SemanticIntentV2` и собственный лимит результата;
-общий серверный предел — четыре retrieval-запроса и 200 наблюдённых карточек.
-Категорийные arms используют Places, а unresolved name-fallback — bounded
-Forward Geocoding `type=amenity`; восемь корневых категорий fallback-плана
-остаются внутренней provenance/budget границей, а не строкой provider filter.
-Исключение — recovery arm из исходного пользовательского запроса: сервер
-сверяет его с подписанным preview и допускает Places только после одного
-Autocomplete-запроса, подтвердившего allowlisted leaf минимум двумя различными
-same-country/in-radius наблюдениями. No-match переводит arm в bounded Forward
-Geocoding; подтверждённая широкая категория не считается evidence сама по себе,
-а нерелевантная Places-выборка также переводится в текстовый fallback.
-Если узкой категории нет, сервер использует фиксированный широкий scope из
-registry вместе с ограниченным `name`, а не исполняет категорию из текста
-модели. Каждый category ID повторно проверяется перед отправкой провайдеру.
-Старый словарь 40 ниш остаётся только fallback обратной совместимости.
+Issue #11 currently has a `FAIL` quality decision: fixed-k Precision@10 and
+encoder p95 targets were not met. This is not an external SLA claim.
 
-Provider compiler принимает только точные нормализованные phrase-совпадения
-полного registry; совпавший parent остаётся явно broad, а частичное пересечение
-слов не исполняется. Общий суффикс вида `studio`, `clinic` или `shop` удаляется
-лишь тогда, когда остаток однозначно указывает на одну точную leaf-category.
-Для name-fallback
-предпочитается исходная формулировка на языке пользователя; fallback-запрос не
-запускается, если предыдущие arms уже дали не менее 10 результатов
-`matched + maybe`. Опциональный provider-native hint может уточнить только этот
-fallback, не меняет `SemanticIntentV2` или подписанный `SearchPlan`, проходит
-повторную проверку по pinned registry и по умолчанию выключен.
+## Experimental Yandex API
 
-Карточки из разных arms дедуплицируются до получения Details и сохраняют все
-причины обнаружения. Точные, смежные и fallback-находки различимы в
-`SearchPlan.executionPreview.retrievalArms` и `Lead.discovery.retrievalArms`.
-Исключения из пользовательского задания и `SemanticIntentV2` применяются по
-доступным названию, provider categories и короткому source description до
-расхода квоты Details.
+The Yandex adapter is disabled by default. Without written permission, do not
+persist, score, export, or display its responses on third-party maps. See
+[`docs/yandex-live-test.md`](docs/yandex-live-test.md).
 
-Расширяющая provider-category сама по себе считается evidence только при
-происхождении из core/precision intent, а не из одного adjacent/recall сигнала.
-Таблица и карта по умолчанию показывают рекомендованные `matched + maybe`;
-`rejected` и `not_checked` остаются доступны через фильтр и не удаляются.
+## Limitations
 
-Open-vocabulary encoder и скомпилированный поиск проверяются versioned live
-canary через фактический production-orchestrator. Canary завершён, но Issue #11
-quality gate имеет решение `FAIL`: не пройдены fixed-k Precision@10 и целевой
-encoder p95. Это не доказательство внешнего SLA. Метрики и границы вывода
-зафиксированы в
-[`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md).
+- Production release `v0.4.0` remains `NO-GO`.
+- Frozen planner evaluation reached 500/500 CIS intents and deterministic
+  relevance reached 600/600 synthetic cards, but neither proves live-model quality.
+- The optional Kimi lead classifier is disabled and company cards are not sent to it.
+- RU is supported; BY and KZ are pilots; other CIS countries are unsupported.
+- Scheduling, admission control, circuit breaking, and deadlines are process-local.
+  There is no authentication, distributed limiter, multi-tenancy, or coordination.
+- The production canary passed safety/contract gates but achieved Precision@10
+  `0.7500` against `0.85` and encoder p95 29.073 seconds against 20 seconds.
+- Provider separation is partial; geocoding and enrichment are not yet isolated
+  into a two-phase search service.
+- Up to eight search terms are allowed per task.
+- Radius is 0.5–250 km; arbitrary polygons are unavailable.
+- City, district, and region use circular coverage, not administrative boundaries.
+- Metro data is provider-derived and is not an official registry.
+- Geoapify Places is not an exhaustive full-text business registry.
+- Contact and website completeness depends on source data.
+- Automatic multi-provider fallback and aggregation are not implemented.
+- Missing URLs mean only that the source did not provide one.
+- Websites and social networks are not verified in live mode.
+- Scoring is heuristic, not a sales-conversion forecast.
+- Persistence, enrichment, export, and CRM require appropriate source licenses.
 
-## Экспериментальный API Яндекса
+## Project documentation
 
-Адаптер Яндекса сохранён, но выключен по умолчанию. До письменного подтверждения
-Яндекса не используйте его ответы для постоянного хранения, собственного
-scoring, CSV или отображения поверх сторонней карты. Изолированный сценарий
-описан в [`docs/yandex-live-test.md`](docs/yandex-live-test.md).
-
-## Ограничения
-
-- Это локальный alpha: production release `v0.4.0` ещё имеет решение `NO-GO`.
-- Open-vocabulary semantic encoder и полный registry уже не ограничены 40
-  concepts. Frozen planner gate достиг 500/500 CIS intent cases и включает 100
-  типов физических организаций, но использует golden mock Kimi и поэтому не
-  доказывает качество live-модели. Deterministic relevance gate достиг 600/600
-  синтетических карточек; optional Kimi-classifier остаётся `N/A` до отдельного
-  data-flow/rate разрешения и live evaluation.
-- Runtime deterministic relevance уже заполняет `Lead.relevance` до Details по
-  названию, provider categories, короткому описанию, географии и исключениям.
-  Статусы `matched`, `maybe`, `rejected`, `not_checked` видны в таблице, карте,
-  карточке и CSV; `rejected` не скрывается. Optional Kimi-classifier остаётся
-  выключенным, поэтому реальные карточки модели по умолчанию не передаются.
-- RU поддерживается, BY/KZ являются пилотными; остальные страны CIS пока
-  возвращают контролируемый unsupported.
-- In-process Tier-0 scheduler, admission queue, circuit breaker и единый
-  server-side deadline работают только в одном экземпляре Node.js. Нет auth,
-  shared/distributed limiter, multi-tenancy или межпроцессной координации;
-  live API предназначен только для владельца на `127.0.0.1`.
-- Production-orchestrator canary выполнил все 12 сценариев и прошёл
-  schema/executability/deadline/safety gates, но не прошёл business-quality
-  gate: fixed-k Precision@10 `0.7500` при цели `0.85`. Encoder p95 составил
-  29,073 с при цели 20 с. Geoapify-only поиск и внешний SLA имеют решение
-  `NO-GO` до улучшения provider grounding/fallback и повторного canary.
-- Provider boundary мигрирован частично: retrieval arms уже компилируются из
-  открытого intent, а exclusions и дедупликация выполняются до Details, но
-  geocoding и enrichment ещё не вынесены в отдельный двухфазный search service.
-- До восьми поисковых терминов на одно задание.
-- Круговой радиус от 0,5 до 250 км; произвольный полигон отсутствует.
-- Режимы города, района и области в текущем alpha используют геокодированный
-  центр и круговой охват, а не точную административную границу.
-- Справочник метро покрывает все семь действующих систем России, но основан на
-  Geoapify/OpenStreetMap и не является официальным нормативным реестром;
-  временно закрытые станции могут отсутствовать в основной выдаче.
-- Geoapify Places ищет по категориям и не является исчерпывающим
-  полнотекстовым реестром компаний.
-- Полнота телефонов, email, сайтов и социальных сетей зависит от исходных
-  открытых данных.
-- Автоматический fallback и агрегация нескольких источников ещё не реализованы.
-- Исключения применяются до Details по названию, provider categories и
-  короткому source description; результат остаётся видимым как `rejected`.
-- Отсутствие URL означает только «сайт не указан в карточке источника».
-- Сайты и социальные сети в live-режиме не проверяются.
-- Scoring является эвристикой, а не прогнозом сделки.
-- Для постоянной базы, enrichment, экспорта и CRM нужен источник или лицензия,
-  разрешающие обработку и хранение данных.
-
-## Документация проекта
-
-- [`ROADMAP.md`](ROADMAP.md) — этапы развития и критерии готовности.
-- [`changes_log.md`](changes_log.md) — журнал бизнес-логики и существенных решений.
-- [`docs/2gis-setup.md`](docs/2gis-setup.md) — серверный ключ, demo-policy,
-  цепочка поиска и короткая проверка 2GIS.
-- [`docs/geoapify-setup.md`](docs/geoapify-setup.md) — настройка, тариф,
-  атрибуция, live test и черновик fallback.
-- [`docs/yandex-live-test.md`](docs/yandex-live-test.md) — изолированная проверка
-  экспериментального адаптера Яндекса.
+- [`ROADMAP.md`](ROADMAP.md) — development stages and readiness criteria.
+- [`changes_log.md`](changes_log.md) — material business-logic decisions.
+- [`docs/2gis-setup.md`](docs/2gis-setup.md) — keys, policy, and 2GIS verification.
+- [`docs/geoapify-setup.md`](docs/geoapify-setup.md) — setup and Geoapify fallback.
+- [`docs/yandex-live-test.md`](docs/yandex-live-test.md) — isolated adapter test.
 - [`docs/semantic-query-planner-architecture.md`](docs/semantic-query-planner-architecture.md)
-  — границы AI, SearchPlan, SLO-гипотезы и целевая production-архитектура.
+  — AI boundaries, SearchPlan, SLO hypotheses, and target architecture.
 - [`docs/v0.4.0-query-intelligence-spec.md`](docs/v0.4.0-query-intelligence-spec.md)
-  — исполнимое ТЗ и release quality gates.
+  — executable specification and quality gates.
 - [`docs/evaluations/v0.4.0-alpha.1-query-intelligence.md`](docs/evaluations/v0.4.0-alpha.1-query-intelligence.md)
-  — обезличенный initial evaluation report и решение `NO-GO` для production.
+  — anonymized initial evaluation and production `NO-GO` decision.
 - [`docs/evaluations/v0.4.0-alpha.1-search-live-canary.md`](docs/evaluations/v0.4.0-alpha.1-search-live-canary.md)
-  — агрегатный production-orchestrator canary с решением `FAIL` по quality gate.
-- [`AGENTS.md`](AGENTS.md) — постоянные правила версий и релизов.
+  — aggregate production-orchestrator canary and quality-gate `FAIL`.
+- [`AGENTS.md`](AGENTS.md) — permanent versioning and release rules.
 
-README имеет стабильную структуру и не используется как хронологический журнал.
-История изменений ведётся в `changes_log.md`.
+This README is a stable product and operations document, not a chronological log.
+History belongs in `changes_log.md`.
 
-## Версионирование
+## Versioning
 
-- Канонический номер версии находится в `package.json`.
-- Готовые релизы используют Semantic Versioning и annotated Git-теги `vX.Y.Z`.
-- Alpha-версии остаются без release-тега, пока production quality gates не дали
-  `GO`.
-- PATCH — исправление без изменения бизнес-правил.
-- MINOR — новая возможность или изменение продуктовой логики.
-- MAJOR — несовместимое изменение контракта, модели данных или workflow.
+- `package.json` is the canonical version source.
+- Releases use Semantic Versioning and annotated `vX.Y.Z` tags.
+- Alpha versions remain untagged until production quality gates return `GO`.
+- PATCH fixes behavior without changing business rules.
+- MINOR adds a compatible capability or changes product logic.
+- MAJOR introduces an incompatible contract, data-model, or workflow change.
 
-## Официальные материалы
+## Official resources
 
 - [2GIS Places API](https://docs.2gis.com/en/api/search/places/overview)
 - [2GIS Platform Manager pricing](https://docs.2gis.com/en/platform-manager/subscription/pricing)
 - [Geoapify Places API](https://apidocs.geoapify.com/docs/places/)
 - [Geoapify Pricing](https://www.geoapify.com/pricing/)
-- [Geoapify Pricing Details](https://www.geoapify.com/pricing-details/)
 - [Geoapify Terms and Conditions](https://www.geoapify.com/terms-and-conditions/)
 - [Kimi API models](https://platform.kimi.ai/docs/models)
 - [Kimi Chat API](https://platform.kimi.ai/docs/api/chat)
 - [Kimi Structured Output](https://platform.kimi.ai/docs/guide/response_format)
-- [Kimi streaming output](https://platform.kimi.ai/docs/guide/utilize-the-streaming-output-feature-of-kimi-api)
 - [Kimi rate limits](https://platform.kimi.ai/docs/pricing/limits)
-
-- [API Поиска по организациям](https://yandex.ru/maps-api/docs/geosearch-api/index.html)
-- [Формат запроса](https://yandex.ru/maps-api/docs/geosearch-api/request.html)
-- [Формат ответа](https://yandex.ru/maps-api/docs/geosearch-api/response.html)
-- [Страница продукта](https://yandex.ru/maps-api/products/geosearch-api)
-- [Коммерческая документация](https://yandex.ru/dev/commercial/doc/ru/concepts/geosearch)
-- [Условия использования](https://yandex.ru/legal/maps_api/ru/)
+- [Yandex Organization Search API](https://yandex.ru/maps-api/docs/geosearch-api/index.html)
+- [Yandex request format](https://yandex.ru/maps-api/docs/geosearch-api/request.html)
+- [Yandex response format](https://yandex.ru/maps-api/docs/geosearch-api/response.html)
+- [Yandex product page](https://yandex.ru/maps-api/products/geosearch-api)
+- [Yandex commercial documentation](https://yandex.ru/dev/commercial/doc/ru/concepts/geosearch)
+- [Yandex terms of use](https://yandex.ru/legal/maps_api/ru/)
